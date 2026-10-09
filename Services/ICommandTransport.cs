@@ -45,7 +45,8 @@ public sealed record SerialPortOption(
 
     public bool IsKnownBluetoothDevice => IsBluetooth
         && (FriendlyName.Contains(Osr6DeviceProfile.BluetoothDeviceName, StringComparison.OrdinalIgnoreCase)
-            || HardwareId.Replace('-', ':').Contains(Osr6DeviceProfile.BluetoothAddress, StringComparison.OrdinalIgnoreCase));
+            || (Osr6DeviceProfile.BluetoothAddress.Length > 0
+                && HardwareId.Replace('-', ':').Contains(Osr6DeviceProfile.BluetoothAddress, StringComparison.OrdinalIgnoreCase)));
 
     public string TransportLabel => IsBluetooth ? "蓝牙 SPP" : "USB / 有线";
     public string DisplayName => string.IsNullOrWhiteSpace(PortName)

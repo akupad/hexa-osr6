@@ -13,7 +13,12 @@ public static partial class Osr6DeviceProfile
 
     public const string WiredUsbHardwareId = "VID_1A86&PID_7523";
     public const string BluetoothDeviceName = "ESP32SPP";
-    public const string BluetoothAddress = "B4:E6:2D:EE:F4:3B";
+    /// <summary>
+    /// 蓝牙地址留空 = 只按设备名识别。
+    /// 曾经把开发机那台的 MAC 写死在这里 —— 那是唯一的物理标识，**不该随代码公开**，
+    /// 而且写死 MAC 也只对那一台机器有效。想按地址精确识别的话，填自己的（或用下面的设置项）。
+    /// </summary>
+    public const string BluetoothAddress = "";
 
     public static bool IsInstalledAxis(string? axisId) =>
         axisId is not null && InstalledAxisSet.Contains(axisId);

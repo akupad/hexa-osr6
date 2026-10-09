@@ -1,7 +1,7 @@
 # Hexa AI 助手 — 功能补齐需求文档（对齐 c.py）
 
 ## 背景
-Hexa 已实现「AI 助手」页（`Services/AiAssistantService.cs` + `ViewModels/AiAssistantViewModel.cs` + `Views/AiAssistantPage.xaml`），核心 AI 对话 + function calling 自动控 OSR6 + TTS 已就绪。现参照现成 Python 项目 `C:/Users/w1365/c_proj.py`（1472 行，经验验证过的逻辑），补齐 4 个缺失/简化的功能。**目标：对齐 c.py 的完整体验。**
+Hexa 已实现「AI 助手」页（`Services/AiAssistantService.cs` + `ViewModels/AiAssistantViewModel.cs` + `Views/AiAssistantPage.xaml`），核心 AI 对话 + function calling 自动控 OSR6 + TTS 已就绪。现参照现成 Python 项目 `<参考实现路径>`（1472 行，经验验证过的逻辑），补齐 4 个缺失/简化的功能。**目标：对齐 c.py 的完整体验。**
 
 ## 复用约束（务必遵守）
 - 运动控制一律走 `App.Engine`（MotionEngine），绝不 `new SerialService`/发串口。
