@@ -814,7 +814,10 @@ public sealed class IntifaceBridgeService : IDisposable
                 if (string.Equals(key, axis, StringComparison.OrdinalIgnoreCase)) return Math.Clamp(candidate, 0, 9999);
         }
         catch (Exception ex) { AppLogger.Warn($"读取轴限位失败（{axis}）：{ex.Message}"); }
-        return lower ? 0 : 9999;
+
+        // 读不到限位时**不能**悄悄放大到 0–9999 全行程 —— 用户特意收窄过行程的话，那等于把保护关掉
+        //（审计里的 fail-open）。回中位＝这一帧等于"别动"，宁可不动也不要乱走到头。
+        return 5000;
     }
 
     private void TickTimerElapsed()

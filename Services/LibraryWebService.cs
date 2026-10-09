@@ -100,6 +100,16 @@ public sealed class LibraryWebService : IDisposable
         try
         {
             string path = ctx.Request.Url?.AbsolutePath ?? "/";
+            // 带副作用的端点必须校验来源：否则任何网页写一个 <img src="http://localhost:8582/stop">
+            // 就能打断正在播的脚本（浏览器发起这类请求不受同源策略约束）。
+            bool sideEffect = path.Equals("/play", StringComparison.OrdinalIgnoreCase)
+                           || path.Equals("/stop", StringComparison.OrdinalIgnoreCase);
+            if (sideEffect && !IsAllowedBrowserOrigin(ctx.Request.Headers["Origin"]))
+            {
+                ctx.Response.StatusCode = 403;
+                ctx.Response.Close();
+                return;
+            }
             if (path.Equals("/play", StringComparison.OrdinalIgnoreCase)) { HandlePlay(ctx); return; }
             if (path.Equals("/stop", StringComparison.OrdinalIgnoreCase)) { HandleStop(ctx); return; }
             await WriteHtmlAsync(ctx, BuildPage(ctx.Request.QueryString)).ConfigureAwait(false);
@@ -111,6 +121,17 @@ public sealed class LibraryWebService : IDisposable
         }
     }
 
+    /// <summary>只接受本机页面的请求（原生客户端不带 Origin 头时按本机处理）。</summary>
+    private static bool IsAllowedBrowserOrigin(string? origin)
+    {
+        if (string.IsNullOrWhiteSpace(origin)) return true;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out Uri? uri)) return false;
+        string host = uri.Host.Trim('[', ']');
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || host.Equals("127.0.0.1", StringComparison.Ordinal)
+            || host.Equals("::1", StringComparison.Ordinal);
+    }
+
     private void HandlePlay(HttpListenerContext ctx)
     {
         string requested = ctx.Request.QueryString["f"] ?? "";
@@ -119,9 +140,12 @@ public sealed class LibraryWebService : IDisposable
         try { full = Path.GetFullPath(requested); }
         catch { full = ""; }
 
-        // 只允许播库目录里的文件：别人构造一个 ../.. 的路径也读不到别的东西。
+        // 只允许播库目录里的文件。前缀匹配要带上目录分隔符，否则 ...\Scripts-evil\x.funscript
+        // 这种兄弟目录会被当成「在库里」而放行（审计发现）。
+        string libraryPrefix = library.EndsWith(Path.DirectorySeparatorChar)
+            ? library : library + Path.DirectorySeparatorChar;
         if (full.Length == 0
-            || !full.StartsWith(library, StringComparison.OrdinalIgnoreCase)
+            || !full.StartsWith(libraryPrefix, StringComparison.OrdinalIgnoreCase)
             || !File.Exists(full))
         {
             Redirect(ctx, "/?msg=" + Uri.EscapeDataString("这个脚本不在库里"));
