@@ -151,7 +151,37 @@ public sealed class IntifaceBridgeService : IDisposable
     /// <summary>指令追踪文件路径（界面提示里会写出来）。</summary>
     public static string TraceFilePath => Path.Combine(AppSettings.DataDirectory, "bridge-trace.log");
 
+    /// <summary>trace 写入队列：收包线程与 50ms 节拍线程只入队，落盘交给后台单消费者。</summary>
+    private static readonly System.Collections.Concurrent.BlockingCollection<(string Dir, string Text)> TraceQueue =
+        new(new System.Collections.Concurrent.ConcurrentQueue<(string Dir, string Text)>(), 4096);
+
+    private static Task? _traceWorker;
+
+    private static void EnsureTraceWorker()
+    {
+        if (_traceWorker is not null) return;
+        lock (TraceQueue)
+        {
+            if (_traceWorker is not null) return;
+            _traceWorker = Task.Run(() =>
+            {
+                foreach ((string dir, string text) in TraceQueue.GetConsumingEnumerable())
+                {
+                    try { TraceWriteNow(dir, text); }
+                    catch { /* 落盘失败不影响桥 */ }
+                }
+            });
+        }
+    }
+
     private static void Trace(string direction, string text)
+    {
+        EnsureTraceWorker();
+        // 队列满（极端高频）时直接丢这一条：诊断日志绝不该阻塞实时线程。
+        TraceQueue.TryAdd((direction, text));
+    }
+
+    private static void TraceWriteNow(string direction, string text)
     {
         try
         {

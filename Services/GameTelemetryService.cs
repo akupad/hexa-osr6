@@ -33,6 +33,34 @@ public sealed class GameTelemetryService : IDisposable
 
     public int Port { get; private set; }
     public bool Listening => _client != null;
+
+    /// <summary>
+    /// 限速：同一个来源端点每秒最多处理的包数，超出就丢弃并计数。
+    /// 不限速的后果：本机任意进程高频发包会拖垮唯一收包循环（每包还要查一次前台进程）
+    /// → 内核缓冲溢出 → 静默丢帧，界面完全看不出来。
+    /// </summary>
+    private const int MaxPacketsPerSourcePerSecond = 120;
+    private readonly Dictionary<string, (long WindowStartMs, int Count)> _rateWindow = new();
+    private long _rateLimitedPackets;
+
+    /// <summary>被限速丢掉的包数（诊断用，也可显示在界面上）。</summary>
+    public long RateLimitedPackets => Interlocked.Read(ref _rateLimitedPackets);
+
+    private bool AllowSource(string key, long nowMs)
+    {
+        if (!_rateWindow.TryGetValue(key, out var win) || nowMs - win.WindowStartMs >= 1000)
+        {
+            _rateWindow[key] = (nowMs, 1);
+            return true;
+        }
+        if (win.Count >= MaxPacketsPerSourcePerSecond)
+        {
+            Interlocked.Increment(ref _rateLimitedPackets);
+            return false;
+        }
+        _rateWindow[key] = (win.WindowStartMs, win.Count + 1);
+        return true;
+    }
     public long AcceptedPackets => Interlocked.Read(ref _acceptedPackets);
     public long RejectedPackets => Interlocked.Read(ref _rejectedPackets);
     public event Action<GameTelemetrySnapshot>? FrameReceived;
@@ -88,6 +116,10 @@ public sealed class GameTelemetryService : IDisposable
             try
             {
                 UdpReceiveResult packet = await client.ReceiveAsync(token).ConfigureAwait(false);
+
+                // 限速：同一个来源端点每秒最多 120 包。不限速时本机任意进程高频发包会把这条唯一
+                // 收包循环拖垮（每包还要查一次前台进程）→ 内核缓冲溢出 → 静默丢帧。
+                if (!AllowSource(packet.RemoteEndPoint.ToString(), Environment.TickCount64)) continue;
                 if (!IPAddress.IsLoopback(packet.RemoteEndPoint.Address))
                 {
                     Interlocked.Increment(ref _rejectedPackets);

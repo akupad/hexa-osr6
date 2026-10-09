@@ -134,6 +134,10 @@ public sealed class MotionEngine : IDisposable
     /// <summary>规则引擎确实在管，但这次接管不是伴随启动的（遥测 / 用户自定义规则）= 独占接管。</summary>
     private bool TakenOverByOthers => RuleEngineActive && !CompanionOwnsDevice;
 
+    /// <summary>
+    /// 「已使能」标记。历史上它只被赋 true、Disarm() 是空实现、CanRun 也不看它 ⇒ 是个死字段。
+    /// 现在让它真的有语义：Disarm() 会把它置 false（引擎拒绝一切运动），TryArm/Home 置回 true。
+    /// </summary>
     public bool IsArmed { get; private set; } = true;
     public bool IsHoming { get; private set; }
     public bool EmergencyStopped { get; private set; }
