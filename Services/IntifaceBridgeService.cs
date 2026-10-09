@@ -1361,6 +1361,17 @@ internal static class IntifaceProtocol
             JsonElement value = property.Value;
             uint id = value.TryGetProperty("Id", out JsonElement idElement) && idElement.TryGetUInt32(out uint parsed) ? parsed : 1u;
 
+            // 设备号越界一律拒绝：以前完全不校验 —— dual 下 DeviceIndex=99 会被静默当成 1 号设备驱动，
+            // single/six 下也被忽略后照常下发，等于把指令打到客户端没点名的设备上。
+            if (value.ValueKind == JsonValueKind.Object
+                && value.TryGetProperty("DeviceIndex", out JsonElement diElement)
+                && diElement.TryGetUInt32(out uint diValue)
+                && !(IsOneDevice(mode) ? diValue == 0u : diValue <= 1u))
+            {
+                responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"DeviceIndex out of range\",\"ErrorCode\":4}}}}]");
+                continue;
+            }
+
             switch (name)
             {
                 case "RequestServerInfo":
