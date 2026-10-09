@@ -233,8 +233,13 @@ public sealed class TcodeFanout : IDisposable
             catch { Interlocked.Increment(ref _failed); return false; }
         }
 
+        /// <summary>串行化发送：同一个 ClientWebSocket 上重叠 SendAsync 会抛 InvalidOperationException，
+        /// 而引擎的连续输出（16–50ms 一帧）正好会让它重叠——不串行化就会大量丢帧，界面只显示「失败 N 条」。</summary>
+        private readonly SemaphoreSlim _sendGate = new(1, 1);
+
         private async Task SendAndCountAsync(ClientWebSocket ws, byte[] bytes)
         {
+            await _sendGate.WaitAsync().ConfigureAwait(false);
             try
             {
                 await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None)
@@ -242,6 +247,7 @@ public sealed class TcodeFanout : IDisposable
                 Interlocked.Increment(ref _sent);
             }
             catch { Interlocked.Increment(ref _failed); }
+            finally { try { _sendGate.Release(); } catch { } }
         }
 
         public string Describe() =>

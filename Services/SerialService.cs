@@ -772,6 +772,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
     {
         Exception? failure = null;
         string? mirrored = null;
+        SerialPort? port = null;
+        string frame = "";
         lock (_lock)
         {
             if (!_outputEnabled || (!_simulationEnabled && _port?.IsOpen != true))
@@ -784,7 +786,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
                                    "解锁请点侧栏「全部归中」。");
                 return;
             }
-            string frame = TCodeFrameFormatter.FormatTargets(
+            frame = TCodeFrameFormatter.FormatTargets(
                 targets, axisMin, axisMax, _lastSentRaw, _lastSentValid, changedOnly);
             if (frame.Length == 0) return;
 
@@ -796,12 +798,19 @@ public sealed class SerialService : ICommandTransport, IDisposable
             }
             else
             {
-                try { _port!.Write(frame + '\n'); mirrored = frame; }
-                catch (Exception ex)
-                {
-                    failure = ex;
-                    MarkDisconnectedLocked(ex.Message);
-                }
+                // 只取端口引用，**写放在锁外**：串口写最坏要等 WriteTimeout(500ms)，
+                // 拿 _lock 去写会把急停（它必须先拿 _lock/_dispatchLock）堵住半秒。
+                port = _port;
+            }
+        }
+
+        if (port is not null)
+        {
+            try { port.Write(frame + '\n'); mirrored = frame; }
+            catch (Exception ex)
+            {
+                failure = ex;
+                lock (_lock) { MarkDisconnectedLocked(ex.Message); }
             }
         }
 
@@ -818,6 +827,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
     {
         Exception? failure = null;
         bool mirrored = false;
+        SerialPort? stopPort = null;
         lock (_lock)
         {
             if (!_simulationEnabled && _port?.IsOpen != true) return;
@@ -829,17 +839,23 @@ public sealed class SerialService : ICommandTransport, IDisposable
             }
             else
             {
-                try
-                {
-                    _port!.Write("DSTOP\n");
-                    ResetSentAxesLocked();
-                    mirrored = true;
-                }
-                catch (Exception ex)
-                {
-                    failure = ex;
-                    MarkDisconnectedLocked(ex.Message);
-                }
+                // 同上：DSTOP 本身最该快，绝不能拿锁去等串口写超时。
+                stopPort = _port;
+            }
+        }
+
+        if (stopPort is not null)
+        {
+            try
+            {
+                stopPort.Write("DSTOP\n");
+                lock (_lock) { ResetSentAxesLocked(); }
+                mirrored = true;
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+                lock (_lock) { MarkDisconnectedLocked(ex.Message); }
             }
         }
         if (failure != null)
