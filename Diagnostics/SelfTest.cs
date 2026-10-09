@@ -778,7 +778,15 @@ internal static class SelfTest
             Section("十四、设置读写");
             var snapshot = new AppSettings();
             snapshot.Save();               // 走一次真实写盘
-            Check("设置能写盘并读回", AppSettings.Load() is not null);
+            // 原来这条恒真（Load() 的三条返回路径都返回非空实例）＝这一节什么都没验。
+        // 改成真正的往返：改一个值 → 存盘 → 重新读回来比对。
+        double probeBefore = App.Settings.ScriptPlaybackSpeed;
+        App.Settings.ScriptPlaybackSpeed = probeBefore == 1.37 ? 1.38 : 1.37;
+        App.Settings.Save();
+        double probeAfter = AppSettings.Load().ScriptPlaybackSpeed;
+        App.Settings.ScriptPlaybackSpeed = probeBefore;
+        App.Settings.Save();
+        Check($"设置能写盘并读回（往返值 {probeAfter:0.00}）", Math.Abs(probeAfter - 1.37) < 0.001 || Math.Abs(probeAfter - 1.38) < 0.001);
 
             // 用户原话："你怎么总喜欢用那种显示，一般滚动才能看另一部分"。
             // 窗口最小 880，减去左侧栏 200、再去掉页面留白，正文大约只有 660px。

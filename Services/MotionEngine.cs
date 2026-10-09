@@ -2109,6 +2109,23 @@ public sealed class MotionEngine : IDisposable
             return;
         }
 
+        // 直接下发源（脚本播放等）不走调度器、不产生 tick，原来完全不在看门狗视野里：
+        // 它们的线程真卡死时，机器会停在最后一个位置、界面却什么都不说（用户看到的就是
+        // 「播着播着不动了，也没有任何提示」）。这里补一条**窄**判据，避免误伤：
+        //   只在「脚本确实在驱动设备」＋「连续 2 秒一个字节都没发出去」时才判卡死。
+        // 不把游戏桥算进来的原因：桥空闲时本来就不发帧（游戏不发指令＝正常），会误触发。
+        if (ScriptPlaying && _directInputOwner is { Length: > 0 })
+        {
+            long lastOut;
+            lock (_outputLock) lastOut = _lastOutputAt;
+            if (lastOut > 0 && Stopwatch.GetElapsedTime(lastOut) > TimeSpan.FromSeconds(2))
+            {
+                AppLogger.Error("脚本正在驱动设备，但已 2 秒没有发出任何帧 —— 判定卡死并锁存急停");
+                EmergencyStop();
+            }
+            return;
+        }
+
         long lastTick = Volatile.Read(ref _lastSchedulerTickAt);
         if (lastTick <= 0 || Stopwatch.GetElapsedTime(lastTick) < TimeSpan.FromMilliseconds(750)) return;
         AppLogger.Error("运动调度超过 750ms 未刷新，已触发锁存急停");

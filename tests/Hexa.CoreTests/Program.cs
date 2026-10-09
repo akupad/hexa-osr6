@@ -1051,6 +1051,26 @@ try
         cfg.GameBridgeEnabled = false;
         bridge.Stop();
         Check("game bridge stops cleanly", !bridge.Active);
+        // 硬门槛：Stop() 的承诺不只是"不再监听"——它必须真的让设备停下（DSTOP）
+        // 并把直接输入控制权交还给引擎，否则声音响应/画面跟随会被一个已关闭的桥永久挡住
+        // （2026-10-09 审计里正是这个 bug：关了桥之后其它模块全都动不了）。
+        var simCmds = serial.SimulationCommands;
+        bool sentStop = simCmds.Any(c => c.StartsWith("DSTOP", StringComparison.Ordinal));
+        Check("game bridge stop actually stops the device (DSTOP sent)", sentStop);
+        Check("game bridge stop releases direct-input ownership", engine.DirectInputOwner is null);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  硬门槛：急停 × 归中的竞态（自动路径绝不能替用户解除急停）
+    // ══════════════════════════════════════════════════════════════
+    using (var raceEngine = new MotionEngine(serial, cfg))
+    {
+        raceEngine.EmergencyStop();
+        bool refused = !raceEngine.HomeUnlessEstopped();
+        Check("急停锁存时 HomeUnlessEstopped 拒绝归中（不替用户解锁）",
+            refused && raceEngine.EmergencyStopped);
+        raceEngine.Home();
+        Check("用户显式点「全部归中」后才解除急停", !raceEngine.EmergencyStopped);
     }
 
     // ══════════════════════════════════════════════════════════════
