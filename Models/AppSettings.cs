@@ -902,7 +902,19 @@ public class AppSettings
                 Rules ??= DefaultRules();
                 string json;
                 lock (Rules)
-                    json = JsonSerializer.Serialize(this, new JsonSerializerOptions
+                    // 自检期间只允许写沙箱设置文件：审计发现的真实风险 —— 只要有人把 HEXA_SETTINGS_PATH
+        // 指向真实 settings.json 跑一次自检，那一节会把"出厂默认值"写进去，用户配置就被覆盖了。
+        if (Environment.GetEnvironmentVariable("HEXA_SELFTEST") is { Length: > 0 })
+        {
+            string? selfTestPath = Environment.GetEnvironmentVariable("HEXA_SETTINGS_PATH");
+            if (selfTestPath is null || !selfTestPath.Contains("hexa-selftest", StringComparison.OrdinalIgnoreCase))
+            {
+                AppLogger.Warn("自检运行中：设置文件不在沙箱内，本次跳过写盘（保护用户配置）");
+                return false;
+            }
+        }
+
+        json = JsonSerializer.Serialize(this, new JsonSerializerOptions
         {
             WriteIndented = true,
             NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals,
