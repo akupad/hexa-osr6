@@ -1561,7 +1561,7 @@ public sealed class AiAssistantService
         }
         int generation = Volatile.Read(ref _speakGeneration);
         string clean = CleanForTts(text);
-        string tmp = Path.Combine(Path.GetTempPath(), $"helix_tts_{Guid.NewGuid():N}.mp3");
+        string tmp = Path.Combine(Path.GetTempPath(), $"hexa_tts_{Guid.NewGuid():N}.mp3");
         try
         {
             if (await GenerateEdgeTtsAsync(clean, tmp).ConfigureAwait(false) && File.Exists(tmp))

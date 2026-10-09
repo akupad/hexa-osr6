@@ -19,3 +19,14 @@ bridge-trace.log
 .vs/
 *.user
 *.suo
+
+# 发布脚本的暂存目录（实际落在仓库父目录，这里也挡一层）
+_dist_hexa_new/
+
+# 编辑器/系统临时文件
+.idea/
+*.swp
+Thumbs.db
+
+# 面向 AI 的内部需求书（不进公开仓库）
+docs/dev/

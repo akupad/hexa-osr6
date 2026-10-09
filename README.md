@@ -50,6 +50,16 @@ $env:HEXA_SELFTEST="$env:TEMP\hexa-selftest.txt"; dotnet run --project Hexa.cspr
 | 界面写「输出已锁定」 | 同上：点侧栏「⬆ 全部归中」（会先问一次），它会解除急停并重新使能输出 |
 | 游戏连上了但设备不动 | 见「游玩 → 游戏桥」面板的指令监视：如果游戏只发 VibrateCmd，本机没有振动附件；换成发 LinearCmd/RotateCmd 的内容，或到测试台开「接收原始 TCode」走 OSR-TCode |
 
+## 画面跟随要先下模型
+
+「画面跟随」用的是本机 ONNX 推理，**仓库里不含模型**：第一次用得在「测试台 → 画面信号」里点「下载模型」（识别模型与姿态模型分别下，几 MB～几十 MB）。没下模型时它会退化成手工特征判断，不是坏了。
+
+⚠️ **许可提醒**：姿态模型用的是 `Xenova/yolov8n-pose`，其上游（Ultralytics YOLOv8）权重默认 **AGPL-3.0**；本项目不随仓库分发该权重，由你在界面上按需下载，用于闭源/商业场景请自行替换。详见 `THIRD-PARTY-LICENSES.md`。
+
+## 适用人群
+
+本软件用于驱动成人向互动设备（六轴机械臂 / 线性设备），包含 18+ 用途。请在合法合规、自愿的前提下使用。
+
 ## 已知限制（也正是想请大家帮忙的地方）
 
 1. **设备档案写死在代码里**：轴名、引脚、设备名（`OSR6 6-Axis`）目前是硬编码的，只支持 TCode v0.3 的位置舵机设备。**最想要的一个 PR：把设备参数抽成可配置的「设备档案」**，这样别人的机器也能用。
@@ -74,7 +84,7 @@ $env:HEXA_SELFTEST="$env:TEMP\hexa-selftest.txt"; dotnet run --project Hexa.cspr
 
 ## 许可
 
-MIT License，见 `LICENSE`。第三方协议与素材的归属见各文件头部注释。
+MIT License，见 `LICENSE`；第三方作品（含 SR6 网格与运动学来自 osr-emu）的版权声明见 `THIRD-PARTY-LICENSES.md`。
 
 ## 目录结构
 

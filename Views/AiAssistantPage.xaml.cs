@@ -259,7 +259,7 @@ public partial class AiAssistantPage : Page
             Title      = "保存人格 JSON",
             Filter     = "人格卡 JSON (*.json)|*.json|所有文件 (*.*)|*.*",
             DefaultExt = ".json",
-            FileName   = $"helix-persona-{personaId}-{DateTime.Now:yyyyMMdd-HHmm}.json",
+            FileName   = $"hexa-persona-{personaId}-{DateTime.Now:yyyyMMdd-HHmm}.json",
         };
         if (dlg.ShowDialog() != true) return;
         try

@@ -282,7 +282,7 @@ try
         !GameTelemetryProtocol.TryParseTCode(
             System.Text.Encoding.ASCII.GetBytes("L09999I100 R00000I200"), changedTcodeFrame.Axes!, out _));
 
-    string detectorRoot = Path.Combine(Path.GetTempPath(), "helix-engine-detector-" + Guid.NewGuid().ToString("N"));
+    string detectorRoot = Path.Combine(Path.GetTempPath(), "hexa-engine-detector-" + Guid.NewGuid().ToString("N"));
     try
     {
         string gameRoot = Path.Combine(detectorRoot, "RpgGame");
