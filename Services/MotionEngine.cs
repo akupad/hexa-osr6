@@ -766,7 +766,12 @@ public sealed class MotionEngine : IDisposable
 
     // ── 进入模式的第一帧（模式切换不跳变）───────────────────────────
     /// <summary>进入模式后的第一帧还没 dispatch：各 Start* 置位，被该模式的第一次 dispatch 消费一次。</summary>
-    private bool _blendInPending;
+        /// <summary>
+    /// 「进入模式的第一帧要用长插值滑进去」的标记。用 int 而不是 bool：它被启动路径（持 _stateLock）
+    /// 与 tick 线程（TakeBlendInSeconds，在进锁之前求值）同时读写，标成 int 才能用 Volatile/Interlocked
+    /// 做无锁原子访问——加锁会在 tick 路径上引入新的锁顺序风险。
+    /// </summary>
+    private int _blendInPending;
 
     /// <summary>任一轴与当前输出姿态相差超过它，就认为「离新模式的起始姿态很远」。</summary>
     private const double BlendInThreshold = 12.0;
@@ -845,7 +850,7 @@ public sealed class MotionEngine : IDisposable
                 // ② StopAllLocked 会递增 generation：所有旧 tick / 旧 dispatch 立刻失效，
                 //    不会再有帧盖掉这次混合（同时也打断上一次没跑完的缓降 / 混合）。
                 if (stoppedMode) StopAllLocked();
-                _blendInPending = false;                // 混合接管进入过渡，作废挂起的「第一帧长插值」
+                Volatile.Write(ref _blendInPending, 0);                // 混合接管进入过渡，作废挂起的「第一帧长插值」
                 generation = ++_generation;             // 这次混合自己的 generation
             }
             // ③ 耗时 / IO 不放锁内：DSTOP 让设备停在当前位置，正好与刚记下的起点姿态对齐。
@@ -882,7 +887,7 @@ public sealed class MotionEngine : IDisposable
                 if (!CanRun) return;
                 fromPose = GetLastOutputSnapshot();     // 从哪个姿态开始缓降
                 StopAllLocked();                        // 停掉正在跑的模式（缓降自己接管剩下的帧）
-                _blendInPending = false;
+                Volatile.Write(ref _blendInPending, 0);
                 generation = ++_generation;
             }
         }
@@ -1038,8 +1043,7 @@ public sealed class MotionEngine : IDisposable
     /// </summary>
     private double TakeBlendInSeconds(IReadOnlyList<double> rawTarget, double deltaSeconds)
     {
-        if (!_blendInPending) return deltaSeconds;
-        _blendInPending = false;
+        if (Interlocked.Exchange(ref _blendInPending, 0) == 0) return deltaSeconds;
         if (!CanRun) return deltaSeconds;
 
         double[] current = GetLastOutputSnapshot();
@@ -1090,7 +1094,7 @@ public sealed class MotionEngine : IDisposable
             _silenceHold = false;
             _silenceMs = 0;
             ResetComfortEnvelope();
-            _blendInPending = true;     // 第一帧：离当前姿态远就长插值滑进去（见 TakeBlendInSeconds）
+            Volatile.Write(ref _blendInPending, 1);     // 第一帧：离当前姿态远就长插值滑进去（见 TakeBlendInSeconds）
             long generation = ++_generation;
             _autoSequencer.Reset(pattern, Speed, ActiveComfortProfile);
             AutoBehaviorHeld = false;
@@ -1258,7 +1262,7 @@ public sealed class MotionEngine : IDisposable
             _strokeLastTick = Stopwatch.GetTimestamp();
             StrokeRunning = true;
             ResetComfortEnvelope();
-            _blendInPending = true;
+            Volatile.Write(ref _blendInPending, 1);
             long generation = ++_generation;
             _strokeTimer = MakeTimer(16, generation, StrokeTick);
         }
@@ -1294,7 +1298,7 @@ public sealed class MotionEngine : IDisposable
             CustomRunning = true;
             MarkAllWavesDirty();
             ResetComfortEnvelope();
-            _blendInPending = true;
+            Volatile.Write(ref _blendInPending, 1);
             long generation = ++_generation;
             _customTimer = MakeTimer(20, generation, CustomTick);
         }
@@ -1348,7 +1352,7 @@ public sealed class MotionEngine : IDisposable
             _teaseStartTs = Stopwatch.GetTimestamp();
             _teaseLastTick = Stopwatch.GetTimestamp();
             ResetComfortEnvelope();
-            _blendInPending = true;
+            Volatile.Write(ref _blendInPending, 1);
             long generation = ++_generation;
             _teaseTimer = MakeTimer(20, generation, TeaseTick);
         }
@@ -1396,7 +1400,7 @@ public sealed class MotionEngine : IDisposable
     private void StopAllLocked()
     {
         _generation++;
-        _blendInPending = false;     // 没有模式在跑，也就没有「进入模式的第一帧」
+        Volatile.Write(ref _blendInPending, 0);     // 没有模式在跑，也就没有「进入模式的第一帧」
         InterruptEase();             // 停掉一切时也打断没跑完的缓降 / 混合（急停走的正是这条路）
         AutoRunning = false;
         StrokeRunning = false;
