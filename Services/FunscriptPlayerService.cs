@@ -232,6 +232,9 @@ public sealed class FunscriptPlayerService : IDisposable
             _fillReleaseSeconds = 0;
         }
         _engine.SetScriptPlaying(false);
+        // 播放中直接换脚本（没先 Stop）时也要交还控制权，否则「脚本播放」这个持有者永久留着，
+        // 声音响应/画面跟随会永远让位——现象就是"什么都动不了"，只能重启软件。
+        _engine.ReleaseDirectInput(ScriptInputOwner);
         LoadedFile = path;
         AppLogger.Info($"[Funscript] 已加载 {Path.GetFileName(path)}，持续 {set.DurationMs} ms，{set.Tracks.Count} 轨");
         RaiseStatusChanged();

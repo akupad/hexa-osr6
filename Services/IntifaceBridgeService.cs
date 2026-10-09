@@ -1202,9 +1202,14 @@ public sealed class IntifaceBridgeService : IDisposable
     private static bool IsLocalOrigin(string origin)
     {
         if (string.IsNullOrWhiteSpace(origin)) return true;
-        return origin.Contains("127.0.0.1", StringComparison.Ordinal)
-            || origin.Contains("localhost", StringComparison.OrdinalIgnoreCase)
-            || origin.StartsWith("file://", StringComparison.OrdinalIgnoreCase);
+        // 以前是子串匹配：域名里含 127.0.0.1 / localhost 就能过（例如 http://127.0.0.1.evil.com），
+        // 任意网页因此能连上桥并驱动设备。现在解析出主机名做精确比对。
+        if (origin.StartsWith("file://", StringComparison.OrdinalIgnoreCase)) return true;
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out Uri? parsed)) return false;
+        string host = parsed.Host.Trim('[', ']');
+        return host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || host.Equals("127.0.0.1", StringComparison.Ordinal)
+            || host.Equals("::1", StringComparison.Ordinal);
     }
 
     private static string ComputeAccept(string key)
@@ -1328,6 +1333,12 @@ internal static class IntifaceProtocol
             else if (root.ValueKind == JsonValueKind.Object)
             {
                 ProcessOne(root, mode, vibrateMode, responses, onAction, onNote);
+            }
+            else
+            {
+                // 合法 JSON但不是消息（5 / "x" / null / true）：以前两个分支都不进 → 静默丢弃，
+                // 违反项目自己的不变量「每种意图要么处理、要么明确拒绝」。
+                responses.Add("[{\"Error\":{\"Id\":0,\"ErrorMessage\":\"Unhandled message type\",\"ErrorCode\":3}}]");
             }
         }
         catch (Exception ex)
@@ -1459,10 +1470,10 @@ internal static class IntifaceProtocol
                     uint stopIndex = value.TryGetProperty("DeviceIndex", out JsonElement sdi) && sdi.TryGetUInt32(out uint parsedSdi)
                         ? parsedSdi : 0u;
                     onAction(IsOneDevice(mode) ? new StopAction() : new StopDeviceAction(stopIndex));
-                    break;
-                }
+                    // 必须回 Ok：以前 break 写在前面，这一行永远执行不到（等 Ok 的客户端会超时）。
                     responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
                     break;
+                }
                 case "Ping":
                     responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
                     break;

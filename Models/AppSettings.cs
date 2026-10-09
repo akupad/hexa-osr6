@@ -535,7 +535,13 @@ public class AppSettings
                 return fresh;
             }
             var json = File.ReadAllText(CfgPath);
-            var opts = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            // 允许 Infinity/NaN 这类字面量：某些数值设置一旦变成 ±Infinity，默认序列化会抛
+        // ArgumentException（实测 app.log 里 122 次"设置保存失败"），用户改的所有设置就全丢了。
+        var opts = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals,
+        };
             var cfg = JsonSerializer.Deserialize<AppSettings>(json, opts) ?? new AppSettings();
             cfg.Normalize();
             return cfg;
@@ -896,7 +902,11 @@ public class AppSettings
                 Rules ??= DefaultRules();
                 string json;
                 lock (Rules)
-                    json = JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true });
+                    json = JsonSerializer.Serialize(this, new JsonSerializerOptions
+        {
+            WriteIndented = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowNamedFloatingPointLiterals,
+        });
                 File.WriteAllText(tempPath, json);
                 File.Move(tempPath, CfgPath, overwrite: true);
                 return true;

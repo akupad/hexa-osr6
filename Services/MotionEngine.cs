@@ -709,6 +709,7 @@ public sealed class MotionEngine : IDisposable
 
     public bool TrySendDirectAxes(double[] values)
     {
+        if (values is null) return false;
         if (!CanAcceptDirectInput) return false;
         var safe = values.Take(6).Select(value => Math.Clamp(value, 0, 100)).ToArray();
         if (safe.Length < 6) return false;
@@ -2082,9 +2083,28 @@ public sealed class MotionEngine : IDisposable
         slot = null;
     }
 
+    /// <summary>上一拍看门狗是否看到"正在跑"（用来给刚起跑的那一拍一个宽限）。</summary>
+    private bool _watchdogSawRunning;
+
     private void WatchdogTick()
     {
-        if (!IsRunning || !CanRun) return;
+        if (!IsRunning || !CanRun)
+        {
+            _watchdogSawRunning = false;
+            return;
+        }
+
+        // 刚起跑：这一拍只把时间戳重置，不判超时。
+        // 否则任何"非调度器路径先开始驱动"的场景（游戏桥断开后规则引擎接管、遥测接管、Home/TryArm…）
+        // 都会因为"第一个 tick 还没到"被判成 750ms 未刷新 → 锁存急停。
+        // 实测证据：30 次看门狗急停里 29 次，其前 15 秒内都有"游戏桥客户端会话异常"。
+        if (!_watchdogSawRunning)
+        {
+            _watchdogSawRunning = true;
+            Volatile.Write(ref _lastSchedulerTickAt, Stopwatch.GetTimestamp());
+            return;
+        }
+
         long lastTick = Volatile.Read(ref _lastSchedulerTickAt);
         if (lastTick <= 0 || Stopwatch.GetElapsedTime(lastTick) < TimeSpan.FromMilliseconds(750)) return;
         AppLogger.Error("运动调度超过 750ms 未刷新，已触发锁存急停");

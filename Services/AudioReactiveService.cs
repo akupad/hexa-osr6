@@ -231,6 +231,7 @@ public sealed class AudioReactiveService : IDisposable
 
     public void Refresh()
     {
+        if (_disposed) return;   // Dispose 之后又被 UI 调一次 → 会重建采集与定时器，且没人再释放
         if (ShouldCapture())
         {
             // 设备切换/重启用：保留当前强度与自动动作，避免切设备时产生可见的“闪断”落差。
@@ -245,6 +246,7 @@ public sealed class AudioReactiveService : IDisposable
 
     private void StartCapture()
     {
+        if (_disposed) return;   // 同上：已销毁的服务不能再重建采集（否则它会继续往设备下发指令）
         lock (_lock)
         {
             if (_capture != null) return;
