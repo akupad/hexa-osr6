@@ -1,0 +1,21 @@
+# 构建产物
+bin/
+obj/
+dist_hexa/
+dist_hexa_prev_*/
+
+# 用户数据（设备预设、设置、日志）—— 这些是每台机器自己的东西，绝不入库
+presets.json
+settings.json
+*.log
+*.log.1
+bridge-trace.log
+*.corrupt.bak
+
+# 我的本地备份
+*.bak-*
+
+# IDE
+.vs/
+*.user
+*.suo

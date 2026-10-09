@@ -1,0 +1,121 @@
+<UserControl x:Class="Hexa.Views.AxisPreview3D"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:h="http://helix-toolkit.org/wpf"
+             Background="Transparent">
+    <!-- 实时六轴 3D 预览：模型是 osr-emu（MIT）那台带完整逆运动学的真 SR6
+         （底座 + 盖板 + 4 主臂 + 4 连杆 + 8 球头轴承 + 左右俯仰臂 + 俯仰连杆 + 接收器 + 旋转机头），
+         由 code-behind 装配并逐帧驱动；相机控制交给 HelixViewport3D 内置的 CameraController。
+
+         坐标：模型原生坐标系是 **Z 轴向上**（底座 z≈0、接收器 z≈212mm、连杆沿 +Z 伸向接收器），
+         所以 ModelUpDirection 用 0,0,1，相机也在 code-behind 里按包围盒自动取景。
+         （官网 osr-emu 那套「整组绕 X 轴转 −90° + camera.up=(0,0,1)」实测会把机器摆成侧躺，
+         这里不用。）
+
+         交互：
+           左键拖动   转的是「你的视角」——相机绕设备中心 360° 自由转，设备本身不动
+                      （内置相机旋转已关闭 IsRotationEnabled=False，由 code-behind 的
+                      Preview 鼠标事件接管；滚轮缩放/平移之后的距离不会被拖动弹回）
+           滚轮       缩放
+           Shift+左键 平移（PanGesture=Shift+LeftClick）
+           中键拖动   平移（PanGesture2=MiddleClick）
+           Ctrl+右键  拖动缩放（ZoomGesture=Control+RightClick）
+           「重置视角」按钮 = 相机回默认机位（设备姿态一直由轴值决定，不会被视角操作改变）
+         姿态参照：地面网格 GridLinesVisual3D（模型坐标 XY 平面）+ 右上角坐标轴。 -->
+    <Border x:Name="Root"
+            Background="{StaticResource Surface}"
+            BorderBrush="{StaticResource Border}"
+            BorderThickness="1"
+            CornerRadius="8"
+            ClipToBounds="True">
+        <Grid>
+            <h:HelixViewport3D x:Name="View3D"
+                               ClipToBounds="True"
+                               ModelUpDirection="0,0,1"
+                               CameraMode="Inspect"
+                               CameraRotationMode="Turntable"
+                               IsRotationEnabled="False"
+                               PanGesture="Shift+LeftClick"
+                               PanGesture2="MiddleClick"
+                               ZoomGesture="Control+RightClick"
+                               IsHeadLightEnabled="False"
+                               IsInertiaEnabled="True"
+                               IsPanEnabled="True"
+                               IsZoomEnabled="True"
+                               ZoomExtentsWhenLoaded="False"
+                               RotationSensitivity="1.0"
+                               ZoomSensitivity="1.0"
+                               ShowViewCube="False"
+                               ShowCameraTarget="False"
+                               ShowCoordinateSystem="True"
+                               CoordinateSystemHorizontalPosition="Right"
+                               CoordinateSystemVerticalPosition="Top"
+                               CoordinateSystemWidth="72"
+                               CoordinateSystemHeight="72"
+                               CoordinateSystemLabelForeground="{StaticResource Faint}">
+                <!-- 背景：中心略亮的径向渐变，让机器从深色底里浮出来 -->
+                <h:HelixViewport3D.Background>
+                    <RadialGradientBrush GradientOrigin="0.5,0.44" Center="0.5,0.44"
+                                         RadiusX="0.72" RadiusY="0.85">
+                        <GradientStop Color="#FF232B33" Offset="0"/>
+                        <GradientStop Color="#FF151A1F" Offset="1"/>
+                    </RadialGradientBrush>
+                </h:HelixViewport3D.Background>
+                <!-- 地面网格：模型坐标的 XY 平面（Normal=Z），单位毫米 -->
+                <h:GridLinesVisual3D Length="600" Width="600"
+                                     MinorDistance="100" MajorDistance="100"
+                                     Thickness="1.0"
+                                     Center="0,0,0.5"
+                                     Normal="0,0,1" LengthDirection="0,1,0"
+                                     Fill="#FF1D252C"/>
+            </h:HelixViewport3D>
+
+            <!-- 左上角角标 -->
+            <TextBlock Text="3D 六轴预览" FontSize="9"
+                       Foreground="{StaticResource Faint}"
+                       Margin="8,6,0,0"
+                       IsHitTestVisible="False"
+                       HorizontalAlignment="Left" VerticalAlignment="Top"/>
+
+            <!-- 底部：左下实时数值 + 右下操作提示合并成一行两列，窄视口下各自省略号截断 -->
+            <Grid Margin="8,0,8,6" IsHitTestVisible="False"
+                  HorizontalAlignment="Stretch" VerticalAlignment="Bottom">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <!-- x:Name 不能改：AxisPreview3D.xaml.cs 在刷新它 -->
+                <TextBlock x:Name="LiveLabel" Grid.Column="0" Text="L0 50  L1 50  L2 50&#10;R0 50  R1 50  R2 50"
+                           FontSize="9" FontFamily="Consolas,Cascadia Mono,monospace"
+                           Foreground="{StaticResource Muted}"
+                           Margin="0,0,8,0"
+                           TextTrimming="CharacterEllipsis"
+                           HorizontalAlignment="Left" VerticalAlignment="Bottom"/>
+                <TextBlock Grid.Column="1" Text="左键拖动转视角 · 滚轮缩放 · Shift 拖动平移"
+                           FontSize="9"
+                           Foreground="{StaticResource Faint}"
+                           Margin="0,0,0,20"
+                           TextTrimming="CharacterEllipsis"
+                           HorizontalAlignment="Right" VerticalAlignment="Bottom"/>
+            </Grid>
+
+            <!-- 顶部居中：数据来源提示（右上角让给 HelixViewport3D 的坐标轴） -->
+            <TextBlock x:Name="StatusLabel" Text="实时输出"
+                       FontSize="9"
+                       Foreground="{StaticResource Faint}"
+                       Margin="0,6,0,0"
+                       IsHitTestVisible="False"
+                       HorizontalAlignment="Center" VerticalAlignment="Top"/>
+
+            <!-- 右下角：重置视角（调用 HelixViewport3D 内置复位，中键双击同效） -->
+            <Button x:Name="ResetViewButton"
+                    Content="重置视角"
+                    Style="{StaticResource BtnSecondary}"
+                    Padding="6,2" FontSize="10"
+                    Margin="0,0,8,6"
+                    ToolTip="设备摆正 + 相机回默认机位"
+                    HorizontalAlignment="Right" VerticalAlignment="Bottom"
+                    Click="ResetViewButton_Click"/>
+        </Grid>
+    </Border>
+</UserControl>

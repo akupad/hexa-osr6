@@ -1,0 +1,186 @@
+<Page x:Class="Hexa.Views.ManualControlPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:views="clr-namespace:Hexa.Views"
+      Background="{StaticResource Bg}" Title="手动动轴">
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <!-- 最大化时限制内容宽度并居中：不加的话滑杆会被拉成横跨整屏的长条 -->
+        <StackPanel Margin="24,18,24,26" MaxWidth="1280" HorizontalAlignment="Stretch">
+
+            <!-- 标题 -->
+            <TextBlock Text="🕹 手动动轴" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,3"/>
+            <TextBlock Text="拖左边的滑杆，六根轴就跟着你的手走，右边那台 3D 模型同时动。只在这个页面有效：一离开页面、或者取消「允许手动动轴」，设备立刻停手、停在原地。"
+                       Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,8"
+                       TextWrapping="Wrap"/>
+
+            <!-- ══ 主体：左 = 安全开关 + 六根滑杆，右 = 实时 3D（窄窗自动换排法，见 code-behind）══ -->
+            <Grid x:Name="MainGrid">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition x:Name="LeftCol" Width="380"/>
+                    <ColumnDefinition x:Name="GapCol" Width="14"/>
+                    <ColumnDefinition x:Name="RightCol" Width="*" MinWidth="260"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel x:Name="LeftStack" Grid.Row="0" Grid.Column="0" VerticalAlignment="Top">
+
+                    <!-- ══ 安全卡：先开开关，设备才会听你的 ══ -->
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock Text="🔒 先开开关，设备才会听你的" FontSize="13" FontWeight="SemiBold"
+                                       Margin="0,0,0,8"/>
+
+                            <CheckBox x:Name="AllowCheck" Content="允许手动动轴" FontSize="12"
+                                      ToolTip="不勾的话滑杆是灰的，本页一条指令都不会发给设备"
+                                      Checked="AllowCheck_Changed" Unchecked="AllowCheck_Changed"/>
+                            <TextBlock Text="默认是关的，怕你误碰。勾上之后滑杆才推得动设备；一取消勾选、离开这个页面、或者按急停，都会立刻停手 —— 设备就停在原地，不会自己跑回中间。"
+                                       FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,5,0,0"/>
+
+                            <!-- 三行状态：设备连接 / 安全（急停·归中）/ 现在谁在驱动 -->
+                            <Border Background="{StaticResource Surface}" CornerRadius="6" Padding="9,6"
+                                    Margin="0,9,0,0">
+                                <StackPanel>
+                                    <TextBlock x:Name="ConnectionLine" Text="设备：检查中…" FontSize="11"
+                                               TextWrapping="Wrap"/>
+                                    <TextBlock x:Name="SafetyLine" Text="安全：检查中…" FontSize="11"
+                                               TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                    <TextBlock x:Name="DriverLine" Text="现在在驱动设备的是：—" FontSize="11"
+                                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                               Margin="0,3,0,0"/>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- 为什么现在不能动（能动手时整条收起，不白占地方） -->
+                            <Border x:Name="BlockedBanner" Visibility="Collapsed" Margin="0,9,0,0"
+                                    Background="{StaticResource WarningSoft}"
+                                    BorderBrush="{StaticResource Warning}" BorderThickness="1"
+                                    CornerRadius="6" Padding="8,6">
+                                <TextBlock x:Name="BlockedText" Text="" FontSize="11"
+                                           Foreground="{StaticResource Warning}" TextWrapping="Wrap"/>
+                            </Border>
+
+                            <Button x:Name="EStopBtn" Content="⛔ 立刻急停" Height="32" Margin="0,10,0,0"
+                                    Style="{StaticResource BtnDanger}" HorizontalAlignment="Stretch"
+                                    ToolTip="一键停住并锁死设备。要再动它，得到侧栏点「⬆ 全部归中」解锁（会先问你一次）"
+                                    Click="EStopBtn_Click"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ══ 六根轴的滑杆 ══ -->
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,6">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="六根轴" FontSize="13" FontWeight="SemiBold"
+                                           VerticalAlignment="Center"/>
+                                <TextBlock x:Name="AxisHint" Grid.Column="1" Text="" FontSize="10"
+                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                           TextWrapping="Wrap" Margin="10,0,8,0"/>
+                                <Button x:Name="CenterBtn" Grid.Column="2" Content="⟲ 全部归中" Height="28"
+                                        FontSize="11" Padding="10,0" Style="{StaticResource BtnSecondary}"
+                                        ToolTipService.ShowOnDisabled="True"
+                                        ToolTip="六根轴一起回到正中间（5000）。走安全限速、不猛冲，也不会弹窗问你"
+                                        Click="CenterBtn_Click"/>
+                            </Grid>
+                            <TextBlock Text="0 = 一端，9999 = 另一端，5000 = 正中间。拖的时候设备跟着走，右边的数字就是现在发出去的值。"
+                                       FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,0,0,8"/>
+                            <StackPanel x:Name="AxisRows"/>
+                        </StackPanel>
+                    </Border>
+
+                    <!-- ══ 〰 正弦发生器：让设备自己一直摆，不用手一直拖 ══
+                         MaxWidth 420 + 内容 400：滑杆不会被拉成横条（窄窗下也守着这条红线）。
+                         六根轴的幅度默认收起：平铺要多占约 180px，默认窗口下会把「开始摆动」推到屏幕外。 -->
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0" MaxWidth="420"
+                            HorizontalAlignment="Left">
+                        <StackPanel MaxWidth="400" HorizontalAlignment="Left">
+                            <TextBlock Text="〰 让它自己摆（正弦）" FontSize="13" FontWeight="SemiBold"
+                                       Margin="0,0,0,3"/>
+                            <TextBlock Text="勾上「允许手动动轴」再点「开始摆动」，设备就按你设的幅度一直来回摆 —— 不用手一直拖着。"
+                                       FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,0,0,8"/>
+
+                            <!-- 幅度：默认收起（进阶），摘要里写着现在摆的是哪几根轴 -->
+                            <Button x:Name="SineFoldBtn" Content="▸ 每根轴的幅度（进阶）" FontSize="11"
+                                    Height="26" Padding="8,0" HorizontalAlignment="Stretch"
+                                    Style="{StaticResource BtnSecondary}"
+                                    ToolTip="展开后可以给每根轴单独设摆动幅度：0% = 这根轴不参与"
+                                    Click="SineFold_Click"/>
+                            <TextBlock x:Name="SineFoldSummary" Text="" FontSize="10"
+                                       Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,4,0,0"/>
+                            <StackPanel x:Name="SineFoldBody" Visibility="Collapsed" Margin="0,4,0,0">
+                                <TextBlock Text="每根轴摆多大：0% = 这根轴不参与（不动），100% = 从一端摆到另一端。"
+                                           FontSize="10" Foreground="{StaticResource Muted}"
+                                           TextWrapping="Wrap" Margin="0,0,0,4"/>
+                                <StackPanel x:Name="AmplitudeRows"/>
+                            </StackPanel>
+
+                            <!-- 速度：每秒摆多少个来回 -->
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="速度" FontSize="11" Foreground="{StaticResource Muted}"
+                                           VerticalAlignment="Center" Margin="0,0,8,0"/>
+                                <Slider x:Name="SpeedSlider" Grid.Column="1" Minimum="0.05" Maximum="2"
+                                        Value="0.5" SmallChange="0.05" LargeChange="0.25"
+                                        VerticalAlignment="Center"
+                                        ToolTip="每秒摆多少个来回（次/秒）：0.05 = 慢悠悠，2.0 = 比较快"
+                                        ValueChanged="SpeedSlider_ValueChanged"/>
+                                <TextBlock x:Name="SpeedReadout" Grid.Column="2" Text="0.50 次/秒" FontSize="11"
+                                           FontFamily="Consolas,Cascadia Mono,monospace"
+                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                           MinWidth="70" TextAlignment="Right" Margin="8,0,0,0"/>
+                            </Grid>
+
+                            <Button x:Name="SineToggleBtn" Content="▶ 开始摆动" Height="32" Margin="0,8,0,0"
+                                    Style="{StaticResource BtnPrimary}" HorizontalAlignment="Stretch"
+                                    ToolTipService.ShowOnDisabled="True"
+                                    ToolTip="开始后设备按上面的幅度一直摆，直到你按「■ 停止」、取消勾选或离开这个页面"
+                                    Click="SineToggle_Click"/>
+                            <TextBlock x:Name="SineState" Text="" FontSize="11"
+                                       Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,6,0,0"/>
+                            <TextBlock Text="它会一直摆到你按停为止；幅度 0 的轴不动；离开这个页面（或取消勾选、按急停）会自动停手，停在原地不回中间。"
+                                       FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <!-- ══ 右栏：实时 3D 模型 ══ -->
+                <Border x:Name="RightCard" Grid.Row="0" Grid.Column="2" Style="{StaticResource Card}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                            <RowDefinition Height="Auto"/>
+                        </Grid.RowDefinitions>
+                        <StackPanel Margin="0,0,0,8">
+                            <TextBlock Text="🧊 实时 3D 模型" FontSize="13" FontWeight="SemiBold"/>
+                            <TextBlock Text="下面就是设备真实的姿态，拖滑杆它跟着动。鼠标左键拖动可以换角度看。"
+                                       FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,3,0,0"/>
+                        </StackPanel>
+                        <views:AxisPreview3D x:Name="ManualPreview" Grid.Row="1" MinHeight="300"/>
+                        <TextBlock x:Name="RawValues" Grid.Row="2" Text="" FontSize="11"
+                                   Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                   FontFamily="Consolas,Cascadia Mono,monospace" Margin="0,8,0,0"/>
+                    </Grid>
+                </Border>
+            </Grid>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>Hexa</AssemblyName>
+    <RootNamespace>Hexa</RootNamespace>
+    <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="HelixToolkit.Wpf" Version="3.1.2" />
+    <!-- 本地画面识别（Services/NsfwClassifier.cs）：只在本机推理，不联网、不上传。
+         1.30.0 = 实测可用版本（win-x64 原生 onnxruntime.dll 随包一起发布；发布后必须核对它真的在包根目录）。 -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
+    <PackageReference Include="NAudio" Version="3.1.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.12" />
+    <PackageReference Include="System.Speech" Version="10.0.12" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="Assets\icon.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+  <!-- SR6 真实机械模型（osr-emu 移植，MIT）：网格以嵌入资源随程序发布，
+       AxisPreview3D 首次创建时解析一次并缓存，多个预览控件共享同一份冻结几何。 -->
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\Models\Sr6\*.obj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
+    <EmbeddedResource Remove="tests\**\*" />
+    <None Remove="tests\**\*" />
+  </ItemGroup>
+</Project>

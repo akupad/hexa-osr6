@@ -1,0 +1,525 @@
+<Page x:Class="Hexa.Views.ScriptLibraryPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      Background="{StaticResource Bg}" Title="脚本库">
+    <!-- 纵向滚动只在窗口真的不够高时才出现（MinHeight 绑视口高度：够高时列表照样撑满）；
+         横向一律关掉 —— 不允许出现「要横向滚才能看到另一半」的局面。
+         上下的留白放在 ScrollViewer.Padding 上，这样 MinHeight 和视口一样高，内容装得下时不会白冒一条滚动条。
+         页面只有 4 行：页头 / 一张「播放 + 播放增强 + 从音频生成」卡 / 脚本列表（* 主体）/ 一行页脚。
+         默认窗口（约 970×558）下不出现纵向滚动条，列表吃掉剩下的全部高度并自己滚。 -->
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                  Padding="0,14,0,20">
+    <!-- MaxWidth：窗口很宽时内容不再被拉成横跨整屏的长条（正文只会更宽，不会更窄） -->
+    <Grid Margin="24,0,24,0" MaxWidth="1080"
+          MinHeight="{Binding ViewportHeight, RelativeSource={RelativeSource AncestorType=ScrollViewer}}">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- 0 页头 -->
+            <RowDefinition Height="Auto"/>  <!-- 1 播放 + 播放增强 + 从音频生成（合并成一张卡） -->
+            <RowDefinition Height="*"/>     <!-- 2 脚本列表（页面主体） -->
+            <RowDefinition Height="Auto"/>  <!-- 3 页脚一行 -->
+        </Grid.RowDefinitions>
+
+        <!-- ══ 0 页头：标题 + 一行说明（原来三行压成一行） ═══════════ -->
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock Text="📚 脚本库" FontSize="21" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <TextBlock Grid.Column="1" Margin="12,0,0,3" VerticalAlignment="Bottom"
+                       Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap"
+                       Text="库里的脚本可以直接播放（会驱动设备）；删除只删库内副本，不动原文件。编排工程要先到「脚本制作」页导出成 funscript，才会出现在下面的列表里。"/>
+            <!-- 去社区找脚本：只负责把搜索页开好，不在后台抓取 —— 社区的使用条款明确禁止程序自动访问，
+                 所以这里刻意不做"自动搜下"，只把你送到搜索页，剩下的点击由你自己来。 -->
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                <TextBox x:Name="CommunitySearchBox" Width="180" Height="28" FontSize="12"
+                         VerticalContentAlignment="Center" Margin="0,0,6,0"
+                         ToolTip="填视频名 / 作品名（中英文都行），点右边按钮去社区搜配套脚本"
+                         KeyDown="CommunitySearchBox_KeyDown"/>
+                <Button x:Name="CommunitySearchBtn" Content="🔍 去社区搜" Height="28" FontSize="12"
+                        Padding="10,0" Style="{StaticResource BtnSecondary}" Click="CommunitySearch_Click"
+                        ToolTip="在浏览器里打开社区的搜索页。不自动抓取、不自动下载 —— 社区条款禁止程序自动访问，这也保证了你的账号不会被封"/>
+            </StackPanel>
+        </Grid>
+
+        <!-- ══ 1 播放 + 播放增强 + 从音频生成：一张卡，三段用分隔线和标题分开 ══ -->
+        <Border Grid.Row="1" Style="{StaticResource Card}" Padding="12,10" Margin="0,0,0,10">
+            <StackPanel>
+
+                <!-- ── 第 1 段：播放（在放哪个 / 放到哪 / 怎么停） ─────────── -->
+                <!-- WrapPanel：按钮总宽超过窗口时自动换行，不会把最右边的按钮挤出可视区 -->
+                <WrapPanel Margin="0,0,0,6">
+                    <TextBlock Text="▶ 播放" FontSize="13" FontWeight="SemiBold"
+                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+
+                    <Button x:Name="PlayBtn" Content="▶ 载入并播放" MinWidth="112" Height="32" FontSize="12"
+                            Style="{StaticResource BtnPrimary}" Margin="0,0,8,0" Click="Play_Click"
+                            ToolTip="载入列表里选中的脚本，从头开始播放（会让设备动起来）"/>
+                    <Button x:Name="PauseResumeBtn" Content="⏸ 暂停" Width="84" Height="32" FontSize="12"
+                            Style="{StaticResource BtnSecondary}" Margin="0,0,8,0" Click="PauseResume_Click"
+                            ToolTip="暂停 / 继续当前脚本；暂停保留进度，点「继续」从原处接着播"/>
+                    <Button x:Name="StopBtn" Content="⏹ 停止" Width="78" Height="32" FontSize="12"
+                            Style="{StaticResource BtnSecondary}" Margin="0,0,12,0" Click="Stop_Click"
+                            ToolTip="立刻停下设备，并把播放位置退回脚本开头（不会把设备推到脚本的起始姿态）"/>
+
+                    <TextBlock Text="脚本倍率" FontSize="11" Foreground="{StaticResource Faint}"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Button x:Name="RateMinusBtn" Content="−" Width="26" Height="26" Padding="0" FontSize="14"
+                            Style="{StaticResource BtnSecondary}" VerticalAlignment="Center" Margin="0,0,4,0"
+                            Click="RateMinus_Click" ToolTip="脚本播放倍率 −0.05x（下限 0.25x，慢放）"/>
+                    <TextBlock x:Name="RateLabel" Text="1.00x" Width="46" FontSize="12" TextAlignment="Center"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                               ToolTip="脚本播放倍率：和「脚本制作 → 微调波形」的「脚本倍率」是同一个设置，这里能直接微调"/>
+                    <Button x:Name="RatePlusBtn" Content="+" Width="26" Height="26" Padding="0" FontSize="14"
+                            Style="{StaticResource BtnSecondary}" VerticalAlignment="Center"
+                            Click="RatePlus_Click" ToolTip="脚本播放倍率 +0.05x（上限 2.00x，快放）"/>
+                </WrapPanel>
+
+                <!-- 状态徽章 + 当前脚本 + 进度 + 时间 收在一行：省下的高度全留给下面的列表 -->
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*" MinWidth="60"/>
+                        <ColumnDefinition Width="*" MinWidth="90" MaxWidth="300"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Border x:Name="PlayStateBadge" Background="{StaticResource SurfaceRaised}" CornerRadius="4"
+                            Padding="8,3" VerticalAlignment="Center">
+                        <TextBlock x:Name="PlayStateText" Text="未载入脚本" FontSize="11"
+                                   Foreground="{StaticResource Muted}"/>
+                    </Border>
+                    <TextBlock x:Name="NowPlayingText" Grid.Column="1" Text="还没有载入脚本"
+                               FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                               Margin="8,0,10,0" TextTrimming="CharacterEllipsis"/>
+                    <!-- 进度条可拖动：外面套一层 18px 高的透明命中区（8px 的细条根本捏不住）。
+                         拖动期间由 code-behind 让同步循环停手，松手才交还（见 PlaybackScrub_*）。 -->
+                    <Border Grid.Column="2" Background="Transparent" Height="18" Margin="0,0,10,0"
+                            VerticalAlignment="Center" Cursor="Hand"
+                            PreviewMouseLeftButtonDown="PlaybackScrub_Start"
+                            PreviewMouseMove="PlaybackScrub_Move"
+                            PreviewMouseLeftButtonUp="PlaybackScrub_End"
+                            ToolTip="拖动可以直接跳到脚本的任意位置（会让设备动到那里）。开着「跟着播放器走」时，松手后脚本会重新对齐到播放器的位置。">
+                        <ProgressBar x:Name="PlaybackProgress" Height="8" Minimum="0" Maximum="1" Value="0"
+                                     HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                                     IsHitTestVisible="False"/>
+                    </Border>
+                    <TextBlock x:Name="PlaybackTimeText" Grid.Column="3" Text="— / —"
+                               FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                    <Button x:Name="LocateBtn" Grid.Column="4" Content="🔍 在列表中找到它" Height="24" FontSize="11"
+                            Padding="8,0" Margin="10,0,0,0" Style="{StaticResource BtnGhost}" Visibility="Collapsed"
+                            Click="Locate_Click" ToolTip="把列表滚到正在播的那一行并选中它"/>
+                </Grid>
+
+                <!-- 播放被拒 / 选中的脚本解析不了 —— 这类「看起来在播其实没动」必须写出来 -->
+                <TextBlock x:Name="PlaybackWarnText" Text="" FontSize="11" Foreground="{StaticResource Warning}"
+                           Margin="0,6,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+
+                <!-- ── 第 1.5 段：跟着播放器走（外挂从动）─────────────────────
+                     Hexa 不内嵌播放器（要拖进上百 MB 原生依赖，VR 播放器也塞不进来），
+                     改成读外部播放器的时间码、让脚本跟着它走。**默认不连**：软件不会自己去连播放器，
+                     必须用户点「连接」—— 连上才有可能让设备跟着画面动。 -->
+                <Border Height="1" Background="{StaticResource Border}" Margin="0,8,0,0"/>
+                <Grid Margin="0,8,0,6">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="▶ 跟着播放器走" FontSize="13" FontWeight="SemiBold"
+                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                    <ComboBox x:Name="MediaSyncPlayerCombo" Grid.Column="1" Width="106" Height="28" FontSize="11"
+                              VerticalAlignment="Center" Margin="0,0,8,0" SelectedIndex="0"
+                              ToolTip="选你正在用的播放器，让脚本跟着它的时间码走。需要播放器开着并且允许远程控制：mpv 要用 --input-ipc-server=\\.\pipe\mpvpipe 启动；MPC-HC/BE 要在「选项 → 播放器 → Web 界面」打开（端口 13579）；VLC 要用 --extraintf http 启动（端口 8080，不设密码）。">
+                        <ComboBoxItem Content="mpv" Tag="mpv"/>
+                        <ComboBoxItem Content="MPC-HC / BE" Tag="mpc"/>
+                        <ComboBoxItem Content="VLC" Tag="vlc"/>
+                    </ComboBox>
+                    <Button x:Name="MediaSyncConnectBtn" Grid.Column="2" Content="连接" MinWidth="62" Height="24"
+                            FontSize="11" Padding="10,0" Style="{StaticResource BtnSecondary}"
+                            VerticalAlignment="Center" Margin="0,0,10,0" Click="MediaSyncConnect_Click"
+                            ToolTip="开始读这个播放器的时间码，让脚本跟着画面走（点第二次断开）。连上之后：媒体暂停脚本也暂停、媒体快放脚本也快放、差得多就直接跳。"/>
+                    <TextBlock x:Name="MediaSyncStatusText" Grid.Column="3" Text="未连接 · 点「连接」开始跟随"
+                               FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                               TextWrapping="Wrap"/>
+                </Grid>
+
+                <!-- 偏移 + 自动匹配：全固定宽度，用 WrapPanel 换行，窄窗口也不会被横向裁掉 -->
+                <WrapPanel Margin="0,0,0,6">
+                    <TextBlock Text="时间码偏移" FontSize="11" Foreground="{StaticResource Muted}"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Slider x:Name="MediaSyncOffsetSlider" Width="150" Minimum="-5000" Maximum="5000" Value="0"
+                            SmallChange="100" LargeChange="500" VerticalAlignment="Center"
+                            ToolTip="画面和动作对不齐时调它：正值 = 脚本比画面晚一点动（设备慢半拍），负值 = 脚本早一点动。单位毫秒。"/>
+                    <TextBlock x:Name="MediaSyncOffsetLabel" Text="0 ms" Width="66" FontSize="11"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,10,0"/>
+                    <Button x:Name="MediaSyncAutoLoadBtn" Content="↻ 按文件名自动匹配脚本" Height="24" FontSize="11"
+                            Padding="8,0" Style="{StaticResource BtnSecondary}" VerticalAlignment="Center"
+                            IsEnabled="False" Click="MediaSyncAutoLoad_Click"
+                            ToolTip="在脚本库里找和播放器当前打开的文件同名的 .funscript 并载入（只载入，不播放 —— 设备要动还得点「▶ 载入并播放」）。"/>
+                </WrapPanel>
+
+                <!-- 一行提示（自动匹配的结果、拖不动的原因…）：平时收起来，不占高度 -->
+                <TextBlock x:Name="MediaSyncNoteText" Text="" FontSize="11" Foreground="{StaticResource Accent}"
+                           Margin="0,0,0,6" TextWrapping="Wrap" Visibility="Collapsed"/>
+
+                <!-- ── A-B 循环：播放到 B 自动回到 A（配合「跟着播放器走」时位置同步会让位给循环） ── -->
+                <WrapPanel Margin="0,0,0,6">
+                    <TextBlock Text="A-B 循环" FontSize="11" Foreground="{StaticResource Muted}"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Button x:Name="AbLoopSetABtn" Content="设 A" Width="58" Height="24" FontSize="11" Padding="0"
+                            Style="{StaticResource BtnSecondary}" VerticalAlignment="Center" Margin="0,0,6,0"
+                            IsEnabled="False" Click="AbLoopSetA_Click"
+                            ToolTip="把当前播放位置记成循环起点 A（要先把脚本放到那一点）"/>
+                    <Button x:Name="AbLoopSetBBtn" Content="设 B" Width="58" Height="24" FontSize="11" Padding="0"
+                            Style="{StaticResource BtnSecondary}" VerticalAlignment="Center" Margin="0,0,6,0"
+                            IsEnabled="False" Click="AbLoopSetB_Click"
+                            ToolTip="把当前播放位置记成循环终点 B；播放到 B 会自动跳回 A，一直循环"/>
+                    <Button x:Name="AbLoopClearBtn" Content="清除" Width="62" Height="24" FontSize="11" Padding="0"
+                            Style="{StaticResource BtnGhost}" VerticalAlignment="Center" Margin="0,0,10,0"
+                            IsEnabled="False" Click="AbLoopClear_Click"
+                            ToolTip="取消 A-B 循环，脚本照常从头播到尾"/>
+                    <TextBlock x:Name="AbLoopText" Text="未设置" FontSize="11"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                </WrapPanel>
+
+                <!-- ── 章节 / 书签：选中的脚本里带了才出现（没有就是 0 高度，不白占地方） ── -->
+                <Border x:Name="ChapterPanel" Visibility="Collapsed" Margin="0,2,0,0"
+                        Background="{StaticResource Surface}" BorderBrush="{StaticResource Border}"
+                        BorderThickness="1" CornerRadius="6" Padding="8,6">
+                    <StackPanel>
+                        <TextBlock x:Name="ChapterTitleText" Text="📑 章节 / 书签" FontSize="11"
+                                   FontWeight="SemiBold"/>
+                        <TextBlock Text="点一下跳到那个时间（会让设备跳到那里）。" FontSize="10"
+                                   Foreground="{StaticResource Muted}" Margin="0,2,0,0"/>
+                        <ScrollViewer MaxHeight="88" VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled" Margin="0,4,0,0">
+                            <ItemsControl x:Name="ChapterList">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate><WrapPanel/></ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Style="{StaticResource BtnGhost}" Height="24" Padding="8,0"
+                                                Margin="0,0,6,6" FontSize="11" Click="ChapterJump_Click"
+                                                ToolTip="{Binding Detail}">
+                                            <TextBlock Text="{Binding Label}" MaxWidth="180"
+                                                       TextTrimming="CharacterEllipsis"/>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </ScrollViewer>
+                    </StackPanel>
+                </Border>
+
+                <!-- ── 分隔：上半段是「正在播什么」，下半段是「播放时加什么」 ── -->
+                <Border Height="1" Background="{StaticResource Border}" Margin="0,8,0,0"/>
+
+                <!-- ── 第 2 段：播放增强（只改播放、不动脚本文件；默认全关） ── -->
+                <Grid Margin="0,8,0,7">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="✨ 播放增强" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1" Margin="10,0,10,0" VerticalAlignment="Center"
+                               FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                               Text="三个开关默认全关，只改播放时的动作、不动脚本文件，勾上才生效。"/>
+                    <Button x:Name="GenerateToggleBtn" Grid.Column="2" Content="🎵 从音频生成…" Height="24" FontSize="11"
+                            Padding="8,0" Style="{StaticResource BtnSecondary}" VerticalAlignment="Center"
+                            Click="GenerateToggle_Click"
+                            ToolTip="用一首音乐或视频自动生成一份 funscript 放进脚本库；点一下在下面展开，再点收起"/>
+                </Grid>
+
+                <!-- 多轴联动：一行 [开关][幅度滑杆][读数][说明]，窄窗口下自动换行，绝不横向裁切 -->
+                <WrapPanel Margin="0,0,0,7">
+                    <CheckBox x:Name="LinkCheck" Content="多轴联动" FontSize="12" VerticalAlignment="Center"
+                              Margin="0,0,10,0"
+                              ToolTip="只动脚本自己没写动作的轴：写了的轴是作者的意图，Hexa 不会去改它"/>
+                    <TextBlock Text="联动幅度" FontSize="11" Foreground="{StaticResource Muted}"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Slider x:Name="LinkAmountSlider" Width="150" Minimum="5" Maximum="60" Value="30"
+                            SmallChange="5" TickFrequency="5" IsSnapToTickEnabled="True"
+                            VerticalAlignment="Center"
+                            ToolTip="其他轴最多偏离中位多少（占轴行程的百分比）。越大越明显，30% 左右比较自然"/>
+                    <TextBlock x:Name="LinkAmountLabel" Text="30%" Width="44" FontSize="11"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
+                    <TextBlock Text="脚本没写的其余轴跟着主轴一起动，30% 左右最自然。" FontSize="10"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                </WrapPanel>
+
+                <!-- 空档填缝：这一行参数多，窄窗口下会自动折行（不是被切掉） -->
+                <WrapPanel Margin="0,0,0,7">
+                    <CheckBox x:Name="GapFillCheck" Content="空档填缝" FontSize="12" VerticalAlignment="Center"
+                              Margin="0,0,10,0"
+                              ToolTip="只填「两端位置几乎相同、停着超过一段时间」的段落；要有声音事件才动，安静时保持不动"/>
+                    <TextBlock Text="静止超过" FontSize="11" Foreground="{StaticResource Muted}"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Slider x:Name="GapMinSlider" Width="150" Minimum="0.8" Maximum="6" Value="1.5"
+                            SmallChange="0.1" TickFrequency="0.1" IsSnapToTickEnabled="True"
+                            VerticalAlignment="Center"
+                            ToolTip="连续静止超过这个时长的段落才当作空档。调小会填更多段落，调大只填很长的静止段"/>
+                    <TextBlock x:Name="GapMinLabel" Text="1.5 秒" Width="52" FontSize="11"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
+                    <TextBlock Text="补白幅度" FontSize="11" Foreground="{StaticResource Muted}"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Slider x:Name="GapRangeSlider" Width="150" Minimum="5" Maximum="40" Value="20"
+                            SmallChange="5" TickFrequency="5" IsSnapToTickEnabled="True"
+                            VerticalAlignment="Center"
+                            ToolTip="空档里最多摆动多少（轴行程百分比）。它是补白，默认 20% 比较克制；调大更明显，设备换向时的余摆也更明显"/>
+                    <TextBlock x:Name="GapRangeLabel" Text="±20%" Width="46" FontSize="11"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
+                    <TextBlock Text="长时间不动的段落，有声音时才补小动作。" FontSize="10"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                </WrapPanel>
+
+                <!-- 脚本平滑 -->
+                <WrapPanel>
+                    <CheckBox x:Name="SmoothCheck" Content="脚本平滑" FontSize="12" VerticalAlignment="Center"
+                              Margin="0,0,10,0"
+                              ToolTip="默认关：Hexa 默认完全按作者写的原样播放。开启只影响播放、不改脚本文件；每个动作点照样一个不差地经过，也绝不会冲过脚本写的位置。适合高频抖动类脚本、或觉得机器换向时「咔咔」响"/>
+                    <TextBlock Text="平滑强度" FontSize="11" Foreground="{StaticResource Muted}"
+                               VerticalAlignment="Center" Margin="0,0,6,0"/>
+                    <Slider x:Name="SmoothStrengthSlider" Width="150" Minimum="0" Maximum="100" Value="100"
+                            SmallChange="10" TickFrequency="10" IsSnapToTickEnabled="True"
+                            VerticalAlignment="Center"
+                            ToolTip="100% = 完全平滑；0% = 和以前完全一样（直线插值）。播放中直接拖动就能听出区别"/>
+                    <TextBlock x:Name="SmoothStrengthLabel" Text="100%" Width="46" FontSize="11"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
+                    <TextBlock Text="动作点之间走圆角，换向不再硬折返。" FontSize="10"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                </WrapPanel>
+
+
+                <!-- 状态/提醒：为什么勾了却没效果（总开关是关的 / 声音没在监听） -->
+                <TextBlock x:Name="EnhanceNote" Text="" FontSize="11" Foreground="{StaticResource Warning}"
+                           Margin="0,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+
+                <!-- ── 第 3 段：从音频 / 视频生成脚本（默认折叠，由上面的按钮展开） ── -->
+                <Border x:Name="GeneratePanel" Visibility="Collapsed" Margin="0,10,0,0"
+                        Background="{StaticResource Surface}" BorderBrush="{StaticResource Border}"
+                        BorderThickness="1" CornerRadius="8" Padding="12,10">
+                    <StackPanel>
+                        <TextBlock Text="从音频 / 视频生成脚本" FontSize="12" FontWeight="SemiBold"/>
+                        <TextBlock Text="选一个音乐或视频，Hexa 离线分析里面的声音（冲击 / 渐强 / 节拍），写出一份 funscript 放进脚本库。生成后可以直接在这里播放，也可以到「脚本制作 → 微调波形」继续手改。"
+                                   FontSize="11" Foreground="{StaticResource Muted}" Margin="0,3,0,8" TextWrapping="Wrap"/>
+
+                        <Grid Margin="0,0,0,8">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="GeneratePickBtn" Content="选择文件…" Width="96" Height="28" FontSize="12"
+                                    Style="{StaticResource BtnSecondary}" Click="GeneratePick_Click"/>
+                            <TextBlock x:Name="GenerateFileText" Grid.Column="1" Text="还没有选择文件"
+                                       FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                       Margin="10,0,0,0" TextTrimming="CharacterEllipsis"/>
+                        </Grid>
+
+                        <!-- WrapPanel + 固定宽的参数块：滑杆不会被拉成长条，窄窗口下自动换行 -->
+                        <WrapPanel Margin="0,0,0,8">
+                            <StackPanel Orientation="Horizontal" Margin="0,0,20,0">
+                                <TextBlock Text="动作幅度" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <Slider x:Name="GenerateAmpSlider" Minimum="10" Maximum="100" Value="55" Width="140"
+                                        SmallChange="5" TickFrequency="5" IsSnapToTickEnabled="True"
+                                        VerticalAlignment="Center" Margin="8,0,6,0"
+                                        ToolTip="动作幅度：100% = 走完全行程（0↔100），55% = 在中间来回"/>
+                                <TextBlock x:Name="GenerateAmpLabel" Text="55%" Width="42" FontSize="11"
+                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                            </StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="灵敏度" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <Slider x:Name="GenerateSensSlider" Minimum="0" Maximum="2" Value="1" Width="140"
+                                        SmallChange="0.1" TickFrequency="0.5" IsSnapToTickEnabled="True"
+                                        VerticalAlignment="Center" Margin="8,0,6,0"
+                                        ToolTip="越高越容易把弱一点的声音也当成事件；越低只响应明显的重音"/>
+                                <TextBlock x:Name="GenerateSensLabel" Text="1.0" Width="42" FontSize="11"
+                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </WrapPanel>
+
+                        <CheckBox x:Name="GenerateMultiAxisCheck" Content="同时生成扭转轨道（R0，更立体）"
+                                  FontSize="11" Margin="0,0,0,8"/>
+
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*" MinWidth="80" MaxWidth="200"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="GenerateRunBtn" Content="▶ 开始生成" Width="106" Height="28" FontSize="12"
+                                    Style="{StaticResource BtnPrimary}" Click="GenerateRun_Click" IsEnabled="False"/>
+                            <Button x:Name="GenerateCancelBtn" Grid.Column="1" Content="取消" Width="64" Height="28" FontSize="12"
+                                    Style="{StaticResource BtnSecondary}" Margin="8,0,12,0" Click="GenerateCancel_Click"
+                                    IsEnabled="False"/>
+                            <ProgressBar x:Name="GenerateProgress" Grid.Column="2" Height="8"
+                                         Minimum="0" Maximum="1" Value="0"
+                                         HorizontalAlignment="Stretch" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBlock x:Name="GenerateStatus" Grid.Column="3" Text="" FontSize="11"
+                                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </Border>
+
+        <!-- ══ 2 脚本列表（页面主体：吃掉剩下的全部高度，自己滚） ═══════ -->
+        <Border Grid.Row="2" Style="{StaticResource Card}" Padding="12,10">
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <Grid Grid.Row="0" Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="ListTitleText" Text="脚本列表" FontSize="13" FontWeight="SemiBold"
+                               VerticalAlignment="Center"/>
+                    <TextBlock Grid.Column="1" Text="每行右侧可操作；鼠标停一行看明细。"
+                               FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                               VerticalAlignment="Center" Margin="10,0,10,0"/>
+                    <WrapPanel Grid.Column="2" VerticalAlignment="Center">
+                        <Button x:Name="ImportBtn" Content="📥 导入脚本…" MinWidth="112" Height="30" FontSize="12"
+                                Style="{StaticResource BtnPrimary}" Margin="0,0,8,0" Click="Import_Click"
+                                ToolTip="从电脑里选 .funscript 复制进脚本库（可多选）。同一个脚本按轴拆出的 name.L0…R2.funscript 会连同伴生轴文件一起导入"/>
+                        <Button x:Name="RefreshBtn" Content="🔄 刷新" Width="74" Height="30" FontSize="12"
+                                Style="{StaticResource BtnSecondary}" Click="Refresh_Click"
+                                ToolTip="重新读取脚本库目录（在别处新增/删除了文件时用）"/>
+                    </WrapPanel>
+                </Grid>
+
+                <Grid Grid.Row="1">
+                    <ListView x:Name="ScriptList" Background="{StaticResource Surface}"
+                              BorderBrush="{StaticResource Border}" BorderThickness="1" FontSize="12"
+                              SelectionChanged="ScriptList_SelectionChanged">
+                        <ListView.ItemContainerStyle>
+                            <!-- 行级悬停提示：写明时长/轨道/大小/来源；无效脚本写明解析失败原因 -->
+                            <Style TargetType="ListViewItem" BasedOn="{StaticResource {x:Type ListViewItem}}">
+                                <Setter Property="Padding" Value="10,5"/>
+                                <Setter Property="ToolTip" Value="{Binding Tip}"/>
+                                <Setter Property="ToolTipService.ShowDuration" Value="30000"/>
+                            </Style>
+                        </ListView.ItemContainerStyle>
+                        <ListView.View>
+                            <GridView>
+                                <!-- 名称列宽度由 code-behind 按剩余宽度设置（最大化时吃掉右侧空白），过长名称用省略号 -->
+                                <GridViewColumn x:Name="NameColumn" Header="名称" Width="230">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <!-- 解析不了的行用警示色写出来，比只看「时长 —」清楚 -->
+                                            <!-- 不给单元格单独设 ToolTip：整行的悬停提示里有完整名称和明细 -->
+                                            <!-- 名称 + 章节/书签标记：标记列是 Auto 宽，名称仍然按剩余宽度省略号收尾，
+                                                 所以窄窗口下标记不会被挤出去，名称也不会把列撑宽 -->
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center">
+                                                    <TextBlock.Style>
+                                                        <Style TargetType="TextBlock"
+                                                               BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding Valid}" Value="False">
+                                                                    <Setter Property="Foreground" Value="{StaticResource Warning}"/>
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </TextBlock.Style>
+                                                </TextBlock>
+                                                <TextBlock Grid.Column="1" Text="{Binding Marker}" FontSize="10"
+                                                           Foreground="{StaticResource Accent}"
+                                                           VerticalAlignment="Center" Margin="6,0,0,0"
+                                                           ToolTip="{Binding MarkerTip}"/>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                                <GridViewColumn Header="时长" Width="56" DisplayMemberBinding="{Binding Duration}"/>
+                                <GridViewColumn Header="轨道" Width="66" DisplayMemberBinding="{Binding Axes}"/>
+                                <GridViewColumn Header="大小" Width="56" DisplayMemberBinding="{Binding Size}"/>
+                                <GridViewColumn Header="来源" Width="62" DisplayMemberBinding="{Binding Source}"/>
+                                <GridViewColumn Header="操作" Width="80">
+                                    <GridViewColumn.CellTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Button Content="▶" Width="24" Height="22" Padding="0" FontSize="10"
+                                                        Style="{StaticResource BtnSecondary}" Click="RowPlay_Click"
+                                                        IsEnabled="{Binding Valid}"
+                                                        ToolTip="载入这个脚本并从头播放（解析不了的行不能播）"/>
+                                                <Button Content="✏" Width="24" Height="22" Padding="0" FontSize="10"
+                                                        Style="{StaticResource BtnSecondary}" Margin="4,0,0,0"
+                                                        Click="RowRename_Click" ToolTip="给这个脚本改名（只改库内副本）"/>
+                                                <Button Content="🗑" Width="24" Height="22" Padding="0" FontSize="10"
+                                                        Style="{StaticResource BtnDanger}" Margin="4,0,0,0"
+                                                        Click="RowDelete_Click" ToolTip="从脚本库里删掉它（会先问一次；不动源文件）"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </GridViewColumn.CellTemplate>
+                                </GridViewColumn>
+                            </GridView>
+                        </ListView.View>
+                    </ListView>
+
+                    <!-- 空状态：库里一个脚本都没有时，直接告诉用户去哪儿拿 -->
+                    <Border x:Name="EmptyState" Background="{StaticResource Surface}" CornerRadius="8"
+                            Padding="16,14" Visibility="Collapsed">
+                        <StackPanel VerticalAlignment="Top">
+                            <TextBlock Text="📥 库里还没有脚本" FontSize="13" FontWeight="SemiBold"/>
+                            <TextBlock Text="下面几条任选一条，脚本就会出现在这个列表里：" FontSize="11"
+                                       Foreground="{StaticResource Muted}" Margin="0,6,0,6" TextWrapping="Wrap"/>
+                            <TextBlock Text="① 点右上角「📥 导入脚本…」，把电脑里已有的 .funscript 复制进来（可多选）。"
+                                       FontSize="11" TextWrapping="Wrap"/>
+                            <TextBlock Text="② 点上面「✨ 播放增强」那一行右边的「🎵 从音频生成…」，展开后用一首音乐或视频自动生成一份。"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                            <TextBlock Text="③ 在「脚本制作」页自己画一份，导出成 funscript 后会出现在这里。"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                            <Button x:Name="EmptyImportBtn" Content="📥 导入脚本…" MinWidth="118" Height="30" FontSize="12"
+                                    Style="{StaticResource BtnPrimary}" HorizontalAlignment="Left"
+                                    Margin="0,12,0,0" Click="Import_Click"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Grid>
+        </Border>
+
+        <!-- ══ 3 页脚：一行小字（库目录 / 当前增强）+ 三个小按钮，不再单独占一张卡 ══ -->
+        <Grid Grid.Row="3" Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBlock x:Name="FooterText" Text="" FontSize="10"
+                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+            <WrapPanel Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center">
+                <Button x:Name="OpenFolderBtn" Content="📂 打开库目录" Height="26" FontSize="11" Padding="10,0"
+                        Style="{StaticResource BtnSecondary}" Click="OpenFolder_Click"
+                        ToolTip="在文件资源管理器里打开脚本库目录"/>
+                <Button x:Name="LibraryWebBtn" Content="📱 手机上看" Height="26" FontSize="11" Padding="10,0"
+                        Style="{StaticResource BtnSecondary}" Margin="6,0,0,0" Click="LibraryWeb_Click"
+                        ToolTip="把脚本库做成一个本机网页（http://localhost:8582/）：手机、平板、头显的浏览器打开就能看到脚本列表，点一下设备就播。只在本机可用，只提供播放和停止。"/>
+                <TextBlock Text="动作预设" FontSize="10" Foreground="{StaticResource Faint}"
+                           VerticalAlignment="Center" Margin="12,0,6,0"
+                           ToolTip="给「动作」页用的动作预设：可以导出成 JSON 备份，也可以从 JSON 导入"/>
+                <Button x:Name="ExportPresetsBtn" Content="⬆ 导出" Height="26" FontSize="11" Padding="10,0"
+                        Style="{StaticResource BtnSecondary}" Click="ExportPresets_Click"
+                        ToolTip="把「动作」页的全部动作预设导出成 JSON 文件（可备份 / 分享）"/>
+                <Button x:Name="ImportPresetsBtn" Content="⬇ 导入" Height="26" FontSize="11" Padding="10,0"
+                        Style="{StaticResource BtnSecondary}" Margin="6,0,0,0" Click="ImportPresets_Click"
+                        ToolTip="从 JSON 文件导入动作预设；重名会自动加 -2 / -3 后缀"/>
+            </WrapPanel>
+        </Grid>
+    </Grid>
+    </ScrollViewer>
+</Page>

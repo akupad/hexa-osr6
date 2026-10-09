@@ -1,0 +1,619 @@
+<Page x:Class="Hexa.Views.EditorPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:views="clr-namespace:Hexa.Views"
+      Background="{StaticResource Bg}" Title="脚本制作"
+      PreviewKeyDown="ComposeUndo_PreviewKeyDown">
+
+    <Page.Resources>
+        <!-- ── TabControl / TabItem：跟随深色主题的自绘样式 ─────────────── -->
+        <Style x:Key="HexaTabControl" TargetType="TabControl">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabControl">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="*"/>
+                            </Grid.RowDefinitions>
+                            <TabPanel Grid.Row="0" IsItemsHost="True" Background="Transparent" Margin="0,0,0,10"/>
+                            <ContentPresenter Grid.Row="1" ContentSource="SelectedContent"/>
+                        </Grid>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="HexaTabItem" TargetType="TabItem">
+            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="TabItem">
+                        <Border x:Name="Bd" Background="{StaticResource Surface}"
+                                BorderBrush="{StaticResource Border}" BorderThickness="1"
+                                CornerRadius="6" Padding="18,7" Margin="0,0,8,0">
+                            <ContentPresenter ContentSource="Header" VerticalAlignment="Center"
+                                              HorizontalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource SurfaceRaised}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="{StaticResource AccentSoft}"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="{StaticResource Accent}"/>
+                                <Setter Property="Foreground" Value="{StaticResource Text}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- ── 段卡片右边缘的拖拽手柄 ─────────────────────────────────── -->
+        <!-- 原来只有 3px 宽、颜色和卡片描边几乎一样，看不出这里能拖。
+             加宽到 4px 并换成更亮的 Faint，悬停时变 Accent；命中宽度在 code-behind 里是 8px。 -->
+        <Style x:Key="HexaResizeThumb" TargetType="Thumb">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Grid Background="Transparent">
+                            <Border x:Name="Grip" Width="4" HorizontalAlignment="Right" Margin="0,7"
+                                    CornerRadius="2" Background="{StaticResource Faint}"/>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Grip" Property="Background" Value="{StaticResource Accent}"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Page.Resources>
+
+    <!-- Ctrl+Z / Ctrl+Y Undo·Redo（微调波形页用） -->
+    <Page.CommandBindings>
+        <CommandBinding Command="ApplicationCommands.Undo" Executed="Undo_Executed"/>
+        <CommandBinding Command="ApplicationCommands.Redo" Executed="Redo_Executed"/>
+        <CommandBinding Command="ApplicationCommands.Open" Executed="ComposeOpen_Executed"/>
+    </Page.CommandBindings>
+    <Page.InputBindings>
+        <KeyBinding Key="Z" Modifiers="Ctrl" Command="ApplicationCommands.Undo"/>
+        <KeyBinding Key="Y" Modifiers="Ctrl" Command="ApplicationCommands.Redo"/>
+        <KeyBinding Key="O" Modifiers="Ctrl" Command="ApplicationCommands.Open"/>
+    </Page.InputBindings>
+
+    <Grid Margin="24,16,24,24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>  <!-- 0 页头 -->
+            <RowDefinition Height="*"/>     <!-- 1 标签页 -->
+        </Grid.RowDefinitions>
+
+        <!-- Header -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="🎬 脚本制作" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,3"/>
+            <!-- 原来这一行把下面两个标签页的名字和功能又列了一遍，压缩成一句，窄窗口下也只占一行 -->
+            <TextBlock Text="把动作库里的动作拼成一条时间轴，导出成通用 funscript；也可以手工画一段波形。"
+                       Foreground="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <TabControl x:Name="MainTabs" Grid.Row="1" SelectedIndex="0"
+                    Style="{StaticResource HexaTabControl}">
+
+            <!-- ════════════════════════════════════════════════════════
+                 标签页 1：编排（动作序列 → funscript）
+                 ════════════════════════════════════════════════════════ -->
+            <TabItem Header="编排" Style="{StaticResource HexaTabItem}">
+                <!-- 高度：外层这层纵向滚动是兜底（880×560 这种小窗口下工具栏折行、内容放不下时用）。
+                     注意它测量时会向内容传「无限高度」，里面的动作库 ListBox / 段参数 / 时间轴三个
+                     滚动区于是各自膨胀成「内容全高」——动作库 32 条 ≈ 800px，正是它把 3* 行撑到
+                     700px 上下、整页要滚 521px 的根因。
+                     所以内层 Grid 给一个确定高度 = 视口高度：窗口够高时各行照旧按 3:2 撑满、
+                     不出现滚动条；内部滚动区被有限高度正确裁剪，不会再往外顶。
+                     MinHeight 只是兜底：窗口矮到 480px 以下时按内容最小高度摆放（交给外层滚动）。 -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <Grid Height="{Binding ViewportHeight, RelativeSource={RelativeSource AncestorType=ScrollViewer}}"
+                      MinHeight="480">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>  <!-- 0 工具栏 -->
+                        <RowDefinition Height="3*" MinHeight="160"/>  <!-- 1 库 / 3D 预览 / 段参数 -->
+                        <RowDefinition Height="2*" MinHeight="132"/>   <!-- 2 时间轴（整条，随窗口按比例伸缩） -->
+                    </Grid.RowDefinitions>
+
+                    <!-- 工具栏 -->
+                    <WrapPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                        <Button Content="新建" Width="62" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="ComposeNew_Click"
+                                ToolTip="清空当前合成，开始新的编排"/>
+                        <Button Content="打开" Width="62" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="ComposeOpen_Click"
+                                ToolTip="载入已保存的动作合成（%LOCALAPPDATA%\Hexa\compositions）"/>
+                        <Button Content="保存" Width="62" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="ComposeSave_Click"
+                                ToolTip="保存到 %LOCALAPPDATA%\Hexa\compositions"/>
+                        <Button Content="另存为" Width="72" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="ComposeSaveAs_Click"/>
+                        <Button x:Name="ComposeUndoBtn" Content="↶ 撤销" Width="72" Height="28" FontSize="12"
+                                Margin="0,0,6,6" Style="{StaticResource BtnSecondary}" Click="ComposeUndo_Click"
+                                IsEnabled="False" ToolTip="撤销上一步编排改动（Ctrl+Z）"/>
+                        <Button x:Name="ComposeRedoBtn" Content="↷ 重做" Width="72" Height="28" FontSize="12"
+                                Margin="0,0,12,6" Style="{StaticResource BtnSecondary}" Click="ComposeRedo_Click"
+                                IsEnabled="False" ToolTip="重做刚撤销的编排改动（Ctrl+Y）"/>
+                        <Button Content="导入 funscript" Width="116" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="ComposeImport_Click"
+                                ToolTip="导入 funscript 到「微调波形」页继续编辑（编排页无法反向拆分 funscript）"/>
+                        <Button Content="导出 funscript" Width="116" Height="28" FontSize="12" Margin="0,0,12,6"
+                                Style="{StaticResource BtnPrimary}" Click="ComposeExport_Click"
+                                ToolTip="按时间轴顺序采样各段，导出标准多轴 funscript（一个文件含 L0..R2）"/>
+                        <Button x:Name="ComposePlayBtn" Content="▶ 预览播放" MinWidth="106" Height="28" FontSize="12"
+                                Margin="0,0,6,6" Style="{StaticResource BtnSecondary}" Click="ComposePlay_Click"/>
+                        <Button x:Name="ComposeStopBtn" Content="⏹ 停止" Width="84" Height="28" FontSize="12"
+                                Margin="0,0,12,6" Style="{StaticResource BtnDanger}" Click="ComposeStop_Click"
+                                IsEnabled="False"
+                                ToolTip="停止编排试听（没在播放时不可点）。停止后就本页不再向设备发指令。"/>
+                        <TextBlock x:Name="ComposeNameLabel" Text="合成：未命名" FontSize="12"
+                                   Foreground="{StaticResource Text}" VerticalAlignment="Center"
+                                   Margin="0,0,14,0"/>
+                        <TextBlock x:Name="ComposeTotalLabel" Text="总时长 0s" FontSize="12"
+                                   Foreground="{StaticResource Accent}" VerticalAlignment="Center"
+                                   Margin="0,0,14,0"/>
+                        <TextBlock Text="BPM" FontSize="12" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Slider x:Name="ComposeBpmSlider" Width="90" Minimum="10" Maximum="240" Value="60"
+                                SmallChange="1" LargeChange="10" IsSnapToTickEnabled="True" TickFrequency="1"
+                                VerticalAlignment="Center"
+                                ToolTip="Tempest 循环速度：60 = 每秒 1 圈（只改快慢，不改总时长）"/>
+                        <TextBlock x:Name="ComposeBpmLabel" Text="60" FontSize="12"
+                                   Foreground="{StaticResource Muted}" Width="30" Margin="6,0,0,6"
+                                   VerticalAlignment="Center"/>
+                    </WrapPanel>
+
+                    <!-- 库 | 时间轴 | 段参数 -->
+                    <Grid Grid.Row="1">
+                        <Grid.ColumnDefinitions>
+                            <!-- 两列宽度在宽窗口是 200 / 240；窄窗口由 ApplyComposeColumnWidths
+                                 各收一点（180 / 220），把中间 3D 预览从 ~156px 拉到 ~200px。 -->
+                            <ColumnDefinition x:Name="ComposeLibraryColumn" Width="200"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition x:Name="ComposeParamsColumn" Width="240"/>
+                        </Grid.ColumnDefinitions>
+
+                                            <!-- 3D 预览：放在中间列，和时间轴换位 -->
+                            <Border Grid.Column="1" Style="{StaticResource Card}" Padding="8,6" Margin="0,0,8,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <!-- 预览跟随卡片高度伸缩：固定高度在最大化时会留出一大片空白 -->
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <!-- 窄窗口（正文 660px）时中间列只剩 ~160px：横排改 WrapPanel，
+                                     放不下的那一项往下换行，不然「预览状态」会被列的右边缘切掉。 -->
+                                <WrapPanel Margin="0,0,0,6">
+                                    <TextBlock Text="预览" FontSize="11" Foreground="{StaticResource Muted}"
+                                               VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                    <CheckBox x:Name="ComposeDriveCheck" Content="同步驱动设备" FontSize="11"
+                                              VerticalAlignment="Center" Margin="0,0,12,0"
+                                              ToolTip="勾选后点「▶ 预览播放」才会真的把动作发给设备（设备没连上或急停中时，这次播放只做 3D 预览）；勾选状态会被记住"/>
+                                    <TextBlock x:Name="ComposePreviewLabel" Text="仅 3D 预览（不会动设备）"
+                                               FontSize="10" Foreground="{StaticResource Muted}"
+                                               VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                </WrapPanel>
+                                <!-- MinHeight 从 180 收到 120：这个 * 行在最小窗口下要被压扁，
+                                     预览是缩略图用途，先把高度让给时间轴；窗口一大它自己就长回来。 -->
+                                <views:AxisPreview3D x:Name="ComposePreview3D" Grid.Row="1" MinHeight="120"/>
+                            </Grid>
+                        </Border>
+
+                        <!-- 动作库 -->
+                        <Border Grid.Column="0" Style="{StaticResource Card}" Padding="8,6" Margin="0,0,8,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
+                                </Grid.RowDefinitions>
+                                <StackPanel Margin="0,0,0,6">
+                                    <!-- 原句在 180px 窄列里要折两行，压成一行；完整说明放 ToolTip -->
+                                    <TextBlock Text="动作库（拖入或双击）" FontSize="11"
+                                               Foreground="{StaticResource Muted}" Margin="0,0,0,4"
+                                               TextWrapping="Wrap"
+                                               ToolTip="把动作拖到时间轴，或双击一条追加到末尾；也可用下面搜索框按名称/分类筛选"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox x:Name="ComposeLibrarySearch" Height="24" FontSize="11"
+                                                 VerticalContentAlignment="Center"
+                                                 ToolTip="按名称或分类筛选动作"
+                                                 TextChanged="ComposeLibrarySearch_TextChanged"/>
+                                        <TextBlock Text="搜索动作名称/分类…" FontSize="11"
+                                                   Foreground="{StaticResource Faint}"
+                                                   IsHitTestVisible="False"
+                                                   VerticalAlignment="Center" Margin="6,0,0,0">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Text, ElementName=ComposeLibrarySearch}" Value="">
+                                                            <Setter Property="Visibility" Value="Visible"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <Button Grid.Column="1" Content="＋ 添加" Height="24" FontSize="11"
+                                                Padding="8,0" Margin="4,0,0,0"
+                                                Style="{StaticResource BtnSecondary}"
+                                                ToolTip="把选中的动作追加到时间轴末尾"
+                                                Click="ComposeLibraryAdd_Click"/>
+                                    </Grid>
+                                </StackPanel>
+                                <ListBox x:Name="ComposeLibraryList" Grid.Row="1"
+                                         Background="Transparent" BorderThickness="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                         MouseDoubleClick="ComposeLibraryList_MouseDoubleClick"
+                                         PreviewMouseLeftButtonDown="Library_PreviewMouseLeftButtonDown"
+                                         PreviewMouseMove="Library_PreviewMouseMove">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBlock Text="{Binding Label}" FontSize="12"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           VerticalAlignment="Center"/>
+                                                <Border Grid.Column="1" Background="{StaticResource AccentSoft}"
+                                                        CornerRadius="4" Padding="5,1" Margin="6,0,0,0">
+                                                    <TextBlock Text="{Binding Cat}" FontSize="10"
+                                                               Foreground="{StaticResource Accent}"/>
+                                                </Border>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                                <!-- 空状态：搜索没命中（或动作库是空的）时列表一片空白，这里给一句话 -->
+                                <TextBlock x:Name="ComposeLibraryEmptyLabel" Grid.Row="1"
+                                           Text="没有匹配的动作，换个词或清空搜索框。"
+                                           FontSize="11" Foreground="{StaticResource Muted}"
+                                           TextWrapping="Wrap" TextAlignment="Center"
+                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                           Margin="6" IsHitTestVisible="False" Visibility="Collapsed"/>
+                            </Grid>
+                        </Border>
+
+                        <!-- 选中段参数 -->
+                        <Border Grid.Column="2" Style="{StaticResource Card}" Padding="12,10">
+                            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                                <StackPanel>
+                                    <TextBlock Text="段参数" FontSize="13" FontWeight="SemiBold"
+                                               Margin="0,0,0,8"/>
+                                    <TextBlock x:Name="SegParamEmptyLabel"
+                                               Text="还没选中动作段。点时间轴上的任意一段，就能在这里改它的时长、强度、过渡。"
+                                               FontSize="11" Foreground="{StaticResource Muted}"
+                                               TextWrapping="Wrap"/>
+                                    <!-- 紧凑排布：每项 = 「标签行（左标题 + 右数值）+ 滑块」，
+                                         原来单独的说明文字收进 ToolTip，信息一条没少、控件一个没删。
+                                         六轴逐行明细本来就不在这个面板（那是「微调波形」页的概念）。 -->
+                                    <StackPanel x:Name="SegParamBody" Visibility="Collapsed">
+                                        <TextBlock x:Name="SegNameLabel" Text="" FontSize="13"
+                                                   FontWeight="SemiBold" TextWrapping="Wrap"/>
+                                        <TextBlock x:Name="SegPresetLabel" Text="" FontSize="10"
+                                                   Foreground="{StaticResource Muted}" Margin="0,2,0,6"
+                                                   TextWrapping="Wrap"/>
+
+                                        <Grid Margin="0,0,0,2">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="时长（0.5–600 s）" FontSize="11"
+                                                       Foreground="{StaticResource Muted}"
+                                                       VerticalAlignment="Center"
+                                                       ToolTip="这一段播放多久；也可直接改右边输入框的数字（回车或点别处生效）"/>
+                                            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                <TextBox x:Name="SegDurationBox" Text="2" Width="64" Height="24"
+                                                         FontSize="12" VerticalContentAlignment="Center"
+                                                         ToolTip="输入精确时长（0.5–600），回车或点别处生效"/>
+                                                <TextBlock Text="s" FontSize="11" Foreground="{StaticResource Muted}"
+                                                           VerticalAlignment="Center" Margin="6,0,0,0"/>
+                                            </StackPanel>
+                                        </Grid>
+                                        <Slider x:Name="SegDurationSlider" Minimum="0.5" Maximum="600" Value="2"
+                                                SmallChange="0.5" LargeChange="5" Margin="0,0,0,8"
+                                                ToolTip="拖动改这一段时长（0.5–600 s）"/>
+
+                                        <Grid Margin="0,0,0,2">
+                                            <TextBlock Text="强度（0.1–2.0）" FontSize="11"
+                                                       Foreground="{StaticResource Muted}"
+                                                       VerticalAlignment="Center"
+                                                       ToolTip="1.00 = 原本幅度；调小更轻，调大更猛"/>
+                                            <TextBlock x:Name="SegIntensityLabel" Text="1.00" FontSize="11"
+                                                       Foreground="{StaticResource Muted}"
+                                                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <Slider x:Name="SegIntensitySlider" Minimum="0.1" Maximum="2.0" Value="1.0"
+                                                SmallChange="0.05" LargeChange="0.1" Margin="0,0,0,8"/>
+
+                                        <Grid Margin="0,0,0,2">
+                                            <TextBlock Text="过渡（0–10 s）" FontSize="11"
+                                                       Foreground="{StaticResource Muted}"
+                                                       VerticalAlignment="Center"
+                                                       ToolTip="开头从上一段接过来，不额外加时长"/>
+                                            <TextBlock x:Name="SegTransitionLabel" Text="0.00 s" FontSize="11"
+                                                       Foreground="{StaticResource Muted}"
+                                                       HorizontalAlignment="Right" VerticalAlignment="Center"/>
+                                        </Grid>
+                                        <Slider x:Name="SegTransitionSlider" Minimum="0" Maximum="10" Value="0"
+                                                SmallChange="0.1" LargeChange="0.5" Margin="0,0,0,10"/>
+
+                                        <Button x:Name="SegDeleteBtn" Content="删除该段" Height="28"
+                                                FontSize="12" Style="{StaticResource BtnDanger}"
+                                                Click="SegmentDelete_Click"
+                                                ToolTip="从时间轴移除这一段（Ctrl+Z 可撤销）"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Border>
+                    </Grid>
+
+                        <!-- 时间轴：整条放在底部，宽度最大，方便长编排滚动 -->
+                    <Border Grid.Row="2" Style="{StaticResource Card}" Padding="8,6" Margin="0,8,0,0">
+                    <Grid>
+                    <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+                    <!-- 头部：说明文字（左） + 缩放控件（右） -->
+                    <Grid Grid.Row="0" Margin="0,0,0,6">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0"
+                                   Text="时间轴：拖入动作 · 点卡片选中 · 拖右边缘改时长 · 右键更多操作"
+                                   FontSize="11" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" TextWrapping="Wrap"
+                                   ToolTip="拖入动作库里的动作 · 点卡片选中 · 拖动卡片换位置 · 拖右边缘改时长 · 右键有复制/删除/前移/后移"/>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"
+                                    Margin="12,0,0,0">
+                            <TextBlock Text="缩放" FontSize="11" Foreground="{StaticResource Muted}"
+                                       VerticalAlignment="Center" Margin="0,0,6,0"
+                                       ToolTip="时间轴缩放：每秒占多少像素（8–160 px/s）"/>
+                            <Slider x:Name="TimelineZoomSlider" Width="120"
+                                    Minimum="8" Maximum="160" Value="40"
+                                    SmallChange="2" LargeChange="10"
+                                    VerticalAlignment="Center"
+                                    ToolTip="拖动改变时间轴缩放：8–160 px/秒（默认 40）"
+                                    ValueChanged="TimelineZoomSlider_ValueChanged"/>
+                            <TextBlock x:Name="TimelineZoomLabel" Text="40 px/s" Width="56"
+                                       FontSize="11" Foreground="{StaticResource Muted}"
+                                       VerticalAlignment="Center" Margin="6,0,0,0"/>
+                            <Button x:Name="TimelineZoomResetBtn" Content="复位" MinWidth="48" Height="24" Padding="6,0"
+                                    FontSize="11" Margin="6,0,0,0"
+                                    Style="{StaticResource BtnSecondary}"
+                                    Click="TimelineZoomReset_Click"
+                                    ToolTip="恢复默认缩放 40 px/秒"/>
+                        </StackPanel>
+                    </Grid>
+                    <ScrollViewer x:Name="TimelineScroll" Grid.Row="1"
+                          HorizontalScrollBarVisibility="Auto"
+                          VerticalScrollBarVisibility="Disabled"
+                          AllowDrop="True"
+                          DragOver="Timeline_DragOver"
+                          DragLeave="Timeline_DragLeave"
+                          Drop="Timeline_Drop">
+                    <!-- MinHeight 110 → 96：标尺 22 + 卡片 64 = 86 已够；星号行在大窗口照样撑高 -->
+                    <Grid x:Name="TimelineHost" MinHeight="96"
+                          Background="Transparent"
+                          MouseLeftButtonDown="TimelineHost_MouseLeftButtonDown"
+                          MinWidth="{Binding ActualWidth, ElementName=TimelineScroll}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+                    <!-- 刻度底线：把标尺和下面的卡片分开，读数时不会把卡片上沿当成刻度 -->
+                    <Grid Grid.Row="0">
+                        <Canvas x:Name="TimelineRuler" Height="22" ClipToBounds="True"/>
+                        <Border Height="1" VerticalAlignment="Bottom"
+                                Background="{StaticResource Border}"/>
+                    </Grid>
+                    <StackPanel x:Name="SegmentPanel" Grid.Row="1" Orientation="Horizontal"
+                                VerticalAlignment="Top"/>
+                    <Canvas x:Name="TimelineOverlay" Grid.Row="1" ClipToBounds="True"
+                            IsHitTestVisible="False">
+                        <Border x:Name="ComposePlayhead" Width="2"
+                                Background="{StaticResource Accent}"
+                                Height="{Binding ActualHeight, ElementName=TimelineOverlay}"
+                                Visibility="Collapsed"/>
+                    </Canvas>
+                    <!-- 空状态：一条段都没有时这里本来是纯空白，改成把「下一步做什么」写在正中间。
+                         不参与命中测试，拖拽照样能落到时间轴上。 -->
+                    <TextBlock x:Name="TimelineEmptyLabel" Grid.Row="1"
+                               Text="还没有动作段。把左边「动作库」里的动作拖到这里，或双击动作库里的一条。"
+                               FontSize="12" Foreground="{StaticResource Muted}"
+                               TextWrapping="Wrap" TextAlignment="Center"
+                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                               Margin="16,4" IsHitTestVisible="False"/>
+                    </Grid>
+                    </ScrollViewer>
+                    <!-- 没内容时不再白占一行（原来是空字符串也占 ~20px）；有内容时照旧显示 -->
+                    <TextBlock x:Name="ComposeHintLabel" Grid.Row="2" Text=""
+                       FontSize="10" Foreground="{StaticResource Muted}"
+                       Margin="0,6,0,0" TextWrapping="Wrap">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Visible"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text, RelativeSource={RelativeSource Self}}" Value="">
+                                        <Setter Property="Visibility" Value="Collapsed"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    </Grid>
+                    </Border>
+
+                </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ════════════════════════════════════════════════════════
+                 标签页 2：微调波形（原 EditorPage 内容，功能原样保留）
+                 ════════════════════════════════════════════════════════ -->
+            <TabItem Header="微调波形" Style="{StaticResource HexaTabItem}">
+                <!-- P1-9：1024×640 / 880×560 下这个标签页会被裁，包一层纵向滚动；横向仍按窗口宽度自适应 -->
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <!-- MinHeight 绑到 ScrollViewer 视口高度：窗口够高时各 * 行仍能撑满，不够高时才出现纵向滚动 -->
+                <Grid MinHeight="{Binding ViewportHeight, RelativeSource={RelativeSource AncestorType=ScrollViewer}}">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>  <!-- 0 工具栏 -->
+                        <RowDefinition Height="Auto"/>  <!-- 1 轴开关 / 倍率 -->
+                        <RowDefinition Height="*"/>     <!-- 2 画布 + 时间轴刻度 -->
+                        <RowDefinition Height="Auto"/>  <!-- 3 波形工具 + 导出 + 预设（合并成一个 WrapPanel） -->
+                        <RowDefinition Height="Auto"/>  <!-- 4 关键帧列表（内部有 MaxHeight，别让它把画布挤扁） -->
+                    </Grid.RowDefinitions>
+
+                    <!-- Toolbar：P1-9 用 WrapPanel，880 宽时按钮换行而不是被裁 -->
+                    <WrapPanel Grid.Row="0" Margin="0,0,0,8">
+                        <StackPanel x:Name="AxisTabs" Orientation="Horizontal" Margin="0,0,12,0"/>
+                        <Button x:Name="BezierBtn" Content="平滑插值" Width="82" Height="28" FontSize="12"
+                                Style="{StaticResource BtnPrimary}" Margin="0,0,8,0" Click="BezierBtn_Click"
+                                ToolTip="切换控制点之间的插值方式（平滑 / 线性）"/>
+                        <TextBlock Text="周期" FontSize="12" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Slider x:Name="CycleSlider" Width="120" Minimum="0.5" Maximum="60" Value="2.0"
+                                SmallChange="0.5" VerticalAlignment="Center"
+                                ToolTip="画布整幅宽度对应的时间：一圈 = 该秒数。改周期会让所有控制点的时间按比例缩放。"/>
+                        <TextBlock x:Name="CycleLabel" Text="2.0s" FontSize="12"
+                                   Foreground="{StaticResource Muted}" Width="58" Margin="6,0,12,0"
+                                   VerticalAlignment="Center"/>
+                        <TextBlock x:Name="InfoLabel" Text="" FontSize="11"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                        <!-- P1-9 可选：可见的撤销/重做入口，和 Ctrl+Z / Ctrl+Y 走同一套逻辑 -->
+                        <Button x:Name="WaveUndoBtn" Content="↶ 撤销" Width="72" Height="28" FontSize="12"
+                                Style="{StaticResource BtnSecondary}" Margin="12,0,6,0"
+                                Click="WaveUndo_Click" ToolTip="撤销当前轴的上一次波形改动（等同 Ctrl+Z）"/>
+                        <Button x:Name="WaveRedoBtn" Content="↷ 重做" Width="72" Height="28" FontSize="12"
+                                Style="{StaticResource BtnSecondary}" Click="WaveRedo_Click"
+                                ToolTip="重做当前轴的波形改动（等同 Ctrl+Y）"/>
+                    </WrapPanel>
+
+                    <!-- Axis enable checkboxes -->
+                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                        <StackPanel x:Name="AxisEnablePanel" Orientation="Horizontal"/>
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                            <TextBlock Text="脚本倍率" FontSize="11" Foreground="{StaticResource Muted}"
+                                       VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <Slider x:Name="ScriptSpeedSlider" Width="100" Minimum="0.25" Maximum="2.0"
+                                    Value="1.0" SmallChange="0.05"
+                                    ToolTip="只影响试跑速度，不影响导出的时间戳。"/>
+                            <TextBlock x:Name="ScriptSpeedLabel" Text="1.00x" Width="42" FontSize="11"
+                                       Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,0,0"/>
+                        </StackPanel>
+                    </Grid>
+
+                    <!-- Canvas：宽度/高度随窗口自适应，模型坐标仍是 650x240（导出换算不变） -->
+                    <Border Grid.Row="2" Style="{StaticResource Card}" Padding="6">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="*"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+
+                            <Canvas x:Name="WaveCanvas" Grid.Row="0" MinHeight="140"
+                                    Background="#0D0D11" Cursor="Cross" ClipToBounds="True"
+                                    SizeChanged="WaveCanvas_SizeChanged"
+                                    MouseLeftButtonDown="Canvas_MouseLeftButtonDown"
+                                    MouseLeftButtonUp="Canvas_MouseLeftButtonUp"
+                                    MouseMove="Canvas_MouseMove"
+                                    MouseLeave="Canvas_MouseLeave"
+                                    LostMouseCapture="Canvas_LostMouseCapture"
+                                    MouseRightButtonDown="Canvas_MouseRightButtonDown"/>
+
+                            <!-- 时间轴刻度：每格秒数由周期推算 -->
+                            <Canvas x:Name="RulerCanvas" Grid.Row="1" Height="20" Margin="0,4,0,0"
+                                    ClipToBounds="True"/>
+
+                            <TextBlock x:Name="CanvasHintLabel" Grid.Row="2" Text="" FontSize="10"
+                                       Foreground="{StaticResource Muted}" Margin="0,4,0,0" TextWrapping="Wrap"/>
+
+                            <!-- P1-10：独立状态行。只由代码 SetWaveStatus 写，Redraw 绝不覆盖它 -->
+                            <TextBlock x:Name="WaveStatusLabel" Grid.Row="3" Text="" FontSize="11"
+                                       Foreground="{StaticResource Muted}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                        </Grid>
+                    </Border>
+
+                    <!-- 波形工具 + 导出 + 预设：合成一个 WrapPanel。
+                         原来占 3 行（形状 / 导出 / 预设），800 高的窗口下会把画布压到只剩 140px。 -->
+                    <WrapPanel Grid.Row="3" Margin="0,8,0,8">
+                        <Button x:Name="SineBtn"   Content="正弦波" Width="72" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="Sine_Click"/>
+                        <Button x:Name="SquareBtn" Content="方波"   Width="60" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="Square_Click"/>
+                        <Button x:Name="SawBtn"    Content="锯齿"   Width="60" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="Saw_Click"/>
+                        <Button Content="平滑" Width="60" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="Smooth_Click" ToolTip="降低相邻点的突变（只作用于当前轴）"/>
+                        <Button Content="反向" Width="60" Height="28" FontSize="12" Margin="0,0,6,6"
+                                Style="{StaticResource BtnSecondary}" Click="Invert_Click" ToolTip="上下翻转当前轴"/>
+                        <Button x:Name="ClearBtn"  Content="清除"   Width="60" Height="28" FontSize="12"
+                                Style="{StaticResource BtnDanger}" Margin="0,0,16,6" Click="Clear_Click"
+                                ToolTip="清空当前轴的全部控制点（Ctrl+Z 可撤销）"/>
+                        <Button x:Name="ImportBtn" Content="导入脚本集" Width="104" Height="28" FontSize="12"
+                                Style="{StaticResource BtnPrimary}" Margin="0,0,16,6" Click="Import_Click"
+                                ToolTip="导入 funscript / 多轴脚本集，按原始时长铺满画布"/>
+                        <TextBlock Text="圈数" FontSize="12" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,6,6"/>
+                        <Slider x:Name="LoopSlider" Width="110" Minimum="1" Maximum="60" Value="1"
+                                SmallChange="1" LargeChange="5" TickFrequency="1" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center" Margin="0,0,0,6"
+                                ToolTip="只影响导出时长（导出时长 = 周期 × 圈数）；试跑会一直循环直到手动停止。"/>
+                        <TextBlock x:Name="LoopLabel" Text="×1" Width="36" FontSize="12"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,6"/>
+                        <TextBlock x:Name="ExportDurationLabel" Text="导出时长 2.0s" FontSize="12"
+                                   Foreground="{StaticResource Accent}" VerticalAlignment="Center" Margin="0,0,16,6"/>
+                        <Button x:Name="ExportBtn" Content="导出" Width="72" Height="28" FontSize="12"
+                                Style="{StaticResource BtnPrimary}" Margin="0,0,8,6" Click="Export_Click"
+                                ToolTip="单轴时写你选定的文件名；多轴时每轴一个 .轴名.funscript 文件；时间戳 = 圈次×周期 + X/画布宽度×周期"/>
+                        <Button x:Name="PlayCwBtn" Content="▶ 播放（驱动设备）" MinWidth="120" Height="28" FontSize="12"
+                                Style="{StaticResource BtnSecondary}" Margin="0,0,16,6" Click="PlayCw_Click"
+                                ToolTip="用当前波形直接驱动设备，画布上显示播放头"/>
+                        <TextBlock Text="波形预设：" FontSize="12" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,8,6"/>
+                        <Button Content="保存预设" Width="90" Height="26" FontSize="12"
+                                Style="{StaticResource BtnSecondary}" Margin="0,0,6,6" Click="SavePreset_Click"/>
+                        <Button Content="加载预设" Width="90" Height="26" FontSize="12"
+                                Style="{StaticResource BtnSecondary}" Margin="0,0,0,6" Click="LoadPreset_Click"/>
+                    </WrapPanel>
+
+                    <!-- Keyframe list：点击定位高亮 / ✕ 删除。
+                         注意：列表必须限高。否则几百行会把外层 Grid 撑到几千像素，
+                         画布所在的 * 行就只剩 MinHeight（最大化也一样扁）。 -->
+                    <Border Grid.Row="4" Style="{StaticResource Card}" Padding="8,6">
+                        <StackPanel>
+                            <TextBlock Text="关键帧（点击定位并高亮对应点，✕ 删除）" FontSize="11"
+                                       Foreground="{StaticResource Muted}" Margin="0,0,0,4"/>
+                            <ScrollViewer MaxHeight="160" VerticalScrollBarVisibility="Auto">
+                                <StackPanel x:Name="KeyframeList"/>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+    </Grid>
+</Page>

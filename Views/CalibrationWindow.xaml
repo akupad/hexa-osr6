@@ -1,0 +1,184 @@
+<Window x:Class="Hexa.Views.CalibrationWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="设备校准" Width="470" Height="700"
+        MinWidth="430" MinHeight="600"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="{StaticResource Bg}" Foreground="{StaticResource Text}">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 内容区：默认尺寸下全部可见；只有把窗口拖小了才出现滚动条（不裁剪任何东西） -->
+        <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="20,18,20,16" MaxWidth="430" HorizontalAlignment="Center">
+
+                <!-- 标题 -->
+                <TextBlock Text="📐 设备校准" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="这台设备不会回报自己停在哪：每一步都要你用眼睛确认过，再点「记录」。"
+                           Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/>
+
+                <!-- 设备状态：绿=可以动 / 黄=没连接·归中·被接管 / 红=急停 / 蓝=正在移动 -->
+                <Border x:Name="StatusCard" Margin="0,14,0,0" Padding="12,10" CornerRadius="8"
+                        BorderThickness="1" BorderBrush="{StaticResource BorderStrong}"
+                        Background="{StaticResource WarningSoft}">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="{StaticResource Warning}"
+                                 VerticalAlignment="Top" Margin="0,5,0,0"/>
+                        <StackPanel Margin="9,0,0,0">
+                            <TextBlock x:Name="StatusText" Text="设备没连接" FontSize="12" FontWeight="SemiBold"
+                                       Foreground="{StaticResource Warning}" TextWrapping="Wrap"/>
+                            <TextBlock x:Name="StatusHint" Text="先回设置页连上设备，再回来校准。" FontSize="11"
+                                       Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <!-- ① 让设备动 -->
+                <Border Style="{StaticResource Card}" Padding="14,12" Margin="0,12,0,0">
+                    <StackPanel>
+                        <TextBlock Text="① 让设备挪到位置" FontSize="13" FontWeight="SemiBold"/>
+
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="校准轴" Foreground="{StaticResource Muted}" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <ComboBox x:Name="AxisCombo" Grid.Column="1" Height="32" SelectionChanged="Axis_Changed"/>
+                        </Grid>
+
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="目标位置" Foreground="{StaticResource Muted}" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <Slider x:Name="TargetSlider" Grid.Column="1" Minimum="0" Maximum="9999"
+                                    SmallChange="50" ValueChanged="Target_Changed" VerticalAlignment="Center"
+                                    ToolTip="这条滑杆覆盖整个 0–9999，可以拖到当前限位之外"/>
+                            <TextBlock x:Name="TargetLabel" Grid.Column="2" Text="5000" FontSize="12" MinWidth="40"
+                                       TextAlignment="Right" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                        </Grid>
+
+                        <Grid Margin="0,12,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="MoveBtn" Content="移动到目标" Style="{StaticResource BtnPrimary}" Width="104" Height="32"
+                                    Click="Move_Click"
+                                    ToolTip="把选中的轴移到上面滑杆的位置。点了设备就真的会动。"/>
+                            <CheckBox x:Name="SlowMoveCheck" Grid.Column="1" Content="慢一点" IsChecked="True"
+                                      FontSize="12" HorizontalAlignment="Left" VerticalAlignment="Center"
+                                      Margin="14,0,8,0"
+                                      ToolTip="勾上：用 3 秒慢慢走完，跨得远时更不容易半路卡住。取消勾选：1.2 秒走完。"/>
+                            <Button x:Name="HomeBtn" Grid.Column="2" Content="全部归中" Style="{StaticResource BtnSecondary}"
+                                    Width="90" Height="32" Click="Home_Click"
+                                    ToolTip="六个轴一起回到行程中间；急停锁定时会先问你。"/>
+                        </Grid>
+
+                        <TextBlock Foreground="{StaticResource Warning}" FontSize="11" TextWrapping="Wrap"
+                                   Margin="0,9,0,0"
+                                   Text="⚠ 点「移动到目标」设备会真的动起来：先小步试，别一下走满全程。"/>
+                    </StackPanel>
+                </Border>
+
+                <!-- ② 记录边界 -->
+                <Border Style="{StaticResource Card}" Padding="14,12" Margin="0,12,0,0">
+                    <StackPanel>
+                        <TextBlock Text="② 把它停的位置记下来" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Text="「记录」就是把上面滑杆的位置填进框里；框里也可以直接填数字。"
+                                   Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap"
+                                   Margin="0,5,0,0"/>
+
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Text="最小" Foreground="{StaticResource Muted}" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,0,12,0"/>
+                            <TextBox x:Name="MinBox" Grid.Column="1" Height="32" MaxLength="4"
+                                     VerticalContentAlignment="Center" PreviewTextInput="Digits_Only"
+                                     ToolTip="0–9999 的整数：这个轴能到的最小位置"/>
+                            <Button x:Name="MinBtn" Grid.Column="2" Content="记录为最小" Style="{StaticResource BtnSecondary}"
+                                    MinWidth="92" Height="32" Margin="8,0,0,0" Click="Min_Click"
+                                    ToolTip="把上面滑杆的位置填进左边的「最小」框"/>
+                            <TextBlock Grid.Row="1" Text="最大" Foreground="{StaticResource Muted}" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,8,12,0"/>
+                            <TextBox x:Name="MaxBox" Grid.Row="1" Grid.Column="1" Height="32" MaxLength="4"
+                                     VerticalContentAlignment="Center" PreviewTextInput="Digits_Only"
+                                     Margin="0,8,0,0" ToolTip="0–9999 的整数：这个轴能到的最大位置"/>
+                            <Button x:Name="MaxBtn" Grid.Row="1" Grid.Column="2" Content="记录为最大"
+                                    Style="{StaticResource BtnSecondary}" MinWidth="92" Height="32"
+                                    Margin="8,8,0,0" Click="Max_Click"
+                                    ToolTip="把上面滑杆的位置填进左边的「最大」框"/>
+                        </Grid>
+
+                        <TextBlock x:Name="RangeHint" Foreground="{StaticResource Faint}" FontSize="10"
+                                   TextWrapping="Wrap" Margin="0,9,0,0"
+                                   Text="现在是 0–9999。范围只能填 0–9999，两头至少差 50；改完要点右下角「保存限位」才算数。"/>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- 底部：常驻急停 + 保存。这一块永远留在窗口里（内容区怎么滚都带着走不掉）：
+             本窗口是用 ShowDialog 模态打开的，主窗口左侧栏那个急停在这里根本点不到，
+             所以必须自带一个 —— 否则校准的时候「停不下来只能靠全局热键」。
+             下面「保存限位」= 写进设置文件；关掉本窗口就回设置页（设置页的「轴限位」表会自动刷新）。 -->
+        <Border Grid.Row="1" Background="{StaticResource BgRaised}" BorderBrush="{StaticResource Border}"
+                BorderThickness="0,1,0,0" Padding="20,10,20,12">
+            <Grid MaxWidth="430" HorizontalAlignment="Center">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- 急停行：按钮永远可点（急停锁定后点它 = 走和主窗口一样的解除确认流程） -->
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Button x:Name="EStopBtn" Content="⛔  锁定急停" Style="{StaticResource BtnDanger}"
+                            Width="148" Height="34" HorizontalAlignment="Left" Click="EStop_Click"
+                            ToolTip="立刻停住所有动作并锁住输出。这个按钮任何时候都能点。"/>
+                    <TextBlock x:Name="EStopHint" Grid.Column="1" Margin="12,0,0,0" FontSize="10"
+                               Foreground="{StaticResource Faint}" TextWrapping="Wrap"
+                               VerticalAlignment="Center"
+                               Text="停住后设备不会再动，要再动它得先解除急停（会先问你一次）"/>
+                </Grid>
+
+                <!-- 保存行 -->
+                <Grid Grid.Row="1" Margin="0,10,0,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="保存后回设置页的「轴限位」看结果"
+                               Foreground="{StaticResource Faint}" FontSize="10" TextWrapping="Wrap"
+                               VerticalAlignment="Center" Margin="0,0,12,0"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                        <Button x:Name="CloseBtn" Content="关闭" Style="{StaticResource BtnSecondary}"
+                                MinWidth="88" Height="32" Click="Cancel_Click"/>
+                        <Button x:Name="SaveBtn" Content="保存限位" Style="{StaticResource BtnPrimary}"
+                                Width="104" Height="32" Margin="8,0,0,0" Click="Save_Click"/>
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

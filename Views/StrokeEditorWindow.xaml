@@ -1,0 +1,169 @@
+<Window x:Class="Hexa.Views.StrokeEditorWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="动作编辑器" Width="880" Height="720"
+        MinWidth="560" MinHeight="600"
+        WindowStartupLocation="CenterOwner" ResizeMode="CanResize"
+        Background="{StaticResource Bg}" Foreground="{StaticResource Text}"
+        KeyDown="Window_KeyDown">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- 标题：一句话说清「这是什么」和「按保存会发生什么」 -->
+        <StackPanel Grid.Row="0" Margin="0,0,0,12">
+            <TextBlock Text="🎛 动作编辑器" FontSize="21" FontWeight="SemiBold"/>
+            <TextBlock Foreground="{StaticResource Muted}" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"
+                       Text="调好要用哪几条轴、怎么动，下面的图会跟着动。保存后立刻能在动作页里用，关掉程序也还在。"/>
+        </StackPanel>
+
+        <!-- 上半部分（可滚动）：只有这里滚动，预览图和按钮始终看得见 -->
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                      Padding="0,0,2,0">
+            <StackPanel>
+
+                <!-- ① 基本信息 -->
+                <Border Style="{StaticResource Card}">
+                    <StackPanel>
+                        <TextBlock Text="① 基本信息" FontSize="13" FontWeight="SemiBold"/>
+
+                        <Grid Margin="0,10,0,0">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                                <RowDefinition Height="Auto"/>
+                            </Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- 英文名：写进 presets.json 的 Id，同时用于查重 -->
+                            <TextBlock Grid.Row="0" Text="英文名" Foreground="{StaticResource Muted}" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,0,10,0"/>
+                            <TextBox x:Name="NameBox" Grid.Row="0" Grid.Column="1" Height="32" MaxLength="48"
+                                     VerticalContentAlignment="Center" TextChanged="Name_Changed"
+                                     ToolTip="保存用的名字：只能用 a-z、0-9 和连字符 -（最长 48 位）。它也用来查重，不能和已有动作重名。想写中文请填下面的「显示名」。"/>
+                            <TextBlock x:Name="NameHint" Grid.Row="0" Grid.Column="2"
+                                       Foreground="{StaticResource Warning}" FontSize="11"
+                                       VerticalAlignment="Center" Margin="10,0,0,0" TextWrapping="Wrap"
+                                       MaxWidth="220"/>
+
+                            <!-- 显示名：动作列表里看到的那个名字 -->
+                            <TextBlock Grid.Row="1" Text="显示名" Foreground="{StaticResource Muted}" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,8,10,0"/>
+                            <TextBox x:Name="DisplayNameBox" Grid.Row="1" Grid.Column="1" Height="32" Margin="0,8,0,0"
+                                     MaxLength="48" VerticalContentAlignment="Center"
+                                     TextChanged="DisplayName_Changed"
+                                     ToolTip="动作列表、播放卡片上显示的名字，可以写中文，例如「向下前推」。留空就用上面的英文名。"/>
+                            <TextBlock Grid.Row="1" Grid.Column="2" Text="列表里显示的名字，可留空"
+                                       Foreground="{StaticResource Faint}" FontSize="10"
+                                       VerticalAlignment="Center" Margin="10,8,0,0"/>
+
+                            <!-- 分类：决定在动作库里按哪个分类筛选 -->
+                            <TextBlock Grid.Row="2" Text="分类" Foreground="{StaticResource Muted}" FontSize="12"
+                                       VerticalAlignment="Center" Margin="0,8,10,0"/>
+                            <ComboBox x:Name="CatCombo" Grid.Row="2" Grid.Column="1" Width="170" Height="30"
+                                      Margin="0,8,0,0" HorizontalAlignment="Left"
+                                      ToolTip="动作库里按分类筛选时用。选不准就保持默认：只影响归类，不影响动作怎么动。"/>
+                            <TextBlock Grid.Row="2" Grid.Column="2"
+                                       Text="只影响动作库里的归类"
+                                       Foreground="{StaticResource Faint}" FontSize="10"
+                                       VerticalAlignment="Center" Margin="10,8,0,0"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ② 哪几条轴参与 -->
+                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                    <StackPanel>
+                        <Grid>
+                            <TextBlock Text="② 哪几条轴跟着动" FontSize="13" FontWeight="SemiBold"/>
+                            <TextBlock HorizontalAlignment="Right" Foreground="{StaticResource Faint}" FontSize="10"
+                                       VerticalAlignment="Center"
+                                       Text="L0–L2 = 左侧三条，R0–R2 = 右侧三条"/>
+                        </Grid>
+                        <TextBlock Foreground="{StaticResource Muted}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"
+                                   Text="打勾的轴才跟着动，没打勾的保持原位不动。至少要留一条。"/>
+                        <Grid Margin="0,8,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <StackPanel x:Name="AxisChecks" Grid.Column="0" Orientation="Horizontal"
+                                        VerticalAlignment="Center"/>
+                            <TextBlock x:Name="AxisHint" Grid.Column="1" Foreground="{StaticResource Warning}"
+                                       FontSize="11" VerticalAlignment="Center" Margin="12,0,0,0"
+                                       TextWrapping="Wrap" MaxWidth="200"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <!-- ③ 每条轴怎么动（行由代码生成） -->
+                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                    <StackPanel>
+                        <TextBlock Text="③ 每条轴怎么动" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Foreground="{StaticResource Muted}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"
+                                   Text="拖左右两个圆点 = 定这条轴的行程（0 = 最近，1 = 最远，拖过头就是反向）；右边选速度变化的方式。下面四个滑杆是逐条轴微调，拿不准就别动。"/>
+                        <StackPanel x:Name="AxisRowsPanel" Margin="0,8,0,0"/>
+                    </StackPanel>
+                </Border>
+
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- ④ 波形预览：固定在下面，改参数时能立刻看到变化（只是画图，不驱动设备） -->
+        <Border Grid.Row="2" Style="{StaticResource Card}" Margin="0,12,0,0">
+            <StackPanel>
+                <Grid>
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="④ 波形预览" FontSize="13" FontWeight="SemiBold"/>
+                        <Border Background="{StaticResource SurfaceRaised}" CornerRadius="3"
+                                Padding="6,1" Margin="8,0,0,0" VerticalAlignment="Center">
+                            <TextBlock Text="只画图，不驱动设备" FontSize="10"
+                                       Foreground="{StaticResource Muted}"/>
+                        </Border>
+                    </StackPanel>
+                    <Button x:Name="PreviewPauseBtn" Content="暂停" Style="{StaticResource BtnGhost}"
+                            Height="26" Padding="10,0" HorizontalAlignment="Right"
+                            Click="PreviewPause_Click"
+                            ToolTip="暂停只是让这张图停下来，不影响动作参数，更不影响设备。"/>
+                </Grid>
+                <TextBlock Foreground="{StaticResource Muted}" FontSize="10" Margin="0,4,0,0" TextWrapping="Wrap"
+                           Text="横轴 = 一圈（约 1 秒），纵轴 = 这条轴的位置 0→1；亮圆点 = 此刻各轴走到哪。线越陡，那段动得越快；虚线 = 加了「收缩」之后可能跑到的范围。"/>
+                <Canvas x:Name="WaveCanvas" Height="132" Margin="0,8,0,0" ClipToBounds="True"
+                        Background="{StaticResource Surface}"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 底部：状态提示 + 按钮（始终可见） -->
+        <Grid Grid.Row="3" Margin="0,12,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <Border Grid.Column="0" CornerRadius="5" Padding="9,6" VerticalAlignment="Center"
+                    Background="{StaticResource Surface}" BorderThickness="1"
+                    BorderBrush="{StaticResource BorderStrong}">
+                <TextBlock x:Name="StatusText" FontSize="11" TextWrapping="Wrap"
+                           VerticalAlignment="Center"/>
+            </Border>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Margin="12,0,0,0"
+                        VerticalAlignment="Center">
+                <Button Content="取消" Style="{StaticResource BtnSecondary}" Width="76" Height="34"
+                        Margin="0,0,8,0" Click="Cancel_Click" IsCancel="True"
+                        ToolTip="不保存，关掉这个窗口（有改动会先问一次）。"/>
+                <Button x:Name="SaveBtn" Content="保存到动作库" Style="{StaticResource BtnPrimary}"
+                        Width="132" Height="34" Click="Save_Click" IsDefault="True"
+                        ToolTip="写入动作库和 presets.json。英文名和已有动作重名时会先问你。"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>
