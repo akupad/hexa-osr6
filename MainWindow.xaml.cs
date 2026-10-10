@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using Hexa.Services;
 using Hexa.Views;
 
 namespace Hexa;
@@ -58,6 +59,9 @@ public partial class MainWindow : Window
         _statusTimer.Start();
 
         _navBtns = new[] { NavPlayground, NavManual, NavStrokes, NavEditor, NavAi, NavScripts, NavSettings, NavTestLab };
+
+        // 界面语言：App 启动时已按设置定好，这里把侧栏（导航按钮 + 连接/安全/为什么不动 三行 + 归中·急停）应用一遍。
+        LocalizationService.Apply(this);
 
         // Hotkeys need the HWND — attach after the window source is created
         SourceInitialized += (_, _) =>
@@ -175,7 +179,33 @@ public partial class MainWindow : Window
             b.Foreground  = active ? (Brush)FindResource("OnPrimaryInk") : (Brush)FindResource("Text");
         }
 
-        ContentFrame.Navigate(GetPage(tag));
+        Page page = GetPage(tag);
+        ContentFrame.Navigate(page);
+        ApplyLanguageToPage(page);
+    }
+
+    /// <summary>
+    /// 切页后立刻把这一页按当前语言应用一遍。
+    /// 另外挂一次性的 Loaded 钩子：列头这类"只有排完版才在可视树里生成"的文字，导航那一刻还没被创建。
+    /// </summary>
+    private void ApplyLanguageToPage(Page page)
+    {
+        LocalizationService.Apply(page);
+        page.Loaded += OnPageLoadedApplyLanguage;
+    }
+
+    private static void OnPageLoadedApplyLanguage(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement page) return;
+        page.Loaded -= OnPageLoadedApplyLanguage;   // 只补一次，之后每次切页都重挂会积钩子
+        LocalizationService.Apply(page);
+    }
+
+    /// <summary>切换界面语言后，把侧栏与当前页面一起重刷（设置页的下拉改完立刻调用，不用重启）。</summary>
+    public void ApplyLanguage()
+    {
+        LocalizationService.Apply(this);
+        if (ContentFrame.Content is FrameworkElement page) LocalizationService.Apply(page);
     }
 
     private void Nav_Click(object sender, RoutedEventArgs e)
@@ -197,24 +227,38 @@ public partial class MainWindow : Window
             ? Color.FromRgb(0xEF, 0x44, 0x44)
             : stopped ? Color.FromRgb(0xF4, 0x72, 0x72)
             : runnable ? Color.FromRgb(0x22, 0xC5, 0x7A) : Color.FromRgb(0xF5, 0xB8, 0x42));
-        ConnLabel.Text = connected ? App.Serial.PortName : "未连接";
-        SafetyLabel.Text = App.Engine.SafetyStatus;
+        ConnLabel.Text = connected ? App.Serial.PortName : LocalizationService.T("未连接");
+        SafetyLabel.Text = TranslateStatus(App.Engine.SafetyStatus);
 
         // 一行说清「现在谁在动 / 输出锁没锁 / 游戏最近发了什么」——以前这些散在三处，用户只能猜。
-        var why = new List<string> { App.Engine.DriverLabel };
-        if (!App.Serial.OutputEnabled && connected) why.Add("输出已锁（点全部归中解锁）");
-        if (App.Bridge.Active) why.Add(App.Bridge.ClientCount > 0 ? $"游戏已连（{App.Bridge.ClientCount}）" : "桥开着·等游戏连");
+        var why = new List<string> { TranslateStatus(App.Engine.DriverLabel) };
+        if (!App.Serial.OutputEnabled && connected) why.Add(LocalizationService.T("输出已锁（点全部归中解锁）"));
+        if (App.Bridge.Active) why.Add(App.Bridge.ClientCount > 0
+            ? string.Format(LocalizationService.T("游戏已连（{0}）"), App.Bridge.ClientCount)
+            : LocalizationService.T("桥开着·等游戏连"));
         string last = App.Bridge.LastCommand;
-        if (!string.IsNullOrWhiteSpace(last) && last != "—") why.Add("最近：" + last);
+        if (!string.IsNullOrWhiteSpace(last) && last != "—") why.Add(LocalizationService.T("最近：") + last);
         WhyLabel.Text = string.Join(" · ", why);
         SafetyLabel.Foreground = new SolidColorBrush(stopped
             ? Color.FromRgb(0xF4, 0x72, 0x72)
             : runnable ? Color.FromRgb(0x6E, 0xD6, 0xA0) : Color.FromRgb(0xF5, 0xB8, 0x42));
 
         // 急停文案要自解释：解锁入口是“全部归中”，动态值与 MainWindow.xaml 里的默认值保持一致。
-        EStopBtn.Content = stopped ? "⛔  已急停（点归中解锁）" : "⛔  锁定急停";
+        EStopBtn.Content = LocalizationService.T(stopped ? "⛔  已急停（点归中解锁）" : "⛔  锁定急停");
 
         HomeBtn.IsEnabled = connected;
+    }
+
+    /// <summary>
+    /// 引擎拼出来的状态串（例「运行中 · 脚本播放」）的翻译：词表只认整串，所以按固定分隔符拆开分别查表。
+    /// 拆不动（例「⚠ 串口卡死，请拔插 USB…」这类带原因的建议）就整串查表，查不到原样显示中文 ——
+    /// 一句看得懂的中文建议，比半截英文有用。
+    /// </summary>
+    private static string TranslateStatus(string status)
+    {
+        int separator = status.IndexOf(" · ", StringComparison.Ordinal);
+        if (separator < 0) return LocalizationService.T(status);
+        return LocalizationService.T(status[..separator]) + " · " + LocalizationService.T(status[(separator + 3)..]);
     }
 
     private void EStopBtn_Click(object sender, RoutedEventArgs e) => App.Engine.EmergencyStop();
@@ -223,8 +267,8 @@ public partial class MainWindow : Window
     {
         // 归中会解除急停并重新使能输出：急停锁定时先确认，避免侧栏常驻按钮误触直接解锁。
         if (App.Engine.EmergencyStopped && System.Windows.MessageBox.Show(
-                "设备处于急停锁定，归中会解除急停并重新使能输出，是否继续？",
-                "解除急停", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+                LocalizationService.T("设备处于急停锁定，归中会解除急停并重新使能输出，是否继续？"),
+                LocalizationService.T("解除急停"), MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         App.Engine.Home();
     }
 }

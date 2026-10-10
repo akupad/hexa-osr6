@@ -60,6 +60,8 @@ public partial class SettingsPage : Page
     private long _lastAxisDragAt;
     private string? _capturingHotkeyAction;
     private Button? _capturingHotkeyButton;
+    /// <summary>回填语言下拉时抑制 SelectionChanged 误触发（否则构造页面就会写盘 + 重刷界面）。</summary>
+    private bool _loadingLanguage;
 
     public SettingsPage()
     {
@@ -96,6 +98,7 @@ public partial class SettingsPage : Page
         GlobalHotkeysCheck.Checked += (_, _) => SetGlobalHotkeysEnabled(true);
         GlobalHotkeysCheck.Unchecked += (_, _) => SetGlobalHotkeysEnabled(false);
         UpdatePortState();
+        InitLanguageSetting();
         Focusable = true;
         PreviewKeyDown += CaptureHotkey_KeyDown;
 
@@ -328,6 +331,33 @@ public partial class SettingsPage : Page
             $"{what}在本次运行中已生效，但写入 settings.json 失败（可能是权限、磁盘空间或文件被占用）。\n重启后这些改动可能丢失，请检查后重试。",
             "保存失败", MessageBoxButton.OK, MessageBoxImage.Warning);
         return false;
+    }
+
+    // ── 界面语言 ────────────────────────────────────────────────────
+    /// <summary>把语言下拉回填成当前设置（回填期间不触发保存/重刷）。</summary>
+    private void InitLanguageSetting()
+    {
+        _loadingLanguage = true;
+        LanguageCombo.SelectedIndex = LocalizationService.UiLanguage == LocalizationService.English ? 1 : 0;
+        _loadingLanguage = false;
+    }
+
+    /// <summary>
+    /// 换语言：写完设置立刻把当前窗口重刷一遍 —— 语言切换必须是即时的，要求重启才算坏。
+    /// </summary>
+    private void LanguageCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingLanguage) return;
+        string language = LanguageCombo.SelectedIndex == 1
+            ? LocalizationService.English
+            : LocalizationService.Chinese;
+        if (language == LocalizationService.UiLanguage) return;
+        LocalizationService.UiLanguage = language;
+        App.Settings.UiLanguage = language;
+        App.Settings.Save();
+        // 主窗口在的话交给它（侧栏 + 当前页一起刷）；不在（自检里单独构造页面）就只刷本页。
+        if (Window.GetWindow(this) is Hexa.MainWindow mainWindow) mainWindow.ApplyLanguage();
+        else LocalizationService.Apply(this);
     }
 
     // ── 悬浮窗设置 ──────────────────────────────────────────────────

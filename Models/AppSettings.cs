@@ -379,6 +379,12 @@ public class AppSettings
     public bool   WindowMaximized { get; set; }
     public string LastPageTag  { get; set; } = "playground";
 
+    /// <summary>
+    /// 界面语言（"zh" 中文 / "en" English，默认中文）。Normalize 会白名单校验。
+    /// 运行时由 <see cref="Hexa.Services.LocalizationService"/> 按词表整串替换，不重启即可切换。
+    /// </summary>
+    public string UiLanguage   { get; set; } = Hexa.Services.LocalizationService.Chinese;
+
     // ══ AI 助手相关：是否已把明文 Key 迁移成加密（内部标记）════════════════
     /// <summary>API Key 是否已用 DPAPI 加密存储（内部用，界面不显示）。</summary>
     public bool   AiKeyProtected     { get; set; } = false;
@@ -772,6 +778,11 @@ public class AppSettings
                 => LastPageTag.Trim().ToLowerInvariant(),
             _ => "playground",
         };
+        // 界面语言：只认 zh / en（老配置没有这个字段、或被人手工写坏 → 回中文）
+        UiLanguage = string.Equals((UiLanguage ?? "").Trim(), Hexa.Services.LocalizationService.English,
+            StringComparison.OrdinalIgnoreCase)
+            ? Hexa.Services.LocalizationService.English
+            : Hexa.Services.LocalizationService.Chinese;
 
         GameBridgeMode = GameBridgeMode?.Trim().ToLowerInvariant() switch
         {

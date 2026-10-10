@@ -189,6 +189,9 @@ public partial class App : System.Windows.Application
         AppSettings.MigrateLegacyDataIfNeeded();
         Settings = AppSettings.Load();
         Settings.Save();
+        // 界面语言：必须赶在 MainWindow 之前定下来，否则首屏会先按中文渲染一遍。
+        // （Normalize 已保证这里只有 zh / en，写坏的值回落中文。）
+        Hexa.Services.LocalizationService.UiLanguage = Settings.UiLanguage;
         Serial   = new SerialService();
         Engine   = new MotionEngine(Serial, Settings);
         Hotkeys  = new HotkeyService();

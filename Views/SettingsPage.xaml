@@ -46,6 +46,18 @@
             <TextBlock Text="连接设备、限定每个轴能走多远，以及悬浮窗、热键和 AI 助手。"
                        Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,16" TextWrapping="Wrap"/>
 
+            <!-- 界面语言：放在标题下面而不是塞进某张卡里 —— 它是全局偏好，而且改完立刻对当前窗口生效
+                 （见 LanguageCombo_SelectionChanged），不需要重启。两个选项各自用本语言书写。 -->
+            <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                <TextBlock Text="🌐 界面语言 / UI language" FontSize="12"
+                           Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                <ComboBox x:Name="LanguageCombo" Width="150" FontSize="12"
+                          VerticalAlignment="Center" SelectionChanged="LanguageCombo_SelectionChanged">
+                    <ComboBoxItem Content="中文"/>
+                    <ComboBoxItem Content="English"/>
+                </ComboBox>
+            </StackPanel>
+
 
         <!-- 宽窗口两栏、窄窗口一栏（见 code-behind ApplySettingsLayout）：设置页卡片多、
              每张都不到 520px 宽，单列限宽在 1280 窗口下左右各空 380px 而且要滚很久。

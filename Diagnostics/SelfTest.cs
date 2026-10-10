@@ -364,6 +364,47 @@ internal static class SelfTest
             PageSmoke("悬浮窗", () => new Hexa.Views.CompactOverlay());
             PageSmoke("主窗口", () => new Hexa.MainWindow());
 
+            Section("九点二、界面语言：中文 ⇄ English 一次切换就见效，且能复原");
+            // 用户要的是「英文版」：这里验证真窗口上的侧栏按钮真的换了字、重复应用不变样（幂等），
+            // 并且切回去能复原 —— 只切一半或越切越乱，都比没翻译更糟。
+            App.Dispatch(() =>
+            {
+                var window = App.Current.MainWindow as Hexa.MainWindow;
+                var navPlayground = window?.FindName("NavPlayground") as System.Windows.Controls.Button;
+                if (window is null || navPlayground is null)
+                {
+                    Check("界面语言：拿得到主窗口的侧栏导航按钮", false);
+                    return;
+                }
+
+                string original = LocalizationService.UiLanguage;
+                string english = "";
+                string restored = "";
+                bool applied = false;
+                bool idempotent = false;
+                try
+                {
+                    LocalizationService.UiLanguage = LocalizationService.English;
+                    window.ApplyLanguage();
+                    english = navPlayground.Content as string ?? "";
+                    window.ApplyLanguage();                       // 第二次：幂等，不许叠成别的样子
+                    idempotent = (navPlayground.Content as string ?? "") == english;
+                    applied = english.Contains("Playground", StringComparison.Ordinal);
+                }
+                finally
+                {
+                    // 无论上面怎么走，都要把语言还给用户设置的那一份（自检不许改用户的界面语言）
+                    LocalizationService.UiLanguage = original;
+                    window.ApplyLanguage();
+                    restored = navPlayground.Content as string ?? "";
+                }
+
+                string expected = original == LocalizationService.English ? english : "🎮  游玩";
+                Check($"界面语言：切到 English 侧栏变英文（「{english}」）、重复应用不变样（幂等={idempotent}）、"
+                    + $"切回 {original} 复原（「{restored}」）",
+                    applied && idempotent && restored == expected);
+            });
+
             // 新增的「〰 让它自己摆（正弦）」：默认静止、勾上允许才动、按停立刻停手。
             Section("九点五、手动动轴页的正弦摆动发生器");
             // 先等上一个模块的过渡/归中停下来再测：桥的最后一次会话断开现在会走 ResetToCenter -> Home()，

@@ -2295,6 +2295,38 @@ try
         FirmwareSettingsService.ParseSettingList("").Count == 0
         && FirmwareSettingsService.ParseSettingList(null).Count == 0
         && FirmwareSettingsService.ParseSettingList("hello world\n\n").Count == 0);
+
+    // ── 界面语言的词表（中文原文 → English）────────────────────────────────
+    // 词表是运行时翻译（LocalizationService.Apply）的唯一真源：键必须逐字符等于界面上的原文，
+    // 写错一条（多一个空格、抄错一个字）只会「静默不生效」，所以在单测里把结构和最关键的几条钉死。
+    var uiTable = Hexa.Services.LocalizationTable.Entries;
+    Check($"界面词表：键不重复（{uiTable.Length} 条）",
+        uiTable.Select(entry => entry.Zh).Distinct(StringComparer.Ordinal).Count() == uiTable.Length);
+    Check("界面词表：没有空键/空值",
+        uiTable.All(entry => !string.IsNullOrWhiteSpace(entry.Zh) && !string.IsNullOrWhiteSpace(entry.En)));
+    Check("界面词表：每个键都是界面上的中文原文（含汉字）",
+        uiTable.All(entry => entry.Zh.Any(c => c is >= '\u4e00' and <= '\u9fff')));
+    Check($"界面词表：第一版按页面覆盖到 200 条以上（实际 {uiTable.Length} 条）", uiTable.Length >= 200);
+    Check("界面词表：查表用字典与词条一一对应",
+        Hexa.Services.LocalizationTable.Map.Count == uiTable.Length);
+    Check("界面词表：T(\"全部归中\") 返回英文",
+        Hexa.Services.LocalizationService.T("全部归中") == "Center all");
+    Check("界面词表：查不到的中文原样返回（绝不半截替换）",
+        Hexa.Services.LocalizationService.T("这句话不在词表里") == "这句话不在词表里");
+    Check("界面词表：英文侧没有漏翻的汉字",
+        uiTable.All(entry => !entry.En.Any(c => c is >= '\u4e00' and <= '\u9fff')));
+
+    Hexa.Services.LocalizationService.UiLanguage = "fr";
+    bool languageFallback = Hexa.Services.LocalizationService.UiLanguage == Hexa.Services.LocalizationService.Chinese;
+    Hexa.Services.LocalizationService.UiLanguage = Hexa.Services.LocalizationService.Chinese;
+    Check("界面语言：运行时只认 zh / en，其它值一律当中文", languageFallback);
+
+    var languageSettings = new Hexa.Models.AppSettings { UiLanguage = "EN" };
+    languageSettings.Normalize();
+    var brokenLanguageSettings = new Hexa.Models.AppSettings { UiLanguage = "fr" };
+    brokenLanguageSettings.Normalize();
+    Check("设置：界面语言白名单（\"EN\" → en，写坏的 → zh）",
+        languageSettings.UiLanguage == "en" && brokenLanguageSettings.UiLanguage == "zh");
 }
 catch (Exception ex)
 {
