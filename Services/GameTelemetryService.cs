@@ -35,6 +35,43 @@ public sealed class GameTelemetryService : IDisposable
     public bool Listening => _client != null;
 
     /// <summary>
+    /// 最近一次绑定失败的原因（成功监听时为 null）。以前失败只写日志：界面上端口号照旧显示，
+    /// 用户照着提示在 VAM / 游戏里填了 127.0.0.1:26781，却一条都收不到，也无从知道是端口被占了。
+    /// 界面直接显示这句话（BridgePanel 的「接收原始 TCode」提示行）。
+    /// </summary>
+    public string? ListenError { get; private set; }
+
+    /// <summary>
+    /// 绑定失败时给用户的换端口建议：从 <paramref name="requested"/> 往上找一个本机真能绑上的
+    /// UDP 端口（最多试 20 个，绕回 1024 起）；全都被占时回退为 requested 本身，界面据此提示
+    /// 「关掉占用它的程序」。只在本机回环上试绑，不发任何数据。
+    /// </summary>
+    public static int SuggestFreePort(int requested)
+    {
+        for (int offset = 1; offset <= 20; offset++)
+        {
+            int candidate = requested + offset;
+            if (candidate > 65535) candidate -= 65535 - 1024;
+            candidate = Math.Clamp(candidate, 1024, 65535);
+            if (IsLoopbackPortFree(candidate)) return candidate;
+        }
+        return requested;
+    }
+
+    private static bool IsLoopbackPortFree(int port)
+    {
+        try
+        {
+            using var probe = new UdpClient(new IPEndPoint(IPAddress.Loopback, port));
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 限速：同一个来源端点每秒最多处理的包数，超出就丢弃并计数。
     /// 不限速的后果：本机任意进程高频发包会拖垮唯一收包循环（每包还要查一次前台进程）
     /// → 内核缓冲溢出 → 静默丢帧，界面完全看不出来。
@@ -94,10 +131,12 @@ public sealed class GameTelemetryService : IDisposable
 
     private void Start(int port)
     {
+        int requested = Math.Clamp(port, 0, 65535);
         try
         {
-            _client = new UdpClient(new IPEndPoint(IPAddress.Loopback, Math.Clamp(port, 0, 65535)));
+            _client = new UdpClient(new IPEndPoint(IPAddress.Loopback, requested));
             Port = ((IPEndPoint)_client.Client.LocalEndPoint!).Port;
+            ListenError = null;
             _ = ReceiveLoopAsync(_client, _cts.Token);
             AppLogger.Info($"Game telemetry listening on 127.0.0.1:{Port}");
         }
@@ -105,6 +144,9 @@ public sealed class GameTelemetryService : IDisposable
         {
             _client?.Dispose();
             _client = null;
+            Port = 0;
+            // 界面要拿这句话告诉用户「填了也收不到，换个端口」——只进日志等于没有任何提示。
+            ListenError = $"{ex.GetType().Name}：{ex.Message}";
             AppLogger.Error("Game telemetry listener failed to start", ex);
         }
     }

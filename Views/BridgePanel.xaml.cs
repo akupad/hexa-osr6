@@ -199,14 +199,32 @@ public partial class BridgePanel : UserControl
         }
     }
 
-    /// <summary>原始 TCode 那行的提示：端口常显；打开后写明插件里到底该填什么（这台机器 tcode.local 解析不了）。</summary>
+    /// <summary>
+    /// 原始 TCode 那行的提示：常显「实际在听哪个端口」；绑不上时写明失败原因与换端口建议。
+    /// 以前端口绑不上只进日志：界面照旧显示配置里的 26781，用户照提示在 VAM 里填好却一条都收不到，
+    /// 也看不出是「端口被别的程序占着」。
+    /// </summary>
     private void RefreshRawTcodeHint()
     {
         if (BridgeRawTcodeHint is null) return;
-        int port = App.Settings.GameTelemetryPort;
+        int configured = App.Settings.GameTelemetryPort;
+        GameTelemetryService telemetry = App.GameTelemetry;
+        if (!telemetry.Listening)
+        {
+            int suggestion = GameTelemetryService.SuggestFreePort(configured);
+            string fix = suggestion != configured
+                ? $"把设置页最下面「数据目录」里那份 settings.json 的 GameTelemetryPort 改成 {suggestion}" +
+                  $"（或关掉占用 {configured} 的程序）再重启 Hexa。"
+                : $"端口 {configured} 附近的端口也都绑不上：先关掉占用它的程序再重启 Hexa。";
+            BridgeRawTcodeHint.Text =
+                $"⚠ 遥测端口没监听上：{telemetry.ListenError ?? "未启动"}。" +
+                $"现在发到 127.0.0.1:{configured} 的包（含原始 TCode）一条都收不到 —— {fix}";
+            return;
+        }
+        string listen = $"正在监听 127.0.0.1:{telemetry.Port}";
         BridgeRawTcodeHint.Text = App.Settings.AllowRawTCodeUdp
-            ? $"已开启：正在 127.0.0.1:{port} 收原始 TCode。VAM 插件里 Address 填 127.0.0.1、Port 填 {port}（默认的 tcode.local 在本机解析不了，别用）。"
-            : $"打开后，任何软件用 UDP 发 TCode 文本到 127.0.0.1:{port} 就能直接驱动设备。";
+            ? $"{listen}（已开启原始 TCode）。VAM 插件里 Address 填 127.0.0.1、Port 填 {telemetry.Port}（默认的 tcode.local 在本机解析不了，别用）。"
+            : $"{listen}（只收带口令的 Hexa 遥测帧）。打开后，任何软件用 UDP 发 TCode 文本到 127.0.0.1:{telemetry.Port} 就能直接驱动设备。";
     }
 
     private void ApplyBridgeSettings()

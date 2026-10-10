@@ -1,8 +1,24 @@
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text.Json;
 using Hexa.Models;
 using Hexa.Services;
+
+/// <summary>本机回环上这个 UDP 端口现在能不能绑上（遥测换端口建议用同一条判据）。</summary>
+static bool LoopbackUdpPortFree(int port)
+{
+    try
+    {
+        using var probe = new UdpClient(new IPEndPoint(IPAddress.Loopback, port));
+        return true;
+    }
+    catch (SocketException)
+    {
+        return false;
+    }
+}
 
 /// <summary>让联动器跑 12 帧「快上快下」，返回最终的扭转轴（R0）值。</summary>
 static double RunLinkerTwist(bool[] scriptedAxes, double amount = 30)
@@ -1048,6 +1064,73 @@ try
             offModeRxArrived
             && bridge.RecentLog.Count(entry => entry.Direction == "TX" && entry.Text.StartsWith("V0")) == vibrateTxBefore);
 
+        // ── 硬门槛：两个客户端同时连着时的仲裁（最后连上的有发言权；停车指令谁都能喊） ──
+        // 背景：一边开着游戏、一边开着 VAM 插件是很常见的；两边都以为自己能驱动设备就是设备乱抖。
+        Check("多客户端仲裁：开始前桥上没有残留会话", SpinWait.SpinUntil(() => bridge.ClientCount == 0, 3000));
+
+        cfg.GameBridgeMode = "single";
+        cfg.BridgeInputSmoothing = false;    // 整形三件套全关＝原样透传，指令有没有落地一看便知
+        cfg.BridgeAxisLink = false;
+        cfg.BridgeUseComfortLimits = false;
+        cfg.Normalize();
+
+        var clientCounts = new List<int>();
+        using (var firstClient = new WsProbe(12345))
+        {
+            Check("多客户端仲裁：第一个客户端握手成功",
+                firstClient.Handshake.Contains("101 Switching Protocols")
+                && SpinWait.SpinUntil(() => bridge.ClientCount == 1, 3000));
+            clientCounts.Add(bridge.ClientCount);
+
+            using (var secondClient = new WsProbe(12345))
+            {
+                Check("多客户端仲裁：第二个客户端握手成功",
+                    secondClient.Handshake.Contains("101 Switching Protocols")
+                    && SpinWait.SpinUntil(() => bridge.ClientCount == 2, 3000));
+                clientCounts.Add(bridge.ClientCount);
+
+                // 先连上的失去了发言权：LinearCmd 只回 ErrorCode 4，一个字节都不许落到串口。
+                int beforeDenied = serial.SimulationCommands.Count;
+                firstClient.Send("[{\"LinearCmd\":{\"Id\":21,\"DeviceIndex\":0,\"Vectors\":[{\"Index\":0,\"Position\":0.031,\"Duration\":200}]}}]");
+                string denial = firstClient.WaitFor("another client owns the device", 2000);
+                Check("多客户端仲裁：先连上的发 LinearCmd 收到 ErrorCode 4（另一个客户端占有设备）",
+                    denial.Contains("\"ErrorCode\":4") && !denial.Contains("\"Ok\"")
+                    && serial.SimulationCommands.Count == beforeDenied);
+
+                // 后连上的有发言权：同一条指令真的驱动了设备。
+                int beforeOwner = serial.SimulationCommands.Count;
+                secondClient.Send("[{\"LinearCmd\":{\"Id\":22,\"DeviceIndex\":0,\"Vectors\":[{\"Index\":0,\"Position\":0.42,\"Duration\":200}]}}]");
+                Check("多客户端仲裁：后连上的有发言权（指令真的落到串口）",
+                    SpinWait.SpinUntil(() => serial.SimulationCommands.Count > beforeOwner, 2000)
+                    && serial.SimulationCommands.Skip(beforeOwner).Any(cmd => cmd.StartsWith("L0", StringComparison.Ordinal)));
+
+                // 停车类指令任何客户端都放行：非发言方喊停必须真的停，而且回 Ok（不是 ErrorCode 4）。
+                int beforeStop = serial.SimulationCommands.Count;
+                firstClient.Send("[{\"StopDeviceCmd\":{\"Id\":23,\"DeviceIndex\":0}}]");
+                string stopResponse = firstClient.WaitFor("\"Id\":23", 2000);
+                Check("多客户端仲裁：非发言方的 StopDeviceCmd 被放行（回 Ok 且真的发出 DSTOP）",
+                    stopResponse.Contains("\"Ok\"") && !stopResponse.Contains("another client owns")
+                    && SpinWait.SpinUntil(() => serial.SimulationCommands.Skip(beforeStop).Contains("DSTOP"), 2000));
+
+                int beforeStopAll = serial.SimulationCommands.Count;
+                firstClient.Send("[{\"StopAllDevices\":{\"Id\":24}}]");
+                string stopAllResponse = firstClient.WaitFor("\"Id\":24", 2000);
+                Check("多客户端仲裁：非发言方的 StopAllDevices 也被放行（回 Ok 且真的发出 DSTOP）",
+                    stopAllResponse.Contains("\"Ok\"") && !stopAllResponse.Contains("another client owns")
+                    && SpinWait.SpinUntil(() => serial.SimulationCommands.Skip(beforeStopAll).Contains("DSTOP"), 2000));
+            }
+
+            Check("多客户端仲裁：一个客户端断开后计数回到 1",
+                SpinWait.SpinUntil(() => bridge.ClientCount == 1, 3000));
+            clientCounts.Add(bridge.ClientCount);
+        }
+        Check("多客户端仲裁：最后一个客户端断开后计数回到 0",
+            SpinWait.SpinUntil(() => bridge.ClientCount == 0, 3000));
+        clientCounts.Add(bridge.ClientCount);
+        Check($"多客户端仲裁：ClientCount 依次为 1/2/1/0（实测 {string.Join("/", clientCounts)}）",
+            string.Join("/", clientCounts) == "1/2/1/0");
+        Check("多客户端仲裁：最后一个客户端断开后引擎交还直接输入控制权", engine.DirectInputOwner is null);
+
         cfg.GameBridgeEnabled = false;
         bridge.Stop();
         Check("game bridge stops cleanly", !bridge.Active);
@@ -1058,6 +1141,95 @@ try
         bool sentStop = simCmds.Any(c => c.StartsWith("DSTOP", StringComparison.Ordinal));
         Check("game bridge stop actually stops the device (DSTOP sent)", sentStop);
         Check("game bridge stop releases direct-input ownership", engine.DirectInputOwner is null);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  硬门槛：串口写失败 → 锁输出 → 恢复
+    //  契约（对齐 Services/SerialService.cs）：
+    //   ① 写失败不抛给调用方，而是传输层自己标记掉线：LastError 非空 + OutputEnabled=false +
+    //      ConnectionChanged(false)（SerialService.Send 的失败分支 → MarkDisconnectedLocked）；
+    //   ② 端口没真的打开时，谁把 OutputEnabled 置 true 都必须被拒（SerialService 的
+    //      `value && IsOpen` 闸门）——「拔插后还没重连上就点解锁」不能静默地"看着已解锁"；
+    //   ③ 端口重连（ConnectionChanged(true)）后引擎必须能重新驱动。
+    // ══════════════════════════════════════════════════════════════
+    // 真实传输层的那道闸门（不是只有测试桩才这样）：端口没开时置 true 一律被拒。
+    using (var closedSerial = new SerialService())
+    {
+        closedSerial.OutputEnabled = true;
+        Check("真实传输层：端口没开时置 OutputEnabled=true 被拒绝（拔插没完成就点解锁不会静默放行）",
+            !closedSerial.IsOpen && !closedSerial.OutputEnabled);
+        closedSerial.SetSimulationMode(true);
+        closedSerial.OutputEnabled = true;
+        Check("真实传输层：端口真的打开后置 OutputEnabled=true 才生效",
+            closedSerial.IsOpen && closedSerial.OutputEnabled);
+    }
+
+    var flakyCfg = new AppSettings();
+    var flaky = new FlakyTransport();
+    using (var flakyEngine = new MotionEngine(flaky, flakyCfg))
+    {
+        flakyEngine.Home();                 // 用户点「全部归中」＝解锁输出
+        Check("写失败前：桩可动、输出已解锁且真的收到帧",
+            flakyEngine.CanRun && flaky.OutputEnabled && flaky.Writes.Count > 0);
+
+        flaky.FailWrites = true;            // 模拟写入抛 IOException（拔线 / 串口卡死）
+        int writesBeforeFailure = flaky.Writes.Count;
+        flakyEngine.TrySendDirectAxes([10, 20, 30, 40, 50, 60]);
+        Check("串口写失败：传输层标记掉线（LastError 非空 + 锁输出 + 端口关闭），这一帧没有发出去",
+            !flaky.OutputEnabled && !string.IsNullOrEmpty(flaky.LastError) && !flaky.IsOpen
+            && flaky.Writes.Count == writesBeforeFailure);
+        Check("串口写失败：引擎收到掉线事件后立刻不可动（CanRun 假）", !flakyEngine.CanRun);
+        Check("串口写失败：界面状态说得清发生了什么（不再只是「未连接」三个字）",
+            flakyEngine.SafetyStatus.StartsWith("⚠", StringComparison.Ordinal));
+
+        // 端口还没重连上，却来了一个 connected=true（拔插中的竞态）：解锁尝试必须被传输层拒掉。
+        int attemptsBefore = flaky.UnlockAttempts;
+        flaky.RaiseConnectionChangedWithoutPort();
+        Check("端口没重连上就解锁：引擎发了解锁请求，但传输层拒绝（不假装已解锁）",
+            flaky.UnlockAttempts > attemptsBefore && flaky.RefusedUnlocks > 0
+            && !flaky.OutputEnabled && !flakyEngine.CanRun);
+
+        flakyEngine.Home();                 // 用户此刻点「全部归中」也不该把设备点亮
+        Check("端口没重连上时点「全部归中」也不会解锁输出", !flaky.OutputEnabled && !flakyEngine.CanRun);
+        Check("端口没重连上时动轴被明确拒绝（返回 false，而不是静默发不出去）",
+            !flakyEngine.TryMoveCalibrationAxis("L0", 5000));
+
+        flaky.FailWrites = false;
+        flaky.Reconnect();                  // 拔插后端口真的回来了
+        Check("端口重连后：引擎重新解锁输出、恢复可动、状态回到「已解锁」",
+            flaky.OutputEnabled && flakyEngine.CanRun && flakyEngine.SafetyStatus == "已解锁");
+        int writesBeforeRecovery = flaky.Writes.Count;
+        Check("端口重连后：引擎能重新驱动设备（真的又发出帧）",
+            flakyEngine.TrySendDirectAxes([60, 40, 50, 50, 50, 50])
+            && flaky.Writes.Count > writesBeforeRecovery);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  遥测端口绑定失败必须对界面可见（Services/GameTelemetryService.cs + BridgePanel 的提示行）
+    //  以前绑不上只写日志：界面照旧显示配置端口，用户按提示在 VAM 里填好却一条都收不到。
+    //  这里用「本机回环上先占住一个 UDP 端口」制造真实的绑定失败，不碰串口也不碰真设备。
+    // ══════════════════════════════════════════════════════════════
+    using (var squatter = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0)))
+    {
+        int busyPort = ((IPEndPoint)squatter.Client.LocalEndPoint!).Port;
+        using var failedTelemetry = new GameTelemetryService(busyPort, null, () => false, () => "");
+        Check($"遥测绑不上端口时：Listening=false、Port=0、失败原因非空（实测原因：{failedTelemetry.ListenError}）",
+            !failedTelemetry.Listening && failedTelemetry.Port == 0
+            && !string.IsNullOrWhiteSpace(failedTelemetry.ListenError));
+        int suggestion = GameTelemetryService.SuggestFreePort(busyPort);
+        Check($"遥测绑不上端口时：换端口建议是一个真的能绑上的端口（{busyPort} → {suggestion}）",
+            suggestion != busyPort && LoopbackUdpPortFree(suggestion));
+        Check($"遥测换端口建议落在合法区间（65535 → {GameTelemetryService.SuggestFreePort(65535)}，绕回 1024 起）",
+            GameTelemetryService.SuggestFreePort(65535) is >= 1024 and < 65536);
+    }
+
+    int freePort;
+    using (var picker = new UdpClient(new IPEndPoint(IPAddress.Loopback, 0)))
+        freePort = ((IPEndPoint)picker.Client.LocalEndPoint!).Port;
+    using (var liveTelemetry = new GameTelemetryService(freePort, null, () => false, () => ""))
+    {
+        Check($"遥测端口没被占时：Listening=true 且对外报的是实际端口 {freePort}",
+            liveTelemetry.Listening && liveTelemetry.Port == freePort && liveTelemetry.ListenError is null);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -2132,3 +2304,215 @@ catch (Exception ex)
 
 Console.WriteLine($"{passed} passed, {failed} failed");
 return failed == 0 ? 0 : 1;
+
+/// <summary>
+/// 最小传输桩，行为对齐 <see cref="SerialService"/>（测试要复现的是"传输层怎么把写失败变成状态"）：
+/// ① 写失败不抛给调用方，而是自己标记掉线：LastError 非空 + OutputEnabled=false + ConnectionChanged(false)；
+/// ② 端口没打开时，把 OutputEnabled 置 true 一律拒绝（复刻 SerialService.OutputEnabled 的
+///    <c>value &amp;&amp; IsOpen</c> 闸门，并记下"有人想解锁"这件事，让断言不是空转）；
+/// ③ 成功写入的指令记在 <see cref="Writes"/> 里，"引擎能重新驱动"才有可观测证据。
+/// </summary>
+sealed class FlakyTransport : ICommandTransport
+{
+    private readonly object _gate = new();
+    private readonly List<string> _writes = [];
+    private bool _open = true;
+    private bool _outputEnabled;
+    private string? _lastError;
+
+    /// <summary>true = 之后的写操作都失败（模拟拔线 / 串口卡死）。</summary>
+    public bool FailWrites { get; set; }
+
+    public bool IsOpen { get { lock (_gate) return _open; } }
+    public string? LastError { get { lock (_gate) return _lastError; } }
+    public IReadOnlyList<string> Writes { get { lock (_gate) return _writes.ToArray(); } }
+
+    /// <summary>有人把 OutputEnabled 置 true 的次数（含被拒绝的）。</summary>
+    public int UnlockAttempts { get; private set; }
+
+    /// <summary>因为端口没开而被拒绝的解锁次数。</summary>
+    public int RefusedUnlocks { get; private set; }
+
+    public bool OutputEnabled
+    {
+        get { lock (_gate) return _outputEnabled; }
+        set
+        {
+            lock (_gate)
+            {
+                if (value) UnlockAttempts++;
+                bool enabled = value && _open;
+                if (value && !enabled) RefusedUnlocks++;
+                _outputEnabled = enabled;
+            }
+        }
+    }
+
+    public string PortName => "TEST-FLAKY";
+    public string? UserAdvice => LastError;
+    public event Action<bool>? ConnectionChanged;
+
+    public void Send(string command) => Write(command);
+    public void StopMotion() => Write("DSTOP");
+
+    public void SendAxes(
+        double[] values,
+        Dictionary<string, int> axisMin,
+        Dictionary<string, int> axisMax,
+        int interpolationMs = 16,
+        bool changedOnly = true) =>
+        Write(string.Join(" ", values.Select(value => value.ToString("F1"))) + $" I{interpolationMs}");
+
+    public void SendFrame(
+        IEnumerable<TCodeAxisTarget> targets,
+        Dictionary<string, int> axisMin,
+        Dictionary<string, int> axisMax,
+        bool changedOnly = true) =>
+        Write(string.Join(" ", targets.Select(target => target.ToString())));
+
+    /// <summary>模拟「拔插完成、端口真的回来了」：重新打开并广播 connected=true。</summary>
+    public void Reconnect()
+    {
+        lock (_gate)
+        {
+            _open = true;
+            _lastError = null;
+        }
+        ConnectionChanged?.Invoke(true);
+    }
+
+    /// <summary>模拟竞态：端口还没回来，引擎却收到一个 connected=true。</summary>
+    public void RaiseConnectionChangedWithoutPort() => ConnectionChanged?.Invoke(true);
+
+    private void Write(string command)
+    {
+        bool disconnected = false;
+        lock (_gate)
+        {
+            if (FailWrites)
+            {
+                // 与 SerialService.MarkDisconnectedLocked 同一组动作；只在状态真的变化时广播，
+                // 避免引擎处理掉线事件时又发一帧（DSTOP）造成回调递归。
+                if (_open || _outputEnabled || _lastError is null)
+                {
+                    _open = false;
+                    _outputEnabled = false;
+                    _lastError = "IOException：串口写入失败（设备可能已拔出）";
+                    disconnected = true;
+                }
+            }
+            else
+            {
+                _lastError = null;
+                _writes.Add(command);
+            }
+        }
+        if (disconnected) ConnectionChanged?.Invoke(false);
+    }
+}
+
+/// <summary>
+/// 桥测试用的最小 WebSocket 客户端：握手 + 发一个带掩码的文本帧 + 读服务端文本帧。
+/// 帧格式与测试里既有的 WsSend 局部函数同一套（服务端帧不加掩码，见 IntifaceBridgeService
+/// 的「WebSocket 帧（RFC 6455，服务端到客户端不加掩码）」）。比 WsSend 多的是"连接可以保持住"，
+/// 多客户端仲裁必须两个客户端同时在线上才测得到。
+/// </summary>
+sealed class WsProbe : IDisposable
+{
+    private readonly TcpClient _tcp;
+    private readonly NetworkStream _stream;
+
+    public string Handshake { get; }
+
+    public WsProbe(int port)
+    {
+        _tcp = new TcpClient();
+        _tcp.Connect("127.0.0.1", port);
+        _stream = _tcp.GetStream();
+        string key = Convert.ToBase64String(RandomNumberGenerator.GetBytes(16));
+        byte[] request = System.Text.Encoding.UTF8.GetBytes(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:" + port + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n" +
+            "Sec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\n\r\n");
+        _stream.Write(request, 0, request.Length);
+        _stream.Flush();
+        byte[] buffer = new byte[1024];
+        int read = 0;
+        int attempts = 0;
+        while (read < 100 && attempts++ < 50)
+        {
+            Thread.Sleep(20);
+            if (_stream.DataAvailable) read += _stream.Read(buffer, read, buffer.Length - read);
+        }
+        Handshake = System.Text.Encoding.UTF8.GetString(buffer, 0, read);
+    }
+
+    public void Send(string json)
+    {
+        byte[] payload = System.Text.Encoding.UTF8.GetBytes(json);
+        byte[] mask = [0x12, 0x34, 0x56, 0x78];
+        var frame = new List<byte> { 0x81, (byte)(0x80 | payload.Length) };
+        frame.AddRange(mask);
+        for (int i = 0; i < payload.Length; i++) frame.Add((byte)(payload[i] ^ mask[i % 4]));
+        _stream.Write(frame.ToArray(), 0, frame.Count);
+        _stream.Flush();
+    }
+
+    /// <summary>等一个含 needle 的服务端文本帧（跳过 DeviceAdded 这类广播帧）；超时返回 ""。</summary>
+    public string WaitFor(string needle, int timeoutMs)
+    {
+        long deadline = Environment.TickCount64 + timeoutMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            string? frame = ReadTextFrame((int)Math.Max(1, deadline - Environment.TickCount64));
+            if (frame is null) return "";
+            if (frame.Contains(needle, StringComparison.Ordinal)) return frame;
+        }
+        return "";
+    }
+
+    private string? ReadTextFrame(int timeoutMs)
+    {
+        try
+        {
+            _stream.ReadTimeout = Math.Clamp(timeoutMs, 1, 30_000);
+            byte[] header = new byte[2];
+            if (!ReadExact(header)) return null;
+            int length = header[1] & 0x7F;
+            if (length == 126)
+            {
+                byte[] ext = new byte[2];
+                if (!ReadExact(ext)) return null;
+                length = (ext[0] << 8) | ext[1];
+            }
+            else if (length == 127)
+            {
+                byte[] ext = new byte[8];
+                if (!ReadExact(ext)) return null;
+                length = (int)BitConverter.ToUInt64(ext, 0);
+            }
+            byte[] payload = new byte[length];
+            if (!ReadExact(payload)) return null;
+            return System.Text.Encoding.UTF8.GetString(payload);
+        }
+        catch (IOException) { return null; }
+        catch (ObjectDisposedException) { return null; }
+    }
+
+    private bool ReadExact(byte[] buffer)
+    {
+        int offset = 0;
+        while (offset < buffer.Length)
+        {
+            int read = _stream.Read(buffer, offset, buffer.Length - offset);
+            if (read <= 0) return false;
+            offset += read;
+        }
+        return true;
+    }
+
+    public void Dispose()
+    {
+        try { _stream.Dispose(); } catch (IOException) { }
+        try { _tcp.Dispose(); } catch (IOException) { }
+    }
+}
