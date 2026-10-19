@@ -2458,6 +2458,108 @@ try
     brokenLanguageSettings.Normalize();
     Check("设置：界面语言白名单（\"EN\" → en，写坏的 → zh）",
         languageSettings.UiLanguage == "en" && brokenLanguageSettings.UiLanguage == "zh");
+
+    // ── 链路存活监控（拿固件回显当 ACK）──────────────────────────────────
+    // 这些判据的价值全在"保守"：把方向写反的代价是误锁输出 / 误断连，比漏报贵得多，
+    // 所以边界（纯日志不算活、没写过帧不算死、banner 去重）逐条钉死在单测里。
+    {
+        var linkNow = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var monitor = new SerialLinkMonitor(() => linkNow);
+
+        // ① 写过帧，但设备只吐纯日志（banner 里没有 Stats、也没有 uart 回显）：不能算活。
+        monitor.NoteFrameWritten(6);
+        monitor.Feed("I (123) uart: boot stage 3 done\r\nI (124) system: ready without executor\r\n");
+        var logOnly = monitor.Snapshot();
+        Check("链路：纯日志行不能判活（日志里没有 Stats 也没有 uart 回显）",
+            !logOnly.IsAlive && !logOnly.HasEcho && logOnly.LastHeartbeatAtUtc is null);
+
+        // ② 一行 Executor: Stats 就是心跳（固件每秒吐两行）。
+        monitor.Feed("I (456) Executor: Stats [1.0s window] - Compute: 12.3us freq=50.00 Hz\n");
+        var heartbeat = monitor.Snapshot();
+        Check("链路：看到 Executor: Stats 判定心跳",
+            heartbeat.HasHeartbeat && heartbeat.IsAlive && heartbeat.LastHeartbeatAtUtc == linkNow);
+
+        // ③ 上电 banner 出现即说明板子重启过；同一次上电的多行（含两个标记）只算一次。
+        monitor.Feed("I (1) main_task: app_main starting\r\nI (2) SR6Executor(0x3f) begin\r\n");
+        var booted = monitor.Snapshot();
+        linkNow = linkNow.AddSeconds(5);
+        monitor.Feed("SR6Executor(0x3f) restart by watchdog\n");
+        Check("链路：banner（app_main / SR6Executor(）出现即 ResetSeenCount+1，同一波只算一次",
+            booted.ResetSeenCount == 1 && monitor.Snapshot().ResetSeenCount == 2);
+
+        // ④ 从来没写过帧：无论过多久都不判死 —— 设备开机后安静是正常状态，不是故障。
+        var quietNow = linkNow;
+        var quiet = new SerialLinkMonitor(() => quietNow);
+        quietNow = quietNow.AddSeconds(30);
+        quiet.Feed("I (9) just a log line\r\n");
+        var quietSnapshot = quiet.Snapshot();
+        Check("链路：从未写过帧时绝不判死（设备可能只是安静）",
+            !quietSnapshot.IsDead && !quietSnapshot.IsAlive && quietSnapshot.FramesWritten == 0);
+        Check("链路：文案对\"没写过帧\"直说待发帧，不吓唬人",
+            SerialLinkMonitor.Describe(quietSnapshot).Contains("待发帧", StringComparison.Ordinal));
+
+        // ⑦ 写完帧 + 收到 uart 回显 → 已确认，且回显比有值。
+        var live = new SerialLinkMonitor(() => linkNow);
+        live.NoteFrameWritten(6);
+        live.Feed("I (7) uart: UART received 4 bytes: D1\r\nI (8) uart: UART echoed 6 bytes\r\n");
+        var aliveSnapshot = live.Snapshot();
+        Check("链路：写完帧并收到 uart 回显 → 已确认（EchoRatio 有值）",
+            aliveSnapshot.IsAlive && aliveSnapshot.HasEcho && aliveSnapshot.EchoRatio > 0);
+
+        // ⑧ 同一份现场往后推 5 秒仍无任何回话 → 判死，并给出"拔插 USB"的处置。
+        linkNow = linkNow.AddSeconds(5);
+        var deadSnapshot = live.Snapshot();
+        Check("链路：写完帧后 5 秒没有任何回话 → 判死（文案提示拔插 USB）",
+            deadSnapshot.IsDead && !deadSnapshot.IsAlive
+            && SerialLinkMonitor.Describe(deadSnapshot).Contains("拔插 USB", StringComparison.Ordinal));
+    }
+
+    // ── 黑匣子（定容环形 + 故障包导出）───────────────────────────────────
+    // 环形的意义是"上限即内存上限"：写 1000 条之后必须只剩最新 800 条，且每条都被截断。
+    {
+        var recordClock = new DateTime(2026, 1, 1, 12, 0, 0, DateTimeKind.Utc);
+        var blackBox = new BlackBoxRecorder(() => recordClock);
+        for (int i = 0; i < 1000; i++)
+        {
+            recordClock = recordClock.AddMilliseconds(10);
+            // 每条塞 200 个字符：验证"截断到 120"，否则一条 banner 就能挤掉整圈有效信息。
+            blackBox.Record(i % 2 == 0 ? "out" : "in", $"line-{i} {new string('x', 200)}");
+        }
+
+        var kept = blackBox.Snapshot();
+        Check($"黑匣子：超容量后只保留最新 {BlackBoxRecorder.Capacity} 条、总条数不超上限",
+            kept.Count == BlackBoxRecorder.Capacity
+            && blackBox.TotalWritten == 1000
+            && kept[0].Text.StartsWith("line-200 ", StringComparison.Ordinal)
+            && kept[^1].Text.StartsWith("line-999 ", StringComparison.Ordinal)
+            && kept.All(entry => entry.Text.Length == BlackBoxRecorder.MaxTextLength));
+
+        string exportPath = Path.Combine(Path.GetTempPath(),
+            "hexa-blackbox-test-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            string written = blackBox.Export(exportPath,
+                [("端口", "COM7"), ("ResetSeenCount", "1"), ("EchoRatio", "1.87")]);
+            string[] blackBoxLines = File.ReadAllLines(written);
+            // 时间戳前缀形如 "2026-01-01 12:00:00.000"：长度与分隔符位置都钉住，避免导出一堆没有时间的行。
+            static bool HasTimestampPrefix(string line)
+                => line.Length > 24 && line[4] == '-' && line[7] == '-' && line[10] == ' '
+                   && line[13] == ':' && line[16] == ':' && line[19] == '.';
+
+            Check("黑匣子：导出文本含版本头 / 摘要 / 时间戳 / channel",
+                blackBoxLines.Length > BlackBoxRecorder.Capacity
+                && blackBoxLines[0] == "# " + BlackBoxRecorder.ExportVersion
+                && blackBoxLines.Any(line => line.Contains("端口: COM7", StringComparison.Ordinal))
+                && blackBoxLines.Any(line => line.Contains("EchoRatio: 1.87", StringComparison.Ordinal))
+                && blackBoxLines.Any(line => line.Contains(" out   ", StringComparison.Ordinal))
+                && blackBoxLines.Any(line => line.Contains(" in    ", StringComparison.Ordinal))
+                && blackBoxLines.Count(HasTimestampPrefix) == BlackBoxRecorder.Capacity);
+        }
+        finally
+        {
+            try { if (File.Exists(exportPath)) File.Delete(exportPath); } catch { }
+        }
+    }
 }
 catch (Exception ex)
 {

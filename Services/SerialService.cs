@@ -50,6 +50,20 @@ public sealed class SerialService : ICommandTransport, IDisposable
     private long _connectionGeneration;
     private bool _disposed;
 
+    // ---- 链路存活 + 黑匣子（见 SerialLinkMonitor / BlackBoxRecorder 的类注释）----
+
+    /// <summary>串口读线程：端口打开到关闭之间常驻，读到的东西只喂监控、不进业务。</summary>
+    private Thread? _readThread;              // 线程本身只在 _lock 与 _ioLock 之外启动/停止
+    private CancellationTokenSource? _readCts = new();
+
+    /// <summary>
+    /// 链路判定器。<see cref="Feed"/> 只有读线程调（单写者），界面线程调 <see cref="SerialLinkMonitor.Snapshot"/> 是安全的。
+    /// </summary>
+    public SerialLinkMonitor LinkMonitor { get; } = new();
+
+    /// <summary>黑匣子（最近 800 条 / 约一分钟的现场）。界面「导出故障包」会把它落盘。</summary>
+    public BlackBoxRecorder BlackBox { get; } = new();
+
     public bool IsOpen
     {
         get { lock (_lock) return _simulationEnabled || _port?.IsOpen == true; }
@@ -225,6 +239,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             // 用户主动断开：不是错误，别让面板继续显示上一次的失败原因。
             LastError = null;
         }
+        BlackBox.Record("state", "用户断开连接");
         ConnectionChanged?.Invoke(false);
     }
 
@@ -416,8 +431,10 @@ public sealed class SerialService : ICommandTransport, IDisposable
                 }
                 _outputEnabled = false;
                 ResetSentAxesLocked();
+                StartReaderLocked(opened);   // 读线程与端口同生命周期：连接即开、关闭即停
             }
             AppLogger.Info($"串口已连接: {candidate}（输出保持锁定）");
+            BlackBox.Record("state", $"已连接 {candidate}（输出保持锁定）");
             return (true, null);
         }
 
@@ -738,7 +755,12 @@ public sealed class SerialService : ICommandTransport, IDisposable
         if (port != null)
         {
             Exception? failure = null;
-            try { port.Write(safeCommand + (char)10); mirrored = safeCommand; }
+            try
+            {
+                port.Write(safeCommand + (char)10);
+                mirrored = safeCommand;
+                NoteWriteSucceeded(safeCommand, safeCommand.Length + 1);
+            }
             catch (Exception ex)
             {
                 failure = ex;
@@ -813,7 +835,13 @@ public sealed class SerialService : ICommandTransport, IDisposable
 
         if (port is not null)
         {
-            try { port.Write(frame + '\n'); mirrored = frame; }
+            try
+            {
+                port.Write(frame + '\n');
+                mirrored = frame;
+                // 热路径：这里只做两次原子自增 + 一次限流判定，不加锁、不分配大对象。
+                NoteWriteSucceeded(frame, frame.Length + 1);
+            }
             catch (Exception ex)
             {
                 failure = ex;
@@ -857,6 +885,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             try
             {
                 stopPort.Write("DSTOP\n");
+                NoteWriteSucceeded("DSTOP", "DSTOP\n".Length);
                 lock (_lock) { ResetSentAxesLocked(); }
                 mirrored = true;
             }
@@ -883,6 +912,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
         ClosePortLocked();
         _consecutiveFailures++;
         _nextReconnectUtc = DateTime.UtcNow.AddSeconds(BackoffSeconds());
+        // 写失败是黑匣子最该留下的一条：它能解释"为什么输出突然锁了"。
+        BlackBox.Record("state", "写入失败，输出已锁定: " + error);
     }
 
     /// <summary>
@@ -893,6 +924,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
 
     private void ClosePortLocked()
     {
+        StopReaderLocked();          // 先停读线程再关端口：免得它拿 _ioLock 去读一个正在被 Dispose 的端口
         try { _port?.Close(); } catch { }
         _port?.Dispose();
         _port = null;
@@ -901,6 +933,174 @@ public sealed class SerialService : ICommandTransport, IDisposable
     }
 
     private void ResetSentAxesLocked() => Array.Clear(_lastSentValid);
+
+    // ---- 链路存活 + 黑匣子 ----
+
+    /// <summary>in 通道限流：固件每秒吐两行 Stats、每帧还回两行，全记会在十几秒内把整圈 800 条冲光。</summary>
+    private const int InRecordIntervalMs = 200;
+
+    /// <summary>out 通道限流：50Hz 写帧同理 —— 黑匣子要的是"最近一分钟"，不是"最后一秒"。</summary>
+    private const int OutRecordIntervalMs = 100;
+
+    private long _lastInRecordMs;
+    private long _lastOutRecordMs;
+
+    /// <summary>上次为"设备重启标记"记过日志的计数（只用于去重，不参与任何判定）。</summary>
+    private int _loggedResetCount;
+    /// <summary>上次记过日志时的"判死"状态（状态切换才记，避免刷屏）。</summary>
+    private bool _loggedDead;
+
+    /// <summary>读线程是否真的在跑（诊断与故障包用；不参与任何判定）。</summary>
+    public bool IsReaderActive
+    {
+        get { Thread? thread = Volatile.Read(ref _readThread); return thread is { IsAlive: true }; }
+    }
+
+    /// <summary>
+    /// 启动读线程。**只在持有 _lock 时调用**——它和 <see cref="StopReaderLocked"/> 一起构成"端口的生命周期"，
+    /// 全部在 _lock 内成对出现，所以 _readThread/_readCts 不需要额外的锁。
+    /// </summary>
+    private void StartReaderLocked(SerialPort port)
+    {
+        _readCts?.Cancel();
+        var cts = new CancellationTokenSource();
+        _readCts = cts;
+        var thread = new Thread(() => ReadLoop(port, cts.Token))
+        {
+            IsBackground = true,
+            Name = "HexaSerialReader",
+        };
+        _readThread = thread;
+        thread.Start();
+    }
+
+    /// <summary>
+    /// 停读线程。只 Cancel，**不 Join、不 Dispose**：调用方正持有 _lock，而读线程可能卡在 _ioLock 上
+    /// （设备自检正在独占），Join 会把界面和急停一起堵住；CTS 不 Dispose 也没关系（没有注册回调，
+    /// 由 GC 回收），反过来 Dispose 还可能让读线程撞上 ObjectDisposedException。
+    /// 线程自己会在 ~50ms 内看到取消或端口已关而退出。
+    /// </summary>
+    private void StopReaderLocked()
+    {
+        _readThread = null;
+        CancellationTokenSource? cts = _readCts;
+        _readCts = null;
+        try { cts?.Cancel(); } catch { }
+    }
+
+    /// <summary>
+    /// 读线程主体：三处串口探针（身份探测 / 设备信息 / 固件命令）之外，这里是唯一的稳态读者，
+    /// 只为把字节喂给 <see cref="LinkMonitor"/> 和黑匣子 —— 不解析、不显示、不改任何状态。
+    ///
+    /// 锁纪律：只取 <see cref="_ioLock"/>（探针要"先清缓冲再独占"，必须互斥），**绝不取 <see cref="_lock"/>**；
+    /// 反向的 Start/Stop 都在 _lock 内调，于是永远只有 _lock → _ioLock 这一个方向，不会互等死。
+    /// 读失败/端口被拔只记录不抛 —— 红线是"绝不因为没回话锁输出或断线"，误伤比漏报贵得多。
+    /// </summary>
+    private void ReadLoop(SerialPort port, CancellationToken token)
+    {
+        var buffer = new char[2048];
+        while (!token.IsCancellationRequested)
+        {
+            int read = 0;
+            try
+            {
+                lock (_ioLock)
+                {
+                    if (!port.IsOpen) break;
+                    if (port.BytesToRead > 0) read = port.Read(buffer, 0, buffer.Length);
+                }
+            }
+            catch (Exception ex)
+            {
+                // 只 Warn 不 Error：读线程挂了不影响输出，报成错误会让人以为设备出事了。
+                AppLogger.Warn("串口读线程结束（输出状态不受影响）: " + ex.Message);
+                BlackBox.Record("state", "读线程结束: " + ex.Message);
+                break;
+            }
+
+            if (read <= 0)
+            {
+                // 轮询而不是阻塞 Read：阻塞读会一直占着 _ioLock 等字节，把设备自检饿死。
+                Thread.Sleep(50);
+                LogLinkTransitionIfNeeded();   // 设备安静时只有这里能发现"它不说话了"
+                continue;
+            }
+
+            string chunk = new string(buffer, 0, read);
+            LinkMonitor.Feed(chunk);
+            if (ReserveRecordSlot(ref _lastInRecordMs, InRecordIntervalMs))
+                BlackBox.Record("in", chunk);
+            LogLinkTransitionIfNeeded();
+        }
+    }
+
+    /// <summary>
+    /// 链路状态"变了才记一条日志"。按状态切换（而不是按时间）记录，天然满足"同类消息每秒最多一条"；
+    /// 而且这里**只写日志**：绝不锁输出、绝不断线 —— 没回话的误伤比漏报贵得多。
+    /// </summary>
+    private void LogLinkTransitionIfNeeded()
+    {
+        SerialLinkSnapshot snapshot = LinkMonitor.Snapshot();
+
+        int resetSeen = Volatile.Read(ref _loggedResetCount);
+        if (snapshot.ResetSeenCount != resetSeen)
+        {
+            Interlocked.Exchange(ref _loggedResetCount, snapshot.ResetSeenCount);
+            AppLogger.Warn($"链路：检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次）。输出状态未改动，如机器不动请拔插 USB。");
+        }
+
+        if (snapshot.IsDead != _loggedDead)
+        {
+            _loggedDead = snapshot.IsDead;
+            if (snapshot.IsDead)
+                AppLogger.Warn("链路：" + SerialLinkMonitor.Describe(snapshot) + "（仅提示，未锁输出）");
+        }
+    }
+
+    /// <summary>
+    /// 写成功后的记账：喂监控（回显判活的依据）+ 黑匣子（限流）。50Hz 热路径，无锁、无大对象。
+    /// </summary>
+    private void NoteWriteSucceeded(string text, int bytes)
+    {
+        LinkMonitor.NoteFrameWritten(bytes);
+        if (ReserveRecordSlot(ref _lastOutRecordMs, OutRecordIntervalMs))
+            BlackBox.Record("out", text);
+    }
+
+    /// <summary>限流闸门：距上次记录够久才放行。CompareExchange 抢占，多线程同时来也只有一个能过。</summary>
+    private static bool ReserveRecordSlot(ref long lastMs, int intervalMs)
+    {
+        long now = Environment.TickCount64;
+        long last = Interlocked.Read(ref lastMs);
+        if (last != 0 && now - last < intervalMs) return false;
+        return Interlocked.CompareExchange(ref lastMs, now, last) == last;
+    }
+
+    /// <summary>
+    /// 导出黑匣子故障包，返回实际写出的绝对路径（界面「导出故障包」按钮走这里）。
+    /// 默认落在 %LOCALAPPDATA%\Hexa\，文件名带时间戳；导出不在热路径上，建目录与整段落盘都在这里做。
+    /// </summary>
+    public string ExportBlackBox(string? directory = null)
+    {
+        SerialLinkSnapshot link = LinkMonitor.Snapshot();
+        string dir = string.IsNullOrWhiteSpace(directory)
+            ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Hexa")
+            : directory;
+        string path = Path.Combine(dir, $"hexa-blackbox-{DateTime.Now:yyyyMMdd-HHmmss}.txt");
+        return BlackBox.Export(path,
+        [
+            ("端口", IsOpen ? PortName : "（未连接）"),
+            ("模拟设备", IsSimulation ? "是" : "否"),
+            ("输出已解锁", OutputEnabled ? "是" : "否"),
+            ("读线程", IsReaderActive ? "运行中" : "未运行"),
+            ("链路", SerialLinkMonitor.Describe(link)),
+            ("ResetSeenCount", link.ResetSeenCount.ToString()),
+            ("EchoRatio", link.EchoRatio.ToString("0.00")),
+            ("写入帧数", link.FramesWritten.ToString()),
+            ("收到字节", link.BytesSeen.ToString()),
+            ("最后错误", LastError ?? "（无）"),
+        ]);
+    }
 
     public static IReadOnlyList<SerialPortOption> GetAvailablePortOptions()
     {

@@ -193,7 +193,7 @@ public partial class App : System.Windows.Application
         // （Normalize 已保证这里只有 zh / en，写坏的值回落中文。）
         Hexa.Services.LocalizationService.UiLanguage = Settings.UiLanguage;
         Serial   = new SerialService();
-        Engine   = new MotionEngine(Serial, Settings);
+        Engine   = new MotionEngine(Serial, Settings, Serial.BlackBox);
         Hotkeys  = new HotkeyService();
 
         // 手画波形的自动草稿：上次退出时存的，启动就恢复（波形只存在内存里，不恢复就丢了）

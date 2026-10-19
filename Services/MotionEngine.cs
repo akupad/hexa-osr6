@@ -12,6 +12,12 @@ public sealed class MotionEngine : IDisposable
 
     private readonly ICommandTransport _transport;
     private readonly AppSettings _cfg;
+
+    /// <summary>
+    /// 黑匣子（可选）：只为把"急停 / 归中"这类状态切换留进故障包。
+    /// 走可选注入而不是给 ICommandTransport 加成员 —— 那会砸掉测试里所有假 transport。
+    /// </summary>
+    private readonly BlackBoxRecorder? _blackBox;
     private readonly object _stateLock = new();
     private readonly object _dispatchLock = new();
     private readonly MotionSafetyLimiter _safetyLimiter = new();
@@ -416,10 +422,11 @@ public sealed class MotionEngine : IDisposable
         ["ambush"]    = (85, "climax_burst",   46, 20, 20),
     };
 
-    public MotionEngine(ICommandTransport transport, AppSettings cfg)
+    public MotionEngine(ICommandTransport transport, AppSettings cfg, BlackBoxRecorder? blackBox = null)
     {
         _transport = transport;
         _cfg = cfg;
+        _blackBox = blackBox;
         Speed = cfg.Speed;
         ScriptSpeed = cfg.ScriptPlaybackSpeed;
         IntensityScale = cfg.IntensityScale;
@@ -498,6 +505,8 @@ public sealed class MotionEngine : IDisposable
             _transport.StopMotion();
         }
         AppLogger.Warn("急停已触发：全部任务取消，输出保持锁定");
+        // 锁外记录：急停是事后必查的一条，绝不能因为记日志去等黑匣子。
+        _blackBox?.Record("state", "急停：全部任务取消，输出保持锁定");
         NotifyStateChanged();
     }
 
@@ -534,6 +543,7 @@ public sealed class MotionEngine : IDisposable
             _transport.SendAxes(center, _cfg.AxisMin, _cfg.AxisMax, interpolationMs: 1000, changedOnly: false);
             ResetOutputState(center);
         }
+        _blackBox?.Record("state", force ? "归中：用户操作（解除急停并解锁输出）" : "归中：自动收尾");
         NotifyStateChanged();
         return true;
     }

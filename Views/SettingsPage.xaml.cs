@@ -49,6 +49,9 @@ public partial class SettingsPage : Page
     // 保存/重置限位成功后的 2 秒提示：复用同一个提示行显示 ✅ 摘要，2 秒后恢复原样
     private readonly System.Windows.Threading.DispatcherTimer _limitHintFlashTimer =
         new() { Interval = TimeSpan.FromSeconds(2) };
+    // 链路状态行：1.5 秒刷一次（比固件 1 秒心跳慢半拍，数字不会来回跳）。只在页面可见时跑。
+    private readonly System.Windows.Threading.DispatcherTimer _linkStatusTimer =
+        new() { Interval = TimeSpan.FromSeconds(1.5) };
     private string? _limitHintFlashPreviousText;
     private Brush? _limitHintFlashPreviousBrush;
     private string _pendingDriveAxis = string.Empty;
@@ -161,15 +164,20 @@ public partial class SettingsPage : Page
         RefreshLog();
         InitAboutCard();
         UpdateFirmwareSummary();   // 固件设置那一行的摘要在构造时就位，别让用户看到一行空白
+        _linkStatusTimer.Tick += (_, _) => RefreshLinkStatus();
+        RefreshLinkStatus();
         IsVisibleChanged += (_, _) =>
         {
             if (!IsVisible)
             {
                 _logAutoTimer.Stop();
+                _linkStatusTimer.Stop();
                 return;
             }
             RefreshLog();
             if (AutoRefreshLogCheck.IsChecked == true) _logAutoTimer.Start();
+            RefreshLinkStatus();
+            _linkStatusTimer.Start();
             // 这里原来会弹「AI 设置尚未保存，是否保存？」的模态框 —— 那是个会秒退程序的雷：
             // IsVisibleChanged 是在 WPF 布局 / 应用模板的过程中触发的（栈：ApplyTemplate → Measure
             // → OnIsVisibleChanged），在布局里弹模态框会抛 InvalidOperationException
@@ -1712,6 +1720,47 @@ public partial class SettingsPage : Page
         finally
         {
             DeviceInfoBtn.IsEnabled = true;
+        }
+    }
+
+    /// <summary>
+    /// 刷新「链路状态」那一行。只读监控快照，绝不碰串口 —— 稳态唯一的读者是读线程。
+    /// 文案全部出自 <see cref="SerialLinkMonitor.Describe"/>：界面、故障包、日志三处说法一致，不会互相打架。
+    /// </summary>
+    private void RefreshLinkStatus()
+    {
+        if (LinkStatusText is null) return;
+        SerialLinkSnapshot snapshot = App.Serial.LinkMonitor.Snapshot();
+        bool connected = App.Serial.IsOpen;
+        LinkStatusText.Text = connected
+            ? SerialLinkMonitor.Describe(snapshot)
+            : LocalizationService.T("链路：未连接");
+        // 判死是唯一会要求用户"拔插 USB"的状态，值得换个颜色；其余一律用灰字，不当成警报。
+        LinkStatusText.Foreground = connected && snapshot.IsDead
+            ? (Brush)FindResource("Danger")
+            : (Brush)FindResource("Muted");
+    }
+
+    private async void ExportBlackBox_Click(object sender, RoutedEventArgs e)
+    {
+        ExportBlackBoxBtn.IsEnabled = false;
+        try
+        {
+            // 导出要建目录 + 写几百行文本：放后台跑，别在界面线程上做。
+            string path = await Task.Run(() => App.Serial.ExportBlackBox());
+            ExportBlackBoxHint.Text = "已导出 → " + path;
+            ExportBlackBoxHint.ToolTip = path;
+            ExportBlackBoxHint.Foreground = (Brush)FindResource("Muted");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("导出故障包失败", ex);
+            ExportBlackBoxHint.Text = "导出失败：" + ex.Message;
+            ExportBlackBoxHint.Foreground = (Brush)FindResource("Danger");
+        }
+        finally
+        {
+            ExportBlackBoxBtn.IsEnabled = true;
         }
     }
 

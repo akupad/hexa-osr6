@@ -254,6 +254,21 @@
                         <TextBlock Text="🔧 设备自检" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,4"/>
                         <TextBlock Text="读一下固件信息，再逐个试轴：点某个轴，机器会小幅动一下，看哪里在动就知道实际装了哪些电机（说明书上写的轴不一定都装了）。测试前会先停掉正在跑的动作。"
                                    Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                        <!-- 链路存活：只看回显，永不因为"没回话"锁输出（误伤比漏报贵）。
+                             文字由 SerialLinkMonitor.Describe 统一产出，界面只负责显示，避免两处措辞说岔。 -->
+                        <TextBlock x:Name="LinkStatusText" Text="链路：未连接" FontSize="11"
+                                   Foreground="{StaticResource Muted}" Margin="0,0,0,8" TextWrapping="Wrap"/>
+                        <Grid Margin="0,0,0,10">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Button x:Name="ExportBlackBoxBtn" Content="导出故障包" Width="112" Height="30" FontSize="12"
+                                    Style="{StaticResource BtnSecondary}" Click="ExportBlackBox_Click"/>
+                            <TextBlock x:Name="ExportBlackBoxHint" Grid.Column="1" Text="还没导出过" FontSize="10"
+                                       Foreground="{StaticResource Faint}" Margin="10,0,0,0"
+                                       VerticalAlignment="Center" TextWrapping="Wrap"/>
+                        </Grid>
                         <Button x:Name="DeviceInfoBtn" Content="读取设备信息" Width="112" Height="30" FontSize="12"
                                 Style="{StaticResource BtnSecondary}" HorizontalAlignment="Left" Click="DeviceInfo_Click"/>
                         <TextBox x:Name="DeviceInfoBox" Margin="0,8,0,12" Height="120" IsReadOnly="True"
