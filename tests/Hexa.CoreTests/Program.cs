@@ -2473,11 +2473,15 @@ try
         Check("链路：纯日志行不能判活（日志里没有 Stats 也没有 uart 回显）",
             !logOnly.IsAlive && !logOnly.HasEcho && logOnly.LastHeartbeatAtUtc is null);
 
-        // ② 一行 Executor: Stats 就是心跳（固件每秒吐两行）。
+        // ② 一行 Executor: Stats 就是心跳（固件每秒吐两行）。注意：刚写完帧、只有心跳没有回显时
+        //    不算"已确认"，而是"有去无回"——心跳证明设备在跑，恰恰说明问题在我们这一侧。
         monitor.Feed("I (456) Executor: Stats [1.0s window] - Compute: 12.3us freq=50.00 Hz\n");
         var heartbeat = monitor.Snapshot();
         Check("链路：看到 Executor: Stats 判定心跳",
-            heartbeat.HasHeartbeat && heartbeat.IsAlive && heartbeat.LastHeartbeatAtUtc == linkNow);
+            heartbeat.HasHeartbeat && heartbeat.LastHeartbeatAtUtc == linkNow);
+        Check("链路：写完帧只有心跳没有回显 → 判\"有去无回\"，不是已确认",
+            !heartbeat.IsAlive && heartbeat.IsStalled
+            && SerialLinkMonitor.Describe(heartbeat).Contains("先别拔线", StringComparison.Ordinal));
 
         // ③ 上电 banner 出现即说明板子重启过；同一次上电的多行（含两个标记）只算一次。
         monitor.Feed("I (1) main_task: app_main starting\r\nI (2) SR6Executor(0x3f) begin\r\n");
@@ -2512,6 +2516,24 @@ try
         Check("链路：写完帧后 5 秒没有任何回话 → 判死（文案提示拔插 USB）",
             deadSnapshot.IsDead && !deadSnapshot.IsAlive
             && SerialLinkMonitor.Describe(deadSnapshot).Contains("拔插 USB", StringComparison.Ordinal));
+
+        // ⑨ 空闲：写过帧之后停手不动（超过写字窗口），心跳仍在 ⇒ 正常状态，绝不能提示拔线。
+        var idleNow = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var idle = new SerialLinkMonitor(() => idleNow);
+        idle.NoteFrameWritten(6);
+        idle.Feed("I (1) uart: UART echoed 6 bytes\n");
+        idleNow = idleNow.AddSeconds(2);
+        idle.Feed("I (2) Executor: Stats [1.0s window] - Compute: 12.3us freq=50.00 Hz\n");
+        var idleSnapshot2 = idle.Snapshot();
+        Check("链路：停手不动但心跳还在 → 空闲正常，文案里不许出现\"拔插\"",
+            idleSnapshot2.IsIdle && !idleSnapshot2.IsDead && !idleSnapshot2.IsAlive
+            && SerialLinkMonitor.Describe(idleSnapshot2).Contains("空闲", StringComparison.Ordinal)
+            && !SerialLinkMonitor.Describe(idleSnapshot2).Contains("拔插", StringComparison.Ordinal));
+
+        // ⑩ 三个状态互斥：空闲 / 有去无回 / 已确认 不可能同时成立。
+        Check("链路：空闲与有去无回、已确认三者互斥",
+            !(idleSnapshot2.IsIdle && idleSnapshot2.IsStalled) && !(idleSnapshot2.IsIdle && idleSnapshot2.IsAlive)
+            && !(aliveSnapshot.IsAlive && aliveSnapshot.IsStalled) && !(heartbeat.IsStalled && heartbeat.IsAlive));
     }
 
     // ── 黑匣子（定容环形 + 故障包导出）───────────────────────────────────

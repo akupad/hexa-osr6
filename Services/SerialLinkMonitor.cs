@@ -151,15 +151,28 @@ public sealed class SerialLinkMonitor
         long bytesSeen = Interlocked.Read(ref _bytesSeen);
         long expected = Interlocked.Read(ref _expectedBytes);
 
-        double sinceEvidence = SecondsBetween(now, lastEvidence);
-        // 刚写完帧、回显还在路上时不该判死：把"最后一次写帧"也算作判死的时间基准。
-        double sinceSilence = SecondsBetween(now, Math.Max(lastEvidence, lastFrame));
+        // 三个时间基准各有各的意思，别混用（混用是上一版的真 bug，见下面注释）：
+        //   sFrame = 我们最近有没有在发；sEcho = 我们的帧有没有被回；sHb = 固件执行器还活不活；sByte = 线上还有没有字节。
+        double sFrame = SecondsBetween(now, lastFrame);
+        double sEcho = SecondsBetween(now, lastEcho);
+        double sHb = SecondsBetween(now, lastHeartbeat);
+        double sByte = SecondsBetween(now, lastByte);
 
-        bool hasEcho = lastEcho != 0 && SecondsBetween(now, lastEcho) < AliveWindow.TotalSeconds;
-        bool hasHeartbeat = lastHeartbeat != 0 && SecondsBetween(now, lastHeartbeat) < HeartbeatWindow.TotalSeconds;
-        bool alive = frames > 0 && sinceEvidence < AliveWindow.TotalSeconds;
-        // 红线：没写过帧就绝不判死。设备开机后不主动说话是正常状态，不是故障。
-        bool dead = frames > 0 && sinceSilence >= DeadWindow.TotalSeconds;
+        bool hasEcho = lastEcho != 0 && sEcho < AliveWindow.TotalSeconds;
+        bool hasHeartbeat = lastHeartbeat != 0 && sHb < HeartbeatWindow.TotalSeconds;
+
+        bool writing = frames > 0 && sFrame < AliveWindow.TotalSeconds;
+        bool beating = sHb < HeartbeatWindow.TotalSeconds;
+
+        // ③ 线上彻底没字节了：这是唯一该让人拔插 USB 的情形（复位后的 ESP32 只能拔插）。
+        bool dead = frames > 0 && sByte >= DeadWindow.TotalSeconds;
+        // ② 的反面：正在发、而且真收到了回显。回显只可能由我们的帧触发，所以必须同时要求 writing——
+        // 之前用「任何证据（含每秒心跳）在窗口内」判活，会把"发了没人回"也说成已确认，正好把故障盖住。
+        bool alive = writing && sEcho < AliveWindow.TotalSeconds;
+        // ① 没在发、但心跳还在：设备好好的，不是故障。用户停手不动不是毛病。
+        bool idleOk = frames > 0 && !writing && beating;
+        // ② 正在发、心跳还在（执行器跑得好好的）、却没有回显：字节没到设备或被别人占了端口。
+        bool stalled = writing && !alive && beating;
 
         return new SerialLinkSnapshot(
             IsAlive: alive,
@@ -174,33 +187,38 @@ public sealed class SerialLinkMonitor
             LastByteAtUtc: ToUtc(lastByte),
             LastHeartbeatAtUtc: ToUtc(lastHeartbeat),
             LastEchoAtUtc: ToUtc(lastEcho),
-            SecondsSinceLastByte: SecondsBetween(now, lastByte),
-            SecondsSinceLastEcho: SecondsBetween(now, lastEcho),
-            SecondsSinceEvidence: sinceEvidence,
-            SecondsSinceSilence: sinceSilence);
+            SecondsSinceLastByte: sByte,
+            SecondsSinceLastEcho: sEcho,
+            SecondsSinceLastHeartbeat: sHb,
+            SecondsSinceEvidence: SecondsBetween(now, lastEvidence),
+            SecondsSinceSilence: Math.Min(sFrame, sByte),
+            IsIdle: idleOk,
+            IsStalled: stalled);
     }
 
     /// <summary>
     /// 给界面与故障包共用的一句话结论（只有一处文案，两边不会说岔）。
-    /// 达到 <see cref="SerialLinkSnapshot.IsDead"/> 时会明确带处置建议 —— 复位后的 ESP32 只能拔插 USB。
+    /// 只有「线上一个字节都没有」才让人拔插 USB —— 空闲正常和有去无回都明确说出"先别拔"，
+    /// 否则用户会把线拔在没问题的时候（那是比晚一秒报更贵的误伤）。
     /// </summary>
     public static string Describe(SerialLinkSnapshot snapshot)
     {
         if (snapshot.FramesWritten == 0)
             return "链路：待发帧 · 还没写过命令，设备安静属正常";
 
-        if (snapshot.IsAlive)
-            return $"链路：已确认 · {snapshot.SecondsSinceLastEcho:0.0} 秒前有回话";
-
         if (snapshot.IsDead)
-            return $"链路：{AgoText(snapshot.SecondsSinceSilence, "从来没收到过回话")} · 设备可能已复位，需要拔插 USB";
+            return $"链路：{snapshot.SecondsSinceLastByte:0.0} 秒没有任何数据 · 设备可能已复位或线松，拔插 USB 后重连";
 
-        // 灰区：既有可能是刚断开、也可能只是这一小段时间没写帧，先不下结论。
-        // 心跳在但回显没了是另一种情况（固件还在执行，但我们的字节没到）—— 值得单独说清楚。
-        if (snapshot.HasHeartbeat && !snapshot.HasEcho)
-            return "链路：只有心跳没有回显 · " + AgoText(snapshot.SecondsSinceLastEcho, "还没收到过我们写出去的回话");
+        if (snapshot.IsAlive)
+            return $"链路：已确认 · {snapshot.SecondsSinceLastEcho:0.0} 秒前收到过回显";
 
-        return $"链路：待确认 · {AgoText(snapshot.SecondsSinceSilence, "还没收到过回话")}";
+        if (snapshot.IsIdle)
+            return $"链路：空闲 · 设备心跳 {snapshot.SecondsSinceLastHeartbeat:0} 秒前还在 · 没在发命令，不算故障";
+
+        if (snapshot.IsStalled)
+            return $"链路：有去无回 · 设备还在跑（心跳 {snapshot.SecondsSinceLastHeartbeat:0} 秒前），但我们发出的帧没有回显 · 先别拔线，看看脚本或端口是否被占用";
+
+        return "链路：待确认 · " + AgoText(snapshot.SecondsSinceLastByte, "还没收到过任何数据");
     }
 
     /// <summary>把"距今多少秒"变成一句人话；从没发生过时用调用方给的说法（绝不把 ∞ 打给用户看）。</summary>
@@ -275,6 +293,12 @@ public readonly record struct SerialLinkSnapshot(
     DateTime? LastEchoAtUtc,
     double SecondsSinceLastByte,
     double SecondsSinceLastEcho,
+    /// <summary>距最后一次看到 <c>Executor: Stats</c> 多少秒（从没见过为 +∞）；界面文案要"心跳 N 秒前还在"。</summary>
+    double SecondsSinceLastHeartbeat,
     double SecondsSinceEvidence,
     /// <summary>距"最后一次证据或最后一次写帧"里更近的那一个（判死与文案都用它，写过帧就一定有值）。</summary>
-    double SecondsSinceSilence);
+    double SecondsSinceSilence,
+    /// <summary>① 空闲正常：没在发命令、心跳还在。不是故障。</summary>
+    bool IsIdle,
+    /// <summary>② 有去无回：在发、心跳还在、却没有回显 —— 字节没到设备，或被别的程序占了端口。</summary>
+    bool IsStalled);
