@@ -1121,6 +1121,20 @@ try
             .Where(cmd => cmd.StartsWith("L0", StringComparison.Ordinal)).ToList();
         Check("game bridge shaped output ramps toward the target instead of jumping",
             shapedReached && shapedSteps.Count >= 3 && !shapedSteps[0].StartsWith("L099", StringComparison.Ordinal));
+
+        // ScalarCmd 在整形开着时也必须过整形（低通 + 限速）：否则游戏 60fps 发 0↔1 方波时，
+        // 轴永远跑不完一段就被反向重指，端点反复硬反转。这里断言「不是一步到位的 I60 直落」。
+        bool savedComfort = cfg.BridgeUseComfortLimits;
+        cfg.BridgeUseComfortLimits = false;             // 关掉舒适限速，让趋近在几拍内完成，测试才不用等十几秒
+        int beforeScalarShape = serial.SimulationCommands.Count;
+        WsSend("[{\"ScalarCmd\":{\"Id\":16,\"DeviceIndex\":0,\"Scalars\":[{\"Index\":0,\"Scalar\":0.0}]}}]");
+        SpinWait.SpinUntil(() => serial.SimulationCommands.Skip(beforeScalarShape)
+            .Any(cmd => cmd.StartsWith("L0", StringComparison.Ordinal) && cmd != "L05000I60"), 3000);
+        var scalarShapeSteps = serial.SimulationCommands.Skip(beforeScalarShape)
+            .Where(cmd => cmd.StartsWith("L0", StringComparison.Ordinal)).ToList();
+        Check("game bridge ScalarCmd is shaped (several steps, never a single immediate jump to the target)",
+            scalarShapeSteps.Count >= 3 && !serial.SimulationCommands.Skip(beforeScalarShape).Contains("L00000I60"));
+        cfg.BridgeUseComfortLimits = savedComfort;
         Check("game bridge records rx/tx instruction log",
             bridge.RxCount >= 1 && bridge.TxCount >= 1
             && bridge.RecentLog.Any(entry => entry.Direction == "RX" && entry.Text.Contains("LinearCmd"))

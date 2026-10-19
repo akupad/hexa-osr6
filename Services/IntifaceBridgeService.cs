@@ -721,12 +721,36 @@ public sealed class IntifaceBridgeService : IDisposable
             case IntifaceProtocol.ScalarAction scalar:
             {
                 // ScalarCmd 是「立即置位」：不补 Duration 插值（那会把游戏的一次赋值拉成一段轨迹，手感全变）。
-                // 机械保护只保留既有的两道：① 位置夹进设置页里配置的轴限位；② 插值时间固定为最小 ramp（限速）。
+                // 机械保护：① 位置夹进设置页里配置的轴限位；② 整形开着时交给 ShapeAndSend（低通 + 限速 + 轴联动），
+                // 但跳过 LinearCmd 那条「同一个值反复出现就重解释成往复」的启发式 —— 标量本来就是电平，
+                // 反复发同一个值不该被改成振荡。整形全关或该轴不在整形表里时，退回最小 ramp 透传。
+                // 为什么标量也得过限速：60ms 满行程 ≈ 1667 单位/秒，而整形上限是舒缓 170 / 沉浸 360 / 动感 620，
+                // 差 3–10 倍。游戏以 60fps 发 0↔1 方波时，只留最小 ramp 会让轴永远跑不完一段就被反向重指，端点反复硬反转。
                 int min = AxisLimit(scalar.Axis, lower: true);
                 int max = AxisLimit(scalar.Axis, lower: false);
                 int scalarPosition = Math.Clamp(scalar.Position, Math.Min(min, max), Math.Max(min, max));
-                SendTCode($"{scalar.Axis}{scalarPosition:D4}I{BridgeMinInterpolationMs}");
-                LastCommand = $"标量 {scalar.Axis} → {scalarPosition / 100.0:P0}（立即置位 · 最小 ramp {BridgeMinInterpolationMs}ms）";
+                int scalarIndex = ShapingActive
+                    ? Array.FindIndex(ShaperAxes, axis => string.Equals(axis, scalar.Axis, StringComparison.OrdinalIgnoreCase))
+                    : -1;
+                if (scalarIndex < 0)
+                {
+                    SendTCode($"{scalar.Axis}{scalarPosition:D4}I{BridgeMinInterpolationMs}");
+                    LastCommand = $"标量 {scalar.Axis} → {scalarPosition / 100.0:P0}（立即置位 · 最小 ramp {BridgeMinInterpolationMs}ms）";
+                    break;
+                }
+
+                lock (_shapeLock)
+                {
+                    LevelState state = _levels[scalarIndex];
+                    // 电平语义：清掉「持续动作」渲染，并把 LastValue 置成 NaN，让下一条 LinearCmd 从干净的重复计数开始。
+                    state.Sustaining = false;
+                    state.Repeats = 0;
+                    state.LastValue = double.NaN;
+                    _shapeTarget[scalarIndex] = scalarPosition / 99.99;
+                    _shapeDriven[scalarIndex] = true;
+                    _shapeDrivenAt[scalarIndex] = Environment.TickCount64;
+                }
+                LastCommand = $"标量 {scalar.Axis} → {scalarPosition / 100.0:P0}（整形中）";
                 break;
             }
 
