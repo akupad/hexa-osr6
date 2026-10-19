@@ -55,6 +55,8 @@ public sealed class IntifaceBridgeService : IDisposable
     {
         public required Stream Stream { get; init; }
         public SemaphoreSlim WriteLock { get; } = new(1, 1);
+        /// <summary>这条连接自己协商出来的协议版本（v3 缺省；客户端在 RequestServerInfo 里报 >=4 才升 v4）。</summary>
+        public IntifaceProtocol.SessionState Protocol { get; } = new();
     }
     private readonly List<ClientSession> _sessions = new();
     /// <summary>让位说明只写一次（进入让位时），避免每 50ms 刷屏。</summary>
@@ -415,13 +417,17 @@ public sealed class IntifaceBridgeService : IDisposable
         ClientSession[] sessions;
         lock (_sessionsLock) sessions = _sessions.ToArray();
         if (sessions.Length == 0) return;
-        string json = present ? IntifaceProtocol.DeviceAddedJson(0, 0, Mode) : IntifaceProtocol.DeviceRemovedJson(0);
-        byte[] bytes = Encoding.UTF8.GetBytes(json);
         // 后台发：绝不让"通知客户端"这件事挡住运动线程。
         _ = Task.Run(async () =>
         {
             foreach (ClientSession session in sessions)
             {
+                // 能力宣告每次现拼、并且按这条连接自己协商的版本拼（v4 才带 ScalarCmd）；振动模式也是现读配置。
+                // 注意：这里只由传输层掉线/恢复触发 —— 运行中切换振动模式不发 DeviceRemoved/DeviceAdded。
+                string json = present
+                    ? IntifaceProtocol.DeviceAddedJson(0, 0, Mode, _cfg.GameBridgeVibrateMode, session.Protocol.MessageVersion)
+                    : IntifaceProtocol.DeviceRemovedJson(0);
+                byte[] bytes = Encoding.UTF8.GetBytes(json);
                 try { await SendAsync(session, bytes).ConfigureAwait(false); }
                 catch (Exception ex) { AppLogger.Warn("通知客户端设备状态失败（忽略）: " + ex.Message); }
             }
@@ -530,7 +536,8 @@ public sealed class IntifaceBridgeService : IDisposable
                     // 是安全语义，把停车也挡掉只会让某个客户端以为自己停了而机器还在动。别顺手补上。
                     bool hasFloor;
                     lock (_sessionsLock) hasFloor = ReferenceEquals(_activeSession, session);
-                    if (!hasFloor && (json.Contains("LinearCmd") || json.Contains("RotateCmd") || json.Contains("VibrateCmd")))
+                    if (!hasFloor && (json.Contains("LinearCmd") || json.Contains("RotateCmd") || json.Contains("VibrateCmd")
+                        || json.Contains("ScalarCmd")))
                     {
                         byte[] denied = Encoding.UTF8.GetBytes(
                             "[{\"Error\":{\"Id\":0,\"ErrorMessage\":\"another client owns the device\",\"ErrorCode\":4}}]");
@@ -538,7 +545,8 @@ public sealed class IntifaceBridgeService : IDisposable
                         Note("另一个客户端正在驱动设备：已忽略这次指令（最后连上的客户端有发言权）");
                         continue;
                     }
-                    foreach (string response in IntifaceProtocol.Process(json, Mode, EnqueueAction, _cfg.GameBridgeVibrateMode, NoteVibrateIgnored))
+                    foreach (string response in IntifaceProtocol.Process(json, Mode, EnqueueAction, _cfg.GameBridgeVibrateMode, NoteVibrateIgnored,
+                        session.Protocol))
                     {
                         byte[] payload = Encoding.UTF8.GetBytes(response);
                         await SendAsync(session, payload).ConfigureAwait(false);
@@ -707,6 +715,18 @@ public sealed class IntifaceBridgeService : IDisposable
                     _shapeDrivenAt[index] = Environment.TickCount64;
                 }
                 LastCommand = $"直线 {linear.Axis} → {position / 100.0:P0}（整形中）";
+                break;
+            }
+
+            case IntifaceProtocol.ScalarAction scalar:
+            {
+                // ScalarCmd 是「立即置位」：不补 Duration 插值（那会把游戏的一次赋值拉成一段轨迹，手感全变）。
+                // 机械保护只保留既有的两道：① 位置夹进设置页里配置的轴限位；② 插值时间固定为最小 ramp（限速）。
+                int min = AxisLimit(scalar.Axis, lower: true);
+                int max = AxisLimit(scalar.Axis, lower: false);
+                int scalarPosition = Math.Clamp(scalar.Position, Math.Min(min, max), Math.Max(min, max));
+                SendTCode($"{scalar.Axis}{scalarPosition:D4}I{BridgeMinInterpolationMs}");
+                LastCommand = $"标量 {scalar.Axis} → {scalarPosition / 100.0:P0}（立即置位 · 最小 ramp {BridgeMinInterpolationMs}ms）";
                 break;
             }
 
@@ -1267,9 +1287,33 @@ internal static class IntifaceProtocol
 {
     public abstract record BridgeAction;
     public sealed record LinearAction(string Axis, int Position, int DurationMs) : BridgeAction;
+    /// <summary>ScalarCmd 的动作：立即置位到 Position（0–9999），不带 Duration —— 它不是一段轨迹。</summary>
+    public sealed record ScalarAction(string Axis, int Position) : BridgeAction;
     public sealed record RotateAction(string Axis, double Speed, bool Clockwise) : BridgeAction;
     public sealed record VibrateAction(string Axis, double Speed) : BridgeAction;
     public sealed record StopAction : BridgeAction;
+
+    /// <summary>
+    /// 一条客户端连接自己的协议协商状态：RequestServerInfo 里报上来的 MessageVersion 决定后面
+    /// DeviceList/DeviceAdded 里要不要带 ScalarCmd。缺省 v3 —— 没协商过就和旧版一模一样。
+    /// </summary>
+    public sealed class SessionState
+    {
+        public int MessageVersion { get; set; } = 3;
+    }
+
+    /// <summary>版本协商：客户端报 >= 4 才升到 v4；缺失或低版本一律落 v3。</summary>
+    internal static int NegotiateMessageVersion(JsonElement requestServerInfo)
+    {
+        if (requestServerInfo.ValueKind == JsonValueKind.Object
+            && requestServerInfo.TryGetProperty("MessageVersion", out JsonElement versionElement)
+            && versionElement.TryGetUInt32(out uint clientVersion)
+            && clientVersion >= 4)
+        {
+            return 4;
+        }
+        return 3;
+    }
 
     private static bool IsSingle(string mode) => mode == "single";
 
@@ -1277,13 +1321,13 @@ internal static class IntifaceProtocol
     public static string ComputeAccept(string key) =>
         Convert.ToBase64String(SHA1.HashData(Encoding.UTF8.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
 
-    /// <summary>六轴直驱：LinearCmd 的 Vectors[].Index 就是轴序号（0..5 → L0/L1/L2/R0/R1/R2）；越界回 Error 并返回空串。</summary>
-    private static string LinearAxisForFeature(JsonElement vector, uint id, List<string> responses)
+    /// <summary>六轴直驱：LinearCmd 的 Vectors[]/ScalarCmd 的 Scalars[] 的 Index 就是轴序号（0..5 → L0/L1/L2/R0/R1/R2）；越界回 Error 并返回空串。</summary>
+    private static string AxisForIndex(JsonElement feature, uint id, List<string> responses, string commandName)
     {
-        uint index = vector.TryGetProperty("Index", out JsonElement idx) && idx.TryGetUInt32(out uint parsed) ? parsed : 0u;
+        uint index = feature.TryGetProperty("Index", out JsonElement idx) && idx.TryGetUInt32(out uint parsed) ? parsed : 0u;
         if (index >= SixAxisOrder.Length)
         {
-            responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"LinearCmd feature index out of range\",\"ErrorCode\":3}}}}]");
+            responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"{commandName} feature index out of range\",\"ErrorCode\":3}}}}]");
             return string.Empty;
         }
         return SixAxisOrder[index];
@@ -1301,7 +1345,37 @@ internal static class IntifaceProtocol
     /// <summary>六轴直驱时 RotateCmd 能点名的轴（R0 扭转 / R1 倾斜 / R2 俯仰 都当"角度位置"驱动）。</summary>
     private static readonly string[] RotateFeatures = new[] { "R0", "R1", "R2" };
 
-    private static string SixAxisDeviceMessages()
+    /// <summary>
+    /// Buttplug v4 的 ScalarCmd 能力：六根轴各一条，L0/L1/L2 是位置轴、R0/R1/R2 是角度轴（与 RotateCmd 的标法一致），
+    /// StepCount/StepRange 覆盖 0–100 全行程（含端点）。只有协商到 v4 才拼进 DeviceMessages。
+    /// </summary>
+    private static string ScalarFeatures()
+    {
+        var scalars = new List<string>();
+        foreach (string axis in SixAxisOrder)
+        {
+            string actuator = Array.IndexOf(RotateFeatures, axis) >= 0 ? "Rotate" : "Position";
+            scalars.Add("{\"FeatureDescriptor\":\"" + axis + "\",\"ActuatorType\":\"" + actuator
+                + "\",\"StepCount\":100,\"StepRange\":[0,100]}");
+        }
+        return "\"ScalarCmd\":[" + string.Join(",", scalars) + "]";
+    }
+
+    /// <summary>
+    /// 按当前配置追加的可选能力（拼在 LinearCmd/RotateCmd 之后、StopDeviceCmd 之前）：
+    /// ScalarCmd 只在协商到 v4 时宣告；VibrateCmd 只在振动模式非 off 时宣告 —— off 模式下桥会明确丢弃振动，
+    /// 再宣告出去等于骗客户端一直发。v3 + 振动 off 返回空串，输出与旧版逐字节一致。
+    /// </summary>
+    private static string OptionalDeviceMessages(string vibrateMode, int messageVersion)
+    {
+        var parts = new List<string>();
+        if (messageVersion >= 4) parts.Add(ScalarFeatures());
+        if (!string.Equals(vibrateMode, "off", StringComparison.OrdinalIgnoreCase))
+            parts.Add("\"VibrateCmd\":[{\"FeatureDescriptor\":\"V0\",\"ActuatorType\":\"Vibrate\",\"StepCount\":100}]");
+        return parts.Count == 0 ? string.Empty : "," + string.Join(",", parts);
+    }
+
+    private static string SixAxisDeviceMessages(string vibrateMode, int messageVersion)
     {
         var linear = new List<string>();
         foreach (string axis in SixAxisOrder)
@@ -1309,41 +1383,48 @@ internal static class IntifaceProtocol
         var rotate = new List<string>();
         foreach (string axis in RotateFeatures)
             rotate.Add("{\"FeatureDescriptor\":\"" + axis + "\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}");
-        return "\"LinearCmd\":[" + string.Join(",", linear) + "],\"RotateCmd\":[" + string.Join(",", rotate) + "],\"StopDeviceCmd\":{}";
+        return "\"LinearCmd\":[" + string.Join(",", linear) + "],\"RotateCmd\":[" + string.Join(",", rotate) + "]"
+            + OptionalDeviceMessages(vibrateMode, messageVersion) + ",\"StopDeviceCmd\":{}";
     }
 
-    public static string DeviceListJson(uint id, string mode)
+    public static string DeviceListJson(uint id, string mode, string vibrateMode = "off", int messageVersion = 3)
     {
         if (IsSixAxis(mode))
         {
-            return "[{\"DeviceList\":{\"Id\":" + id + ",\"Devices\":[{\"DeviceIndex\":0,\"DeviceName\":\"Hexa OSR6 6-Axis\",\"DeviceMessages\":{" + SixAxisDeviceMessages() + "}}]}}]";
+            return "[{\"DeviceList\":{\"Id\":" + id + ",\"Devices\":[{\"DeviceIndex\":0,\"DeviceName\":\"Hexa OSR6 6-Axis\",\"DeviceMessages\":{" + SixAxisDeviceMessages(vibrateMode, messageVersion) + "}}]}}]";
         }
         if (IsSingle(mode))
         {
-            return "[{\"DeviceList\":{\"Id\":" + id + ",\"Devices\":[{\"DeviceIndex\":0,\"DeviceName\":\"Hexa OSR6 (L0+R0)\",\"DeviceMessages\":{\"LinearCmd\":[{\"FeatureDescriptor\":\"L0\",\"ActuatorType\":\"Position\",\"StepCount\":100}],\"RotateCmd\":[{\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}],\"StopDeviceCmd\":{}}}]}}]";
+            return "[{\"DeviceList\":{\"Id\":" + id + ",\"Devices\":[{\"DeviceIndex\":0,\"DeviceName\":\"Hexa OSR6 (L0+R0)\",\"DeviceMessages\":{\"LinearCmd\":[{\"FeatureDescriptor\":\"L0\",\"ActuatorType\":\"Position\",\"StepCount\":100}],\"RotateCmd\":[{\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}]"
+                + OptionalDeviceMessages(vibrateMode, messageVersion) + ",\"StopDeviceCmd\":{}}}]}}]";
         }
-        return "[{\"DeviceList\":{\"Id\":" + id + ",\"Devices\":[{\"DeviceIndex\":0,\"DeviceName\":\"Hexa Linear (L0)\",\"DeviceMessages\":{\"LinearCmd\":[{\"FeatureDescriptor\":\"L0\",\"ActuatorType\":\"Position\",\"StepCount\":100}],\"StopDeviceCmd\":{}}},{\"DeviceIndex\":1,\"DeviceName\":\"Hexa Rotary (R0)\",\"DeviceMessages\":{\"RotateCmd\":[{\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}],\"StopDeviceCmd\":{}}}]}}]";
+        return "[{\"DeviceList\":{\"Id\":" + id + ",\"Devices\":[{\"DeviceIndex\":0,\"DeviceName\":\"Hexa Linear (L0)\",\"DeviceMessages\":{\"LinearCmd\":[{\"FeatureDescriptor\":\"L0\",\"ActuatorType\":\"Position\",\"StepCount\":100}]"
+            + OptionalDeviceMessages(vibrateMode, messageVersion) + ",\"StopDeviceCmd\":{}}},{\"DeviceIndex\":1,\"DeviceName\":\"Hexa Rotary (R0)\",\"DeviceMessages\":{\"RotateCmd\":[{\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}]"
+            + OptionalDeviceMessages(vibrateMode, messageVersion) + ",\"StopDeviceCmd\":{}}}]}}]";
     }
 
-    public static string DeviceAddedJson(uint id, int deviceIndex, string mode)
+    public static string DeviceAddedJson(uint id, int deviceIndex, string mode, string vibrateMode = "off", int messageVersion = 3)
     {
         if (IsSixAxis(mode))
         {
-            return "[{\"DeviceAdded\":{\"Id\":" + id + ",\"DeviceIndex\":0,\"DeviceName\":\"Hexa OSR6 6-Axis\",\"DeviceMessages\":{" + SixAxisDeviceMessages() + "}}}]";
+            return "[{\"DeviceAdded\":{\"Id\":" + id + ",\"DeviceIndex\":0,\"DeviceName\":\"Hexa OSR6 6-Axis\",\"DeviceMessages\":{" + SixAxisDeviceMessages(vibrateMode, messageVersion) + "}}}]";
         }
         if (IsSingle(mode))
         {
-            return "[{\"DeviceAdded\":{\"Id\":" + id + ",\"DeviceIndex\":0,\"DeviceName\":\"Hexa OSR6 (L0+R0)\",\"DeviceMessages\":{\"LinearCmd\":[{\"FeatureDescriptor\":\"L0\",\"ActuatorType\":\"Position\",\"StepCount\":100}],\"RotateCmd\":[{\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}],\"StopDeviceCmd\":{}}}}]";
+            return "[{\"DeviceAdded\":{\"Id\":" + id + ",\"DeviceIndex\":0,\"DeviceName\":\"Hexa OSR6 (L0+R0)\",\"DeviceMessages\":{\"LinearCmd\":[{\"FeatureDescriptor\":\"L0\",\"ActuatorType\":\"Position\",\"StepCount\":100}],\"RotateCmd\":[{\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}]"
+                + OptionalDeviceMessages(vibrateMode, messageVersion) + ",\"StopDeviceCmd\":{}}}}]";
         }
         if (deviceIndex == 0)
         {
-            return "[{\"DeviceAdded\":{\"Id\":" + id + ",\"DeviceIndex\":0,\"DeviceName\":\"Hexa Linear (L0)\",\"DeviceMessages\":{\"LinearCmd\":[{\"FeatureDescriptor\":\"L0\",\"ActuatorType\":\"Position\",\"StepCount\":100}],\"StopDeviceCmd\":{}}}}]";
+            return "[{\"DeviceAdded\":{\"Id\":" + id + ",\"DeviceIndex\":0,\"DeviceName\":\"Hexa Linear (L0)\",\"DeviceMessages\":{\"LinearCmd\":[{\"FeatureDescriptor\":\"L0\",\"ActuatorType\":\"Position\",\"StepCount\":100}]"
+                + OptionalDeviceMessages(vibrateMode, messageVersion) + ",\"StopDeviceCmd\":{}}}}]";
         }
-        return "[{\"DeviceAdded\":{\"Id\":" + id + ",\"DeviceIndex\":1,\"DeviceName\":\"Hexa Rotary (R0)\",\"DeviceMessages\":{\"RotateCmd\":[{\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}],\"StopDeviceCmd\":{}}}}]";
+        return "[{\"DeviceAdded\":{\"Id\":" + id + ",\"DeviceIndex\":1,\"DeviceName\":\"Hexa Rotary (R0)\",\"DeviceMessages\":{\"RotateCmd\":[{\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}]"
+            + OptionalDeviceMessages(vibrateMode, messageVersion) + ",\"StopDeviceCmd\":{}}}}]";
     }
 
     public static List<string> Process(string json, string mode, Action<BridgeAction> onAction, string vibrateMode = "position",
-        Action<string>? onNote = null)
+        Action<string>? onNote = null, SessionState? session = null)
     {
         var responses = new List<string>();
         try
@@ -1355,7 +1436,7 @@ internal static class IntifaceProtocol
                 foreach (JsonElement item in root.EnumerateArray())
                 {
                     // 逐条兜住：以前一条坏消息会抛到外层 catch，把同一批里后面的指令（包括 StopAllDevices）一起丢掉。
-                    try { ProcessOne(item, mode, vibrateMode, responses, onAction, onNote); }
+                    try { ProcessOne(item, mode, vibrateMode, responses, onAction, onNote, session); }
                     catch (Exception ex)
                     {
                         AppLogger.Warn("游戏桥单条消息处理失败（已跳过这一条）: " + ex.Message);
@@ -1365,7 +1446,7 @@ internal static class IntifaceProtocol
             }
             else if (root.ValueKind == JsonValueKind.Object)
             {
-                ProcessOne(root, mode, vibrateMode, responses, onAction, onNote);
+                ProcessOne(root, mode, vibrateMode, responses, onAction, onNote, session);
             }
             else
             {
@@ -1383,7 +1464,7 @@ internal static class IntifaceProtocol
     }
 
     private static void ProcessOne(JsonElement element, string mode, string vibrateMode, List<string> responses, Action<BridgeAction> onAction,
-        Action<string>? onNote = null)
+        Action<string>? onNote = null, SessionState? session = null)
     {
         foreach (JsonProperty property in element.EnumerateObject())
         {
@@ -1405,16 +1486,22 @@ internal static class IntifaceProtocol
             switch (name)
             {
                 case "RequestServerInfo":
-                    responses.Add($"[{{\"ServerInfo\":{{\"Id\":{id},\"MessageVersion\":3,\"MaxPingTime\":0,\"ServerName\":\"Hexa OSR6 Bridge\",\"ServerMajorVersion\":3,\"ServerMinorVersion\":0,\"ServerBuildVersion\":0}}}}]");
+                {
+                    // 版本协商：客户端报 MessageVersion >= 4 才升到 v4（多一套 ScalarCmd），
+                    // 缺失或 < 4 一律落回 v3 —— 报 3 时的输出必须与加 ScalarCmd 之前逐字节一致。
+                    int negotiated = NegotiateMessageVersion(value);
+                    if (session != null) session.MessageVersion = negotiated;
+                    responses.Add($"[{{\"ServerInfo\":{{\"Id\":{id},\"MessageVersion\":{negotiated},\"MaxPingTime\":0,\"ServerName\":\"Hexa OSR6 Bridge\",\"ServerMajorVersion\":{negotiated},\"ServerMinorVersion\":0,\"ServerBuildVersion\":0}}}}]");
                     break;
+                }
                 case "RequestDeviceList":
-                    responses.Add(DeviceListJson(id, mode));
+                    responses.Add(DeviceListJson(id, mode, vibrateMode, session?.MessageVersion ?? 3));
                     break;
                 case "StartScanning":
                     responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
-                    responses.Add(DeviceAddedJson(id, 0, mode));
+                    responses.Add(DeviceAddedJson(id, 0, mode, vibrateMode, session?.MessageVersion ?? 3));
                     // single 只呈现 1 台设备；dual 追加第 2 台。
-                    if (!IsSingle(mode)) responses.Add(DeviceAddedJson(id, 1, mode));
+                    if (!IsSingle(mode)) responses.Add(DeviceAddedJson(id, 1, mode, vibrateMode, session?.MessageVersion ?? 3));
                     // Buttplug v3 规定扫描结束要回 ScanningFinished（Id 用 StartScanning 的 Id）。
                     // 少这一条的后果：走"扫描"流程的客户端（Intiface Central 系、部分插件）会一直等扫描结束，永远不进驱动阶段。
                     responses.Add($"[{{\"ScanningFinished\":{{\"Id\":{id}}}}}]");
@@ -1443,10 +1530,32 @@ internal static class IntifaceProtocol
                             : 200;
                         int raw = (int)Math.Round(position * 9999.0);
                         string axis = IsSixAxis(mode)
-                            ? LinearAxisForFeature(vector, id, responses)
+                            ? AxisForIndex(vector, id, responses, "LinearCmd")
                             : LinearAxisFor(mode, deviceIndex);
                         if (axis.Length == 0) continue;   // 越界已经回过 Error
                         onAction(new LinearAction(axis, raw, duration));
+                    }
+                    responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
+                    break;
+                }
+                case "ScalarCmd":
+                {
+                    // Buttplug v4：Scalars[].Scalar 是「立即置位」的强度比例，不是一段带 Duration 的轨迹，
+                    // 所以这里刻意不补任何插值 —— 机械保护只剩服务侧固定的最小 ramp（BridgeMinInterpolationMs）。
+                    foreach (JsonElement scalar in value.GetProperty("Scalars").EnumerateArray())
+                    {
+                        if (!scalar.TryGetProperty("Scalar", out JsonElement scalarElement)
+                            || !scalarElement.TryGetDouble(out double scalarRaw)
+                            || !double.IsFinite(scalarRaw))
+                        {
+                            // NaN/缺字段不能落到 (int) 转换上（会被夹到端点，看着像"静默跑到最下面"）。
+                            responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"bad ScalarCmd scalar\",\"ErrorCode\":3}}}}]");
+                            continue;
+                        }
+                        int raw = (int)Math.Round(Math.Clamp(scalarRaw, 0.0, 1.0) * 9999.0);
+                        string axis = AxisForIndex(scalar, id, responses, "ScalarCmd");
+                        if (axis.Length == 0) continue;   // 越界已经回过 Error
+                        onAction(new ScalarAction(axis, raw));
                     }
                     responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
                     break;

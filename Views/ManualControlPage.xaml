@@ -3,6 +3,21 @@
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       xmlns:views="clr-namespace:Hexa.Views"
       Background="{StaticResource Bg}" Title="手动动轴">
+
+    <!-- 六根轴滑杆下面那条「中」＝ 中点 5000 的刻度：滑杆只有 0–9999 的裸数字，中点原本没有任何标记。
+         六行滑杆由 code-behind 的 BuildAxisRows 生成（每行套用一次这个样式），这里只定外观：
+         细、居中、不参与命中测试，纯视觉提示，不动滑杆的交互。 -->
+    <Page.Resources>
+        <Style x:Key="AxisMidTick" TargetType="TextBlock">
+            <Setter Property="Text" Value="中"/>
+            <Setter Property="FontSize" Value="8"/>
+            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+            <Setter Property="HorizontalAlignment" Value="Center"/>
+            <Setter Property="TextAlignment" Value="Center"/>
+            <Setter Property="IsHitTestVisible" Value="False"/>
+        </Style>
+    </Page.Resources>
+
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <!-- 最大化时限制内容宽度并居中：不加的话滑杆会被拉成横跨整屏的长条 -->
         <StackPanel Margin="24,18,24,26" MaxWidth="1280" HorizontalAlignment="Stretch">
@@ -65,7 +80,7 @@
 
                             <Button x:Name="EStopBtn" Content="⛔ 立刻急停" Height="32" Margin="0,10,0,0"
                                     Style="{StaticResource BtnDanger}" HorizontalAlignment="Stretch"
-                                    ToolTip="一键停住并锁死设备。要再动它，得到侧栏点「⬆ 全部归中」解锁（会先问你一次）"
+                                    ToolTip="一键停住并锁死设备。要再动它，点这一页（或侧栏）的「⟲ 全部归中」解锁（会先问你一次）"
                                     Click="EStopBtn_Click"/>
                         </StackPanel>
                     </Border>
@@ -87,7 +102,7 @@
                                 <Button x:Name="CenterBtn" Grid.Column="2" Content="⟲ 全部归中" Height="28"
                                         FontSize="11" Padding="10,0" Style="{StaticResource BtnSecondary}"
                                         ToolTipService.ShowOnDisabled="True"
-                                        ToolTip="六根轴一起回到正中间（5000）。走安全限速、不猛冲，也不会弹窗问你"
+                                        ToolTip="六根轴一起回到正中间（5000）：点之前会先问你一次。急停锁定 / 输出被锁时，点它就是解锁入口 —— 和侧栏的「⬆ 全部归中」走同一条路（同一个确认框、同一次归中）"
                                         Click="CenterBtn_Click"/>
                             </Grid>
                             <TextBlock Text="0 = 一端，9999 = 另一端，5000 = 正中间。拖的时候设备跟着走，右边的数字就是现在发出去的值。"

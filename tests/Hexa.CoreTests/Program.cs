@@ -880,6 +880,81 @@ try
     Check("game bridge legacy single mode still declares only L0+R0",
         System.Text.RegularExpressions.Regex.Matches(legacyList, "FeatureDescriptor").Count == 2);
 
+    // ── Buttplug v4：MessageVersion 协商 + ScalarCmd 能力宣告 ─────────────
+    // 报 3 的客户端必须看到和加 ScalarCmd 之前**逐字节一致**的 DeviceMessages（老客户端不许被动到）。
+    var v3Session = new IntifaceProtocol.SessionState();
+    var v3ServerInfo = IntifaceProtocol.Process(
+        "[{\"RequestServerInfo\":{\"Id\":11,\"ClientName\":\"t\",\"MessageVersion\":3}}]",
+        "six", _ => { }, "off", null, v3Session);
+    Check("game bridge v3 client is answered with MessageVersion 3",
+        v3ServerInfo.Count == 1 && v3ServerInfo[0].Contains("\"MessageVersion\":3")
+        && v3ServerInfo[0].Contains("\"ServerMajorVersion\":3") && v3Session.MessageVersion == 3);
+    string v3DeviceList = IntifaceProtocol.Process("[{\"RequestDeviceList\":{\"Id\":12}}]", "six", _ => { }, "off", null, v3Session)[0];
+    Check("game bridge v3 device list has no ScalarCmd and equals the old output byte for byte",
+        !v3DeviceList.Contains("ScalarCmd") && !v3DeviceList.Contains("StepRange")
+        && v3DeviceList == IntifaceProtocol.DeviceListJson(12, "six")
+        && System.Text.RegularExpressions.Regex.Matches(v3DeviceList, "FeatureDescriptor").Count == 9);
+
+    var v4Session = new IntifaceProtocol.SessionState();
+    var v4ServerInfo = IntifaceProtocol.Process(
+        "[{\"RequestServerInfo\":{\"Id\":21,\"ClientName\":\"t\",\"MessageVersion\":4}}]",
+        "six", _ => { }, "off", null, v4Session);
+    Check("game bridge v4 client is answered with MessageVersion 4",
+        v4ServerInfo.Count == 1 && v4ServerInfo[0].Contains("\"MessageVersion\":4")
+        && v4ServerInfo[0].Contains("\"ServerMajorVersion\":4") && v4Session.MessageVersion == 4);
+    string v4DeviceList = IntifaceProtocol.Process("[{\"RequestDeviceList\":{\"Id\":22}}]", "six", _ => { }, "off", null, v4Session)[0];
+    int scalarStart = v4DeviceList.IndexOf("\"ScalarCmd\":[", StringComparison.Ordinal);
+    int scalarEnd = scalarStart < 0 ? -1 : v4DeviceList.IndexOf("}],", scalarStart);
+    string scalarBlock = scalarEnd < 0 ? "" : v4DeviceList[scalarStart..(scalarEnd + 1)];
+    Check("game bridge v4 device list declares ScalarCmd for L0-L2 (Position) and R0-R2 (Rotate)",
+        scalarBlock.Length > 0
+        && System.Text.RegularExpressions.Regex.Matches(scalarBlock, "FeatureDescriptor").Count == 6
+        && scalarBlock.Contains("\"FeatureDescriptor\":\"L2\",\"ActuatorType\":\"Position\"")
+        && scalarBlock.Contains("\"FeatureDescriptor\":\"R2\",\"ActuatorType\":\"Rotate\"")
+        && !scalarBlock.Contains("\"FeatureDescriptor\":\"R0\",\"ActuatorType\":\"Position\""));
+    Check("game bridge v4 ScalarCmd declares StepCount 100 with the inclusive 0-100 StepRange",
+        System.Text.RegularExpressions.Regex.Matches(scalarBlock, "\"StepCount\":100,\"StepRange\":\\[0,100\\]").Count == 6);
+    Check("game bridge split devices also declare ScalarCmd at v4",
+        IntifaceProtocol.DeviceListJson(5, "single", "off", 4).Contains("\"ScalarCmd\":[")
+        && IntifaceProtocol.DeviceListJson(5, "dual", "off", 4).Contains("\"ScalarCmd\":[")
+        && IntifaceProtocol.DeviceAddedJson(5, 0, "dual", "off", 4).Contains("\"ScalarCmd\":[")
+        && IntifaceProtocol.DeviceAddedJson(5, 1, "dual", "off", 4).Contains("\"ScalarCmd\":["));
+
+    // 客户端没报 MessageVersion（有的插件只给 ClientName）：一律落回 v3。
+    var missingVersionSession = new IntifaceProtocol.SessionState();
+    var missingVersionServerInfo = IntifaceProtocol.Process(
+        "[{\"RequestServerInfo\":{\"Id\":31,\"ClientName\":\"t\"}}]", "six", _ => { }, "off", null, missingVersionSession);
+    Check("game bridge RequestServerInfo without MessageVersion falls back to v3",
+        missingVersionServerInfo.Count == 1 && missingVersionServerInfo[0].Contains("\"MessageVersion\":3")
+        && missingVersionSession.MessageVersion == 3
+        && !IntifaceProtocol.Process("[{\"RequestDeviceList\":{\"Id\":32}}]", "six", _ => { }, "off", null, missingVersionSession)[0]
+            .Contains("ScalarCmd"));
+
+    // VibrateCmd 只在振动模式非 off 时宣告；off 模式下桥会明确丢弃振动，宣告出去等于骗客户端。
+    Check("game bridge advertises VibrateCmd only when vibrate mode is not off",
+        !IntifaceProtocol.DeviceListJson(6, "single", "off", 3).Contains("VibrateCmd")
+        && !IntifaceProtocol.DeviceAddedJson(6, 0, "single", "off", 3).Contains("VibrateCmd")
+        && IntifaceProtocol.DeviceListJson(6, "single", "position", 3).Contains("\"VibrateCmd\":[")
+        && IntifaceProtocol.DeviceAddedJson(6, 1, "dual", "rotate", 3).Contains("\"VibrateCmd\":["));
+
+    // ScalarCmd 是「立即置位」：只有轴序映射 + 位置，没有 Duration（不补插值）。
+    var scalarActions = new List<IntifaceProtocol.BridgeAction>();
+    var scalarResponses = IntifaceProtocol.Process(
+        "[{\"ScalarCmd\":{\"Id\":41,\"DeviceIndex\":0,\"Scalars\":[{\"Index\":0,\"Scalar\":1.0},{\"Index\":5,\"Scalar\":0.25}]}}]",
+        "six", scalarActions.Add);
+    Check("game bridge ScalarCmd routes Index 5 to R2 (and 0 to L0) with no duration",
+        scalarActions.SequenceEqual(new IntifaceProtocol.BridgeAction[]
+        {
+            new IntifaceProtocol.ScalarAction("L0", 9999),
+            new IntifaceProtocol.ScalarAction("R2", 2500),
+        })
+        && scalarResponses.Count == 1 && scalarResponses[0].Contains("\"Ok\""));
+    var scalarOutOfRange = IntifaceProtocol.Process(
+        "[{\"ScalarCmd\":{\"Id\":42,\"DeviceIndex\":0,\"Scalars\":[{\"Index\":6,\"Scalar\":0.5}]}}]", "six", _ => { });
+    Check("game bridge ScalarCmd rejects an out-of-range feature index with ErrorCode 3",
+        scalarOutOfRange.Any(response => response.Contains("\"ErrorCode\":3")
+            && response.Contains("ScalarCmd feature index out of range")));
+
     // ── 覆盖机制：每一种"游戏能表达的意图"都必须有明确处置（要么产生动作、要么明确回一条应答），
     // 不许出现"既没动作也没应答"的静默丢弃 —— 这条锁住"漏掉一类意图"这类问题不会再悄悄发生。
     var covered = new (string Intent, string Payload)[]
@@ -892,6 +967,7 @@ try
         ("LinearCmd",         "[{\"LinearCmd\":{\"Id\":6,\"DeviceIndex\":0,\"Vectors\":[{\"Index\":0,\"Position\":0.5,\"Duration\":200}]}}]"),
         ("RotateCmd",         "[{\"RotateCmd\":{\"Id\":7,\"DeviceIndex\":0,\"Rotations\":[{\"Index\":0,\"Speed\":0.3,\"Clockwise\":true}]}}]"),
         ("VibrateCmd",        "[{\"VibrateCmd\":{\"Id\":8,\"DeviceIndex\":0,\"Speeds\":[{\"Index\":0,\"Speed\":0.5}]}}]"),
+        ("ScalarCmd",         "[{\"ScalarCmd\":{\"Id\":12,\"DeviceIndex\":0,\"Scalars\":[{\"Index\":0,\"Scalar\":0.5}]}}]"),
         ("StopDeviceCmd",     "[{\"StopDeviceCmd\":{\"Id\":9,\"DeviceIndex\":0}}]"),
         ("StopAllDevices",    "[{\"StopAllDevices\":{\"Id\":10}}]"),
         ("未知消息",           "[{\"NoSuchCmd\":{\"Id\":11}}]"),
@@ -1025,6 +1101,12 @@ try
             handshake.Contains("101 Switching Protocols") && handshake.Contains("Sec-WebSocket-Accept"));
         Check("game bridge linear reaches serial as L09999I200",
             serial.SimulationCommands.Count > beforeBridge && serial.SimulationCommands.Contains("L09999I200"));
+
+        // ScalarCmd（Buttplug v4）是「立即置位」：落到串口的帧只带固定最小 ramp，不带游戏给的 Duration。
+        int beforeScalarLive = serial.SimulationCommands.Count;
+        WsSend("[{\"ScalarCmd\":{\"Id\":15,\"DeviceIndex\":0,\"Scalars\":[{\"Index\":0,\"Scalar\":0.5}]}}]");
+        Check("game bridge ScalarCmd reaches serial as an immediate set with the fixed minimal ramp",
+            SpinWait.SpinUntil(() => serial.SimulationCommands.Skip(beforeScalarLive).Contains("L05000I60"), 3000));
 
         // 整形打开（默认）：同一条指令不再一步到底，而是按 50ms 节拍分步爬上去，
         // 且插值时间用节拍长度（60ms），设备才不会一次跳满行程。
@@ -1202,6 +1284,28 @@ try
         Check("端口重连后：引擎能重新驱动设备（真的又发出帧）",
             flakyEngine.TrySendDirectAxes([60, 40, 50, 50, 50, 50])
             && flaky.Writes.Count > writesBeforeRecovery);
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  连接错误的生命周期（Services/SerialService.cs 的 LastError）
+    //  并发上引用赋值是原子的，真正的坑是「语义过期」：成功重连、切模拟、用户主动断开
+    //  之后仍挂着上一次的失败原因，面板会一直指着一个早就不存在的毛病。
+    // ══════════════════════════════════════════════════════════════
+    using (var staleSerial = new SerialService())
+    {
+        staleSerial.ConnectAsync("").GetAwaiter().GetResult();
+        Check($"连不上时 LastError 有内容（面板要能说清原因）：{staleSerial.LastError}",
+            staleSerial.LastError == "主端口为空");
+
+        staleSerial.SetSimulationMode(true);
+        Check("切到模拟设备后旧的连接错误被清掉（不再挂着过期原因）", staleSerial.LastError is null);
+
+        staleSerial.SetSimulationMode(false);
+        staleSerial.ConnectAsync("").GetAwaiter().GetResult();
+        Check("断开前的错误先被记下来（否则下面那条断言会假通过）", staleSerial.LastError is not null);
+
+        staleSerial.Disconnect();
+        Check("用户主动断开后不再显示旧的失败原因（断开不是错误）", staleSerial.LastError is null);
     }
 
     // ══════════════════════════════════════════════════════════════

@@ -97,6 +97,13 @@ public sealed class SerialService : ICommandTransport, IDisposable
         get { lock (_lock) return _simulationCommands.ToArray(); }
     }
 
+    /// <summary>模拟设备下记录一条指令。四处入口共用，上限 2000 条，超出丢最旧的一条。</summary>
+    private void RecordSimulationCommandLocked(string command)
+    {
+        _simulationCommands.Add(command);
+        if (_simulationCommands.Count > 2000) _simulationCommands.RemoveAt(0);
+    }
+
     /// <summary>Enable a deterministic local device. It never opens a hardware port.</summary>
     public void SetSimulationMode(bool enabled)
     {
@@ -120,6 +127,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
             {
                 _activePortName = "";
             }
+            // 换设备形态后，上一条连接错误已经不描述当前状态了，清掉免得面板一直挂着旧错误。
+            LastError = null;
         }
         ConnectionChanged?.Invoke(enabled);
     }
@@ -213,6 +222,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
             _outputEnabled = false;
             _simulationEnabled = false;
             ClosePortLocked();
+            // 用户主动断开：不是错误，别让面板继续显示上一次的失败原因。
+            LastError = null;
         }
         ConnectionChanged?.Invoke(false);
     }
@@ -244,8 +255,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
                 else
                 {
                     _consecutiveFailures++;
-                    double seconds = Math.Min(60, Math.Pow(2, Math.Min(_consecutiveFailures, 5)));
-                    _nextReconnectUtc = DateTime.UtcNow.AddSeconds(seconds);
+                    _nextReconnectUtc = DateTime.UtcNow.AddSeconds(BackoffSeconds());
                 }
             }
         }
@@ -629,8 +639,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         {
             if (_simulationEnabled)
             {
-                _simulationCommands.Add(cmd);
-                if (_simulationCommands.Count > 2000) _simulationCommands.RemoveAt(0);
+                RecordSimulationCommandLocked(cmd);
                 return true;
             }
             // 输出锁定（急停中）时不写固件设置：那一刻要的是「什么都别动」，而且设置会写 Flash，
@@ -716,8 +725,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             }
             if (_simulationEnabled)
             {
-                _simulationCommands.Add(safeCommand);
-                if (_simulationCommands.Count > 2000) _simulationCommands.RemoveAt(0);
+                RecordSimulationCommandLocked(safeCommand);
                 mirrored = safeCommand;      // 模拟设备下也镜像：没插设备也能验证多输出
             }
             else
@@ -792,8 +800,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
 
             if (_simulationEnabled)
             {
-                _simulationCommands.Add(frame);
-                if (_simulationCommands.Count > 2000) _simulationCommands.RemoveAt(0);
+                RecordSimulationCommandLocked(frame);
                 mirrored = frame;      // 模拟设备下也镜像：没插设备也能验证多输出
             }
             else
@@ -833,7 +840,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
             if (!_simulationEnabled && _port?.IsOpen != true) return;
             if (_simulationEnabled)
             {
-                _simulationCommands.Add("DSTOP");
+                // 与其它三处入口同样封顶：Stop 可能被反复调用，缺这一句就是唯一会无界增长的地方。
+                RecordSimulationCommandLocked("DSTOP");
                 ResetSentAxesLocked();
                 mirrored = true;
             }
@@ -874,9 +882,14 @@ public sealed class SerialService : ICommandTransport, IDisposable
         _outputEnabled = false;
         ClosePortLocked();
         _consecutiveFailures++;
-        double seconds = Math.Min(60, Math.Pow(2, Math.Min(_consecutiveFailures, 5)));
-        _nextReconnectUtc = DateTime.UtcNow.AddSeconds(seconds);
+        _nextReconnectUtc = DateTime.UtcNow.AddSeconds(BackoffSeconds());
     }
+
+    /// <summary>
+    /// 重连退避秒数：2^n 指数上升，封顶 60 秒。指数取 6 是因为 2^6=64 才能被 60 截到（取 5 时最大只有 32，
+    /// 上限永远到不了）。失败计数越大越不该再频繁试探端口，所以封顶值是刻意留在这的。
+    /// </summary>
+    private double BackoffSeconds() => Math.Min(60, Math.Pow(2, Math.Min(_consecutiveFailures, 6)));
 
     private void ClosePortLocked()
     {

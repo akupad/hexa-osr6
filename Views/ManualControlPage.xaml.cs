@@ -93,6 +93,9 @@ public partial class ManualControlPage : Page
     /// <summary>摆动计时（t 从按下「开始摆动」算起）。</summary>
     private Stopwatch? _sineClock;
 
+    /// <summary>摆动真的发出过至少一帧 —— 「■ 停止」要拿最后一帧把滑杆对到设备所在的位置。</summary>
+    private bool _sineFrameSent;
+
     private readonly DispatcherTimer _sendTimer;
     private readonly DispatcherTimer _statusTimer;
 
@@ -247,7 +250,7 @@ public partial class ManualControlPage : Page
                 SmallChange = 20,      // 方向键点一下 = 20 个点，够细
                 LargeChange = 400,     // 点空白轨道 = 400 个点，不会被"点一下飞到底"吓到
                 VerticalAlignment = VerticalAlignment.Center,
-                ToolTip = "0 = 一端，9999 = 另一端，5000 = 正中间",
+                ToolTip = "0 = 一端，9999 = 另一端，5000 = 正中间（下面那条「中」小刻度就标在中点上）",
             };
             slider.ValueChanged += (_, _) => OnSliderChanged(index);
             _sliders[i] = slider;
@@ -266,14 +269,29 @@ public partial class ManualControlPage : Page
             };
             _readouts[i] = readout;
 
-            var row = new Grid { Margin = new Thickness(0, 3, 0, 3) };
+            // 中点刻度：滑杆只有 0–9999 的裸数字，轨道中央那条「中」就是 5000 的位置。
+            // 单独占轨道下面一行（叠在轨道上会被滑块盖住），不吃鼠标、不参与交互。
+            var midTick = new TextBlock
+            {
+                Style = (Style)FindResource("AxisMidTick"),
+                ToolTip = "中点 5000",
+            };
+
+            var sliderCell = new Grid();
+            sliderCell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            sliderCell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            Grid.SetRow(midTick, 1);
+            sliderCell.Children.Add(slider);
+            sliderCell.Children.Add(midTick);
+
+            var row = new Grid { Margin = new Thickness(0, 2, 0, 0) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            Grid.SetColumn(slider, 1);
+            Grid.SetColumn(sliderCell, 1);
             Grid.SetColumn(readout, 2);
             row.Children.Add(label);
-            row.Children.Add(slider);
+            row.Children.Add(sliderCell);
             row.Children.Add(readout);
             AxisRows.Children.Add(row);
         }
@@ -284,6 +302,11 @@ public partial class ManualControlPage : Page
         if (!_ready) return;
         UpdateReadout(index);
         RefreshRawValues();
+
+        // 「■ 停止」之后定时器是关着的（停就真的停发，页面不会自己接着往外发指令）。
+        // 真的上手拖滑杆了才把它接回来 —— 这才是"停完还能接着拖"，而且不必在按停那一刻就开始发。
+        if (_sineRunning || _sendTimer.IsEnabled) return;
+        if (IsManualDriving && BlockedReason(out _) is null) _sendTimer.Start();
     }
 
     private void UpdateReadout(int index)
@@ -372,14 +395,16 @@ public partial class ManualControlPage : Page
     /// 停手：停定时器 → 交还控制权 → 取消勾选 → 3D 回到「跟着设备真实输出刷新」。
     /// <b>不</b>把轴移回原位。
     ///
-    /// 本页<b>所有</b>停手路径（取消勾选 / 离开页面 / Unloaded / 急停 / 安全轮询 /
-    /// 被别人接管 / 按「■ 停止」）都走这里，所以正弦摆动也在这里一起停 —— 不需要各自记一份。
+    /// 本页<b>除了「■ 停止」以外</b>的所有停手路径（取消勾选 / 离开页面 / Unloaded / 急停 /
+    /// 安全轮询 / 被别人接管）都走这里，所以正弦摆动也在这里一起停 —— 不需要各自记一份。
+    /// 「■ 停止」只停摆动、要保留勾选与控制权，走 <see cref="StopSine"/>。
     /// </summary>
     private void StopManual(string note)
     {
         if (!_ready) return;
         _sineRunning = false;
         _sineClock = null;
+        _sineFrameSent = false;
         _sendTimer.Stop();
         App.Engine.ReleaseDirectInput(InputOwner);   // 只释放自己持有的
         SetAllowChecked(false);
@@ -462,6 +487,7 @@ public partial class ManualControlPage : Page
             _sineValues[i] = 50 + _ampSliders[i].Value / 2.0 * Math.Sin(omegaT + i * SinePhaseStepRadians);
 
         App.Engine.TrySendDirectAxes(_sineValues, SineInterpolationSeconds);
+        _sineFrameSent = true;      // 「■ 停止」要用这一帧把滑杆对到设备所在的位置
         ManualPreview.UpdateAxes(_sineValues);
     }
 
@@ -538,7 +564,7 @@ public partial class ManualControlPage : Page
         string tone;
         if (_sineRunning)
         {
-            state = $"正在摆动：每秒 {SpeedHz:0.00} 个来回，幅度 {AmplitudeSummary()}。按「■ 停止」就停，停在原地不回中间。";
+            state = $"正在摆动：每秒 {SpeedHz:0.00} 个来回，幅度 {AmplitudeSummary()}。按「■ 停止」就停，停在原地不回中间（勾选不变，停完直接拖滑杆）。";
             tone = "Success";
         }
         else if (_stopNote is not null)
@@ -663,8 +689,8 @@ public partial class ManualControlPage : Page
 
     /// <summary>
     /// 「▶ 开始摆动 / ■ 停止」。开始前必须过 <see cref="CanStartSine"/>（没勾允许 / 六轴全 0 /
-    /// 有安全闸拦着都点不动，真被程序调到了也绝不发一条指令）；停止走 <see cref="StopManual"/>，
-    /// 也就是"停在原地、不回中间"。
+    /// 有安全闸拦着都点不动，真被程序调到了也绝不发一条指令）；停止走 <see cref="StopSine"/> ——
+    /// 只停摆动，停在原地、不回中间，「允许手动动轴」的勾选留着。
     /// </summary>
     private void SineToggle_Click(object sender, RoutedEventArgs e)
     {
@@ -672,7 +698,7 @@ public partial class ManualControlPage : Page
 
         if (_sineRunning)
         {
-            StopManual("已停手 —— 你按了「■ 停止」，设备停在原地不动（没有回到中间）。");
+            StopSine();
             return;
         }
 
@@ -683,8 +709,43 @@ public partial class ManualControlPage : Page
         }
 
         _sineClock = Stopwatch.StartNew();
+        _sineFrameSent = false;
         _sineRunning = true;
+        // 已经按过「■ 停止」的话定时器是关着的 —— 开始摆动必须把它重新点起来，否则一动不动。
+        if (!_sendTimer.IsEnabled) _sendTimer.Start();
         RefreshSineUi();
+        RefreshStatus();
+    }
+
+    /// <summary>
+    /// 「■ 停止」：<b>只停摆动</b>，不碰「允许手动动轴」—— 勾选和本页的控制权都留着，
+    /// 停完就能接着拖滑杆（滑杆能不能拖照旧交给 <see cref="RefreshGate"/>）。
+    /// 这正是它和 <see cref="StopManual"/> 的唯一区别：其它停手路径（取消勾选 / 离开页面 /
+    /// Unloaded / 急停 / 安全轮询 / 被别人接管）继续走 StopManual，必须取消勾选并交还控制权。
+    /// </summary>
+    private void StopSine()
+    {
+        if (!_ready) return;
+
+        // 摆动期间滑杆一直停在"你上次手动拖的值"，而设备停在这一帧的正弦位置上。
+        // 直接接着按旧滑杆值发，等于一按「■ 停止」设备自己又跑一趟。停之前先把滑杆对到
+        // 设备现在所在的位置（用最后发出的一帧算），两边一致，一停就真的停在原地。
+        if (_sineFrameSent)
+        {
+            for (int i = 0; i < 6; i++)
+                _sliders[i].Value = Math.Clamp(_sineValues[i] / 100.0 * SliderMax, 0, SliderMax);
+        }
+
+        _sineRunning = false;
+        _sineClock = null;
+        _sineFrameSent = false;
+
+        // 停就真的停发：定时器关掉（这一秒之后页面不再自己往外发指令）。
+        // 控制权和勾选都留着，所以滑杆照旧由 RefreshGate 放开；
+        // 下一次拖滑杆时由 OnSliderChanged 把定时器接回来。设备自己保持当时的位置。
+        _sendTimer.Stop();
+
+        _stopNote = "已停止摆动 —— 设备停在原地不动（没有回到中间）；「允许手动动轴」还开着，可以直接拖滑杆。";
         RefreshStatus();
     }
 
@@ -723,12 +784,12 @@ public partial class ManualControlPage : Page
         if (App.Engine.EmergencyStopped)
         {
             danger = true;
-            return "设备处于急停锁定：先点侧栏的「⬆ 全部归中」解锁（会先问你一次），再回来。";
+            return "设备处于急停锁定：点这一页（或侧栏）的「全部归中」解锁（会先问你一次），再回来。";
         }
         if (!App.Serial.OutputEnabled)
         {
             danger = true;
-            return "设备的输出被锁着：点侧栏「⬆ 全部归中」解锁（会先问你一次）。";
+            return "设备的输出被锁着：点这一页（或侧栏）的「全部归中」解锁（会先问你一次）。";
         }
         if (App.Engine.IsHoming) return "设备正在归中：等它停稳就能动。";
 
@@ -742,6 +803,14 @@ public partial class ManualControlPage : Page
         if (App.Engine.IsEasing) return "设备正在过渡中：等它停稳。";
         return null;
     }
+
+    /// <summary>
+    /// 本页的「⟲ 全部归中」现在是不是<b>解锁入口</b>：连着设备、并且卡在"归中就能解开"的两种状态之一
+    /// （急停锁定、输出被锁 —— <see cref="MotionEngine.Home"/> 会清急停并重新使能输出）。
+    /// 断线不在此列：设备没连上时归中什么也做不了，按钮保持灰着。
+    /// </summary>
+    private static bool CanUnlockByHoming =>
+        App.Serial.IsOpen && (App.Engine.EmergencyStopped || !App.Serial.OutputEnabled);
 
     /// <summary>这一刻是谁在驱动设备（给人看的中文名）。</summary>
     private static string OwnerLabel()
@@ -811,9 +880,13 @@ public partial class ManualControlPage : Page
 
     /// <summary>
     /// 能不能拖：既要握着控制权，也要没有任何一条安全闸拦着。
-    /// 不能拖时滑杆和「全部归中」一起禁用 —— 灰掉比"点了没反应"清楚。
+    /// 不能拖时滑杆禁用 —— 灰掉比"点了没反应"清楚。
     /// 正在按正弦摆动时同理：那一路在发，手动这一路先灰掉（要手动就先按「■ 停止」）。
     /// 急停按钮和勾选框永远可点（勾选框必须能取消，急停必须一键可达）。
+    ///
+    /// 「全部归中」是唯一的例外：急停锁定 / 输出被锁时它仍然可点，因为这两种状态下<b>它本身就是
+    /// 解锁入口</b>（点击走和侧栏完全相同的确认框 + Home()）—— 不能既叫用户去解锁、又把眼前
+    /// 唯一能解锁的按钮灰掉。
     /// </summary>
     private void RefreshGate()
     {
@@ -821,10 +894,13 @@ public partial class ManualControlPage : Page
 
         foreach (Slider slider in _sliders)
             if (slider.IsEnabled != canDrive) slider.IsEnabled = canDrive;
-        if (CenterBtn.IsEnabled != canDrive) CenterBtn.IsEnabled = canDrive;
+
+        bool centerEnabled = canDrive || CanUnlockByHoming;
+        if (CenterBtn.IsEnabled != centerEnabled) CenterBtn.IsEnabled = centerEnabled;
 
         string hint = _sineRunning ? "正在按正弦摆动：先按「■ 停止」，再手动拖"
             : canDrive ? "拖动任一滑杆，设备立刻跟着走"
+            : CanUnlockByHoming ? "点「⟲ 全部归中」解锁（会先问你一次），再勾「允许手动动轴」"
             : AllowOn ? "现在不能动，原因看下面的提示"
             : "先勾上面的「允许手动动轴」，滑杆才会松开";
         if (AxisHint.Text != hint) AxisHint.Text = hint;
@@ -837,19 +913,72 @@ public partial class ManualControlPage : Page
     // ══════════════════════════════════════════════════════════════
 
     /// <summary>
-    /// 六根轴一起回 5000 中点。不弹确认、也不是猛冲：滑杆值一改，
-    /// 下一次 20Hz 下发就带着它走，插值 0.12 秒 + 引擎的安全限速器决定实际速度。
+    /// 「⟲ 全部归中」。六根轴一起动，所以点之前先问一次。
+    ///
+    /// 两种情况，解锁那一支<b>不</b>另写一套：
+    /// ① 急停锁定 / 输出被锁 —— 本按钮兼职解锁入口，和侧栏「⬆ 全部归中」走同一条路：
+    ///    急停锁定用<b>同一个</b>确认框（同一段文案、同一个标题），确认后调<b>同一个</b>
+    ///    <see cref="MotionEngine.Home"/>（它会清急停、重新使能输出，并用 1 秒插值把六轴送回中点，
+    ///    本页不自己再发一遍）。
+    /// ② 平时 —— 只把六个滑杆推回中点：滑杆值一改，下一次 20Hz 下发就带着它走，
+    ///    插值 0.12 秒 + 引擎的安全限速器决定实际速度；没握着控制权就只动滑杆、设备不动。
     /// </summary>
     private void CenterBtn_Click(object sender, RoutedEventArgs e)
     {
+        if (!_ready) return;
+
+        if (!App.Serial.IsOpen)
+        {
+            _stopNote = "设备还没连接：归中要先把设备连上（到侧栏下面的「⚙ 设置」页点「立即连接」）。";
+            RefreshStatus();
+            return;
+        }
+
+        bool unlock = CanUnlockByHoming;
+
+        // 急停锁定：和侧栏逐字相同的那个确认框；只是输出被锁（没急停）：用本页的归中确认。
+        bool confirmed = App.Engine.EmergencyStopped ? ConfirmReleaseEmergencyStop() : ConfirmCenterMove(unlock);
+        if (!confirmed) return;
+
+        if (unlock) App.Engine.Home();      // 和侧栏「⬆ 全部归中」同一个解锁 + 归中调用
+
         foreach (Slider slider in _sliders) slider.Value = SliderCenter;
         RefreshReadouts();
+
+        if (unlock)
+            _stopNote = "已解锁 —— 急停已解除、输出重新使能，六轴正回到中点。要动手就先勾「允许手动动轴」。";
+        RefreshStatus();
+    }
+
+    /// <summary>
+    /// 解除急停的确认：<b>和侧栏「⬆ 全部归中」完全同一个框</b>（逐字同一段文案、同一个标题）。
+    /// 归中会重新给设备通电并让它动起来，所以这一步既不省、也不能换成更弱的提示。
+    /// </summary>
+    private static bool ConfirmReleaseEmergencyStop() =>
+        System.Windows.MessageBox.Show(
+            LocalizationService.T("设备处于急停锁定，归中会解除急停并重新使能输出，是否继续？"),
+            LocalizationService.T("解除急停"), MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+
+    /// <summary>
+    /// 归中的确认：<b>六根轴会一起动</b>，点之前必须让用户知道这一下会发生什么。
+    /// <paramref name="unlock"/> = true 时这一下还会解锁被锁的输出，文案要把"重新通电、慢慢回中"说清。
+    /// </summary>
+    private static bool ConfirmCenterMove(bool unlock)
+    {
+        string text = unlock
+            ? "六个滑杆会一起跳到中点（5000），六根轴同时回中间 —— 这一次归中还会解锁设备的输出：\n"
+              + "输出重新使能、设备重新通电，然后用 1 秒的插值慢慢走到中点。\n\n要继续吗？"
+            : "六个滑杆会一起跳到中点（5000），六根轴同时往中间走。\n\n"
+              + "现在握着控制权就会立刻开始走：插值 0.12 秒，实际速度由引擎的安全限速器决定，不会猛冲；"
+              + "没勾「允许手动动轴」的话只动滑杆、设备不会动。\n\n要继续吗？";
+        return System.Windows.MessageBox.Show(text, LocalizationService.T("全部归中"),
+            MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
     }
 
     /// <summary>本页自带的急停：任何时候都点得到（主窗口侧栏那个离得远，这一页在动设备）。</summary>
     private void EStopBtn_Click(object sender, RoutedEventArgs e)
     {
         App.Engine.EmergencyStop();
-        StopManual("已停手 —— 你按了急停，设备已锁死。要再动它，先点侧栏的「⬆ 全部归中」解锁（会先问你一次）。");
+        StopManual("已停手 —— 你按了急停，设备已锁死。要再动它，点这一页（或侧栏）的「全部归中」解锁（会先问你一次）。");
     }
 }

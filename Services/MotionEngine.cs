@@ -44,7 +44,8 @@ public sealed class MotionEngine : IDisposable
     private long _audioFeaturesAt;      // 最近一次收到音频特征的时间（判断捕获是否还在跑）
     private readonly double[] _ambientScratch = new double[6];   // 氛围叠加层的临时缓冲（避免每帧分配）
     private double _ambientPhase;                                // 氛围微动的相位 0–1
-    private bool _autoFromCompanion;    // 当前自动动作是不是「游戏伴随/自动跟随」启动的
+    // 当前自动动作是不是「游戏伴随/自动跟随」启动的。UI 线程写、AutoTick 所在的节拍线程读，故 volatile。
+    private volatile bool _autoFromCompanion;
     private bool _silenceHold;          // 安静超时后已停住
     private double _silenceMs;
     private double _audioBass;
@@ -119,7 +120,10 @@ public sealed class MotionEngine : IDisposable
     }
 
     public MotionMode ActiveMode { get; set; } = MotionMode.Auto;
-    public bool RuleEngineActive { get; set; }
+
+    /// <summary>规则引擎是否在接管设备。UI 线程写、高分辨率节拍线程读，故用 volatile 保证最坏只慢一拍而不是永远看不到。</summary>
+    private volatile bool _ruleEngineActive;
+    public bool RuleEngineActive { get => _ruleEngineActive; set => _ruleEngineActive = value; }
 
     /// <summary>
     /// 当前接管设备的是不是「游戏伴随 / 自动跟随」的底色动作，而不是遥测或用户自定义规则。
