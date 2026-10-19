@@ -30,3 +30,5 @@ Thumbs.db
 
 # 面向 AI 的内部需求书（不进公开仓库）
 docs/dev/
+
+_probe/

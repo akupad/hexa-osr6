@@ -534,9 +534,11 @@ public sealed class SerialService : ICommandTransport, IDisposable
         try
         {
             port.DiscardInBuffer();
-            port.Write("D0\nD1\nD2\n");
-            // 这台固件（ESP32-C3 的 TCode 分支）实测只对 CRLF 结尾的命令回 D1；两种都发一遍，握手更稳。
-            port.Write("D0\r\nD1\r\nD2\r\n");
+            // 只发 D1，绝不和 D0/D2 拼成一批：真机实测（COM3 / VID_303A&PID_1001）D0 与 D1 同批到达时
+            // 固件不吐 D1 回话，1.6 秒窗口里一条 "TCode" 都收不到 ⇒ 身份判定失败、整台设备连不上；
+            // 单独发 D1 立刻回 "TCode v0.3"。LF 与 CRLF 各发一遍，两种行尾固件都认。
+            port.Write("D1\n");
+            port.Write("D1\r\n");
             long startedAt = Stopwatch.GetTimestamp();
             var response = new System.Text.StringBuilder();
             while (!cancellationToken.IsCancellationRequested
@@ -597,15 +599,18 @@ public sealed class SerialService : ICommandTransport, IDisposable
             try
             {
                 port.DiscardInBuffer();
-                port.Write("D0\nD1\nD2\n");
-            // 这台固件（ESP32-C3 的 TCode 分支）实测只对 CRLF 结尾的命令回 D1；两种都发一遍，握手更稳。
-            port.Write("D0\r\nD1\r\nD2\r\n");
-                long startedAt = Stopwatch.GetTimestamp();
+                // 逐条发、每条单独收：D0 与 D1 同批到达时固件会吞掉 D1 的回话（真机实测），
+                // 所以 D1 先发，D0/D2 各隔一段再发，回话按 D1→D0→D2 顺序拼回。
                 var response = new System.Text.StringBuilder();
-                while (Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds < timeoutMs)
+                foreach (string command in new[] { "D1\n", "D0\n", "D2\n" })
                 {
-                    if (port.BytesToRead > 0) response.Append(port.ReadExisting());
-                    Thread.Sleep(25);
+                    port.Write(command);
+                    long sliceStart = Stopwatch.GetTimestamp();
+                    while (Stopwatch.GetElapsedTime(sliceStart).TotalMilliseconds < Math.Max(250, timeoutMs / 3.0))
+                    {
+                        if (port.BytesToRead > 0) response.Append(port.ReadExisting());
+                        Thread.Sleep(20);
+                    }
                 }
                 return response.ToString().Trim();
             }
