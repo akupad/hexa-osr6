@@ -39,7 +39,7 @@ public sealed record SerialPortOption(
     bool IsBluetoothInbound = false)
 {
     public bool IsKnownWiredDevice => !IsBluetooth
-        && (HardwareId.Contains(Osr6DeviceProfile.WiredUsbHardwareId, StringComparison.OrdinalIgnoreCase)
+        && (Osr6DeviceProfile.WiredUsbHardwareIds.Any(id => HardwareId.Contains(id, StringComparison.OrdinalIgnoreCase))
             || FriendlyName.Contains("CH340", StringComparison.OrdinalIgnoreCase)
             || FriendlyName.Contains("USB-SERIAL", StringComparison.OrdinalIgnoreCase));
 

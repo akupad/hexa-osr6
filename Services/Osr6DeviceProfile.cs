@@ -8,10 +8,16 @@ public static partial class Osr6DeviceProfile
     public static readonly string[] InstalledAxes = ["L0", "L1", "L2", "R0", "R1", "R2"];
     public static readonly string[] UninstalledAccessoryAxes = ["V0", "V1", "A0", "A1"];
 
+    /// <summary>
+    /// 有线口的 USB 硬件 ID 白名单。两个都留：旧板是 CH340 桥（VID_1A86&PID_7523），
+    /// 现用的板是 ESP32 原生 USB CDC（VID_303A&PID_1001）——只认 CH340 会让现役设备在
+    /// 自动发现里拿不到「已知有线口」的加分。
+    /// </summary>
+    public static readonly string[] WiredUsbHardwareIds = ["VID_303A&PID_1001", "VID_1A86&PID_7523"];
+
     private static readonly HashSet<string> InstalledAxisSet =
         new(InstalledAxes, StringComparer.OrdinalIgnoreCase);
 
-    public const string WiredUsbHardwareId = "VID_1A86&PID_7523";
     public const string BluetoothDeviceName = "ESP32SPP";
     /// <summary>
     /// 蓝牙地址留空 = 只按设备名识别。
@@ -26,9 +32,14 @@ public static partial class Osr6DeviceProfile
     public static bool IsCompatibleIdentityResponse(string? response)
     {
         if (string.IsNullOrWhiteSpace(response)) return false;
-        return response.Contains("TCode", StringComparison.OrdinalIgnoreCase)
-            || response.Contains("SR6", StringComparison.OrdinalIgnoreCase)
-            || response.Contains("OSR6", StringComparison.OrdinalIgnoreCase);
+        // 固件把 ESP-IDF 的运行日志和 TCode 回话写在同一个 CDC 口上（实测稳态每秒两行 Stats/CPU，
+        // 上电还有整段 banner）。判身份前先剔掉这些日志行 —— banner 里的 SR6Executor: 会让
+        // 「回话里含 SR6」变成理所当然，等于把身份闸门弄丢。
+        string cleaned = DeviceLogLineRegex().Replace(response, "");
+        if (string.IsNullOrWhiteSpace(cleaned)) return false;
+        return cleaned.Contains("TCode", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("SR6", StringComparison.OrdinalIgnoreCase)
+            || cleaned.Contains("OSR6", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -71,4 +82,8 @@ public static partial class Osr6DeviceProfile
     [GeneratedRegex("^(?<axis>[LVRAlvra][0-9])(?<value>[0-9]{1,5})(?<timing>(?:I|S)[0-9]{1,5})?(?<gain>G-?[0-9]+)?$",
         RegexOptions.CultureInvariant)]
     private static partial Regex AxisTokenRegex();
+
+    /// <summary>整行 ESP-IDF 日志，例如 <c>I (529688) uart: ...</c>（连行尾一起剔）。</summary>
+    [GeneratedRegex(@"(?m)^[ \t]*[IEWD] \(\d+\) [^\r\n]*\r?\n?", RegexOptions.CultureInvariant)]
+    private static partial Regex DeviceLogLineRegex();
 }

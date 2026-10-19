@@ -452,6 +452,19 @@ try
         Osr6DeviceProfile.IsCompatibleIdentityResponse("SR6-Alpha4-ESP32.ino\r\nTCode v0.3"));
     Check("silent bluetooth placeholder is not a device",
         !Osr6DeviceProfile.IsCompatibleIdentityResponse(""));
+    // 真机上电时固件会把 ESP-IDF banner 一起吐在这个口上，banner 里就有 SR6Executor 字样；
+    // 只有日志、没有 TCode 回话时必须判成「不是设备」，否则自动发现会去开 COM4/COM5。
+    Check("firmware boot log alone is not an identity response",
+        !Osr6DeviceProfile.IsCompatibleIdentityResponse(
+            "I (998) SR6Executor: Starting SR6 executor\r\nI (1002) app_main: OSR6 boot done\r\n"));
+    Check("identity response is recognized past firmware log lines",
+        Osr6DeviceProfile.IsCompatibleIdentityResponse(
+            "I (529688) uart: UART echoed 4 bytes\r\nTCode v0.3\r\n"));
+    Check("esp32 native usb cdc port counts as known wired device",
+        new SerialPortOption("COM3", false, "USB 串行设备",
+            @"USB\VID_303A&PID_1001&MI_00\7&1A2B3C&0&0000").IsKnownWiredDevice
+        && new SerialPortOption("COM7", false, "USB-SERIAL CH340", @"USB\VID_1A86&PID_7523").IsKnownWiredDevice
+        && !new SerialPortOption("COM4", true, "ESP32SPP", @"BTHENUM\{0000}").IsKnownWiredDevice);
     Check("standard companion suffix maps to OSR6 axis",
         FunscriptTrackLoader.AxisFromFileName("scene.twist.funscript") == "R0"
         && FunscriptTrackLoader.AxisFromFileName("scene.pitch.funscript") == "R2");

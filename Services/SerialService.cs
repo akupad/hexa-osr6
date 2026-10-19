@@ -870,10 +870,10 @@ public sealed class SerialService : ICommandTransport, IDisposable
         {
             AppLogger.Error("DSTOP 发送失败，连接已关闭", failure);
             ConnectionChanged?.Invoke(false);
-            return;
         }
-        // 急停也要镜像出去：网络那一头的设备同样必须停。
-        if (mirrored) Mirror?.Invoke("DSTOP");
+        // 急停也要镜像出去：网络那一头的设备同样必须停。本机串口写失败时**尤其**要发——
+        // 那一刻正是最需要另一个出口停下的时刻。
+        if (mirrored || stopPort is not null) Mirror?.Invoke("DSTOP");
     }
 
     private void MarkDisconnectedLocked(string error)
