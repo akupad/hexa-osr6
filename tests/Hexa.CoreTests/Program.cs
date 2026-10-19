@@ -465,6 +465,18 @@ try
             @"USB\VID_303A&PID_1001&MI_00\7&1A2B3C&0&0000").IsKnownWiredDevice
         && new SerialPortOption("COM7", false, "USB-SERIAL CH340", @"USB\VID_1A86&PID_7523").IsKnownWiredDevice
         && !new SerialPortOption("COM4", true, "ESP32SPP", @"BTHENUM\{0000}").IsKnownWiredDevice);
+    var wiredAndBluetooth = new[]
+    {
+        new SerialPortOption("COM3", false, "USB 串行设备", @"USB\VID_303A&PID_1001&MI_00"),
+        new SerialPortOption("COM4", true, "ESP32SPP", @"BTHENUM\{0000}"),
+    };
+    Check("auto discovery skips bluetooth ports when a wired one exists",
+        SerialService.WithoutBluetoothWhenWired(wiredAndBluetooth, preferWired: true)
+            .Select(option => option.PortName).SequenceEqual(new[] { "COM3" }));
+    Check("auto discovery keeps bluetooth ports when bluetooth is all we have",
+        SerialService.WithoutBluetoothWhenWired(new[] { wiredAndBluetooth[1] }, preferWired: true)
+            .Select(option => option.PortName).SequenceEqual(new[] { "COM4" })
+        && SerialService.WithoutBluetoothWhenWired(wiredAndBluetooth, preferWired: false).Count == 2);
     Check("standard companion suffix maps to OSR6 axis",
         FunscriptTrackLoader.AxisFromFileName("scene.twist.funscript") == "R0"
         && FunscriptTrackLoader.AxisFromFileName("scene.pitch.funscript") == "R2");

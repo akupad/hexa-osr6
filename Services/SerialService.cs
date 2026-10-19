@@ -388,7 +388,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
         IReadOnlyList<SerialPortOption> discovered = [];
         if (autoDiscovery)
         {
-            discovered = RankPortOptions(GetAvailablePortOptions(), preferWired, primary, fallback);
+            discovered = WithoutBluetoothWhenWired(
+                RankPortOptions(GetAvailablePortOptions(), preferWired, primary, fallback), preferWired);
             candidates.AddRange(discovered.Select(option => option.PortName));
         }
 
@@ -1143,6 +1144,21 @@ public sealed class SerialService : ICommandTransport, IDisposable
             })
             .ToArray();
         return RankPortOptions(options, preferWired: true, primaryPortName: "", fallbackPortName: "");
+    }
+
+    /// <summary>
+    /// 有线优先时，把蓝牙串口从「自动发现」的候选里剔掉。
+    /// 真机实测（2026-10-20）：拔掉 SR6 后自动重连会去试配对的蓝牙 COM4，Open 卡 5.1 秒才抛
+    /// “信号灯超时时间已到”，于是「设备已断开、输出已锁定」比实际拔线晚 5.7 秒才发生。
+    /// 一台都没剩（用户真的只有蓝牙串口）时保留原列表，不改变那种场景的行为。
+    /// </summary>
+    public static IReadOnlyList<SerialPortOption> WithoutBluetoothWhenWired(
+        IReadOnlyList<SerialPortOption> ranked,
+        bool preferWired)
+    {
+        if (!preferWired) return ranked;
+        var wiredOnly = ranked.Where(option => !option.IsBluetooth).ToArray();
+        return wiredOnly.Length > 0 ? wiredOnly : ranked;
     }
 
     public static IReadOnlyList<SerialPortOption> RankPortOptions(
