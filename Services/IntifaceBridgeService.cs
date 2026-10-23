@@ -662,17 +662,20 @@ public sealed class IntifaceBridgeService : IDisposable
         {
             case IntifaceProtocol.LinearAction linear:
             {
-                // 游戏桥以前直接拼字符串走串口，完全绕过轴限位和舒适限速：
-                // 游戏发「1ms 全行程」也会照发，能把设备抽到撞限位。这里补两道安全阀：
-                // ① 位置夹进该轴在设置页里配置的限位；② 插值时间不小于 60ms（限制最大速度）。
-                int min = AxisLimit(linear.Axis, lower: true);
-                int max = AxisLimit(linear.Axis, lower: false);
-                int position = Math.Clamp(linear.Position, Math.Min(min, max), Math.Max(min, max));
+                // 透传路径保留「按绝对值夹限位」：没有整形时游戏给的就是最终位置，夹住才安全。
+                int Passthrough()
+                {
+                    int lo = AxisLimit(linear.Axis, lower: true);
+                    int hi = AxisLimit(linear.Axis, lower: false);
+                    return Math.Clamp(linear.Position, Math.Min(lo, hi), Math.Max(lo, hi));
+                }
+
                 int duration = Math.Clamp(linear.DurationMs, BridgeMinInterpolationMs, 9999);
 
                 if (!ShapingActive)
                 {
                     // 三个整形开关全关 = 旧行为：原样透传。
+                    int position = Passthrough();
                     SendTCode($"{linear.Axis}{position:D4}I{duration}");
                     LastCommand = $"直线 {linear.Axis} → {position / 100.0:P0}（{duration}ms · 原样透传）";
                     break;
@@ -682,11 +685,15 @@ public sealed class IntifaceBridgeService : IDisposable
                     axis => string.Equals(axis, linear.Axis, StringComparison.OrdinalIgnoreCase));
                 if (index < 0)
                 {
+                    int position = Passthrough();
                     SendTCode($"{linear.Axis}{position:D4}I{duration}");
                     LastCommand = $"直线 {linear.Axis} → {position / 100.0:P0}（{duration}ms）";
                     break;
                 }
-                double level = position / 99.99;   // 0–9999 → 0–100
+                // 整形路径不再在原始单位上夹限位：限位由 MapPosition（0–100 → [下限,上限]）统一做一次。
+                // 两头都夹的后果：限位 2000–8000 时游戏发 0 会被夹到 2000、再缩放成 20%，最后输出 3200，
+                // 行程被压掉一截、两端永远到不了。
+                double level = Math.Clamp(linear.Position / 99.99, 0, 100);   // 0–9999 → 0–100
                 lock (_shapeLock)
                 {
                     LevelState state = _levels[index];
@@ -704,17 +711,22 @@ public sealed class IntifaceBridgeService : IDisposable
                     {
                         // 同一个位置反复出现：这是「油门/强度」而不是「轨迹」（实测那款游戏 32 条全是 Position 1.0）。
                         // 忠实翻译＝把轴钉在端点一直别着劲；重解释＝以该电平为中心做往复动作。
-                        if (!state.Sustaining) Note($"游戏一直发同一个位置（{level:0}%），已按「持续动作」渲染成往复");
+                        if (!state.Sustaining)
+                        {
+                            Note($"游戏一直发同一个位置（{level:0}%），已按「持续动作」渲染成往复");
+                            // 相位只在「刚进入持续动作」时清零：游戏以 30–60Hz 连发同一个电平，
+                            // 每帧清零会让相位永远停在起点（sin≈0），轴就钉在 Mid 不动 —— 往复根本没走起来。
+                            state.Phase = 0;
+                        }
                         state.Sustaining = true;
                         state.Mid = level;
                         state.Amplitude = Math.Max(5.0, Math.Abs(level - 50.0));
                         state.PeriodMs = Math.Clamp(1200.0 - state.Amplitude * 8.0, 500.0, 1200.0);
-                        state.Phase = 0;
                     }
                     _shapeDriven[index] = true;
                     _shapeDrivenAt[index] = Environment.TickCount64;
                 }
-                LastCommand = $"直线 {linear.Axis} → {position / 100.0:P0}（整形中）";
+                LastCommand = $"直线 {linear.Axis} → {Math.Clamp(linear.Position / 99.99, 0, 100):0}%（整形中）";
                 break;
             }
 
@@ -726,14 +738,14 @@ public sealed class IntifaceBridgeService : IDisposable
                 // 反复发同一个值不该被改成振荡。整形全关或该轴不在整形表里时，退回最小 ramp 透传。
                 // 为什么标量也得过限速：60ms 满行程 ≈ 1667 单位/秒，而整形上限是舒缓 170 / 沉浸 360 / 动感 620，
                 // 差 3–10 倍。游戏以 60fps 发 0↔1 方波时，只留最小 ramp 会让轴永远跑不完一段就被反向重指，端点反复硬反转。
-                int min = AxisLimit(scalar.Axis, lower: true);
-                int max = AxisLimit(scalar.Axis, lower: false);
-                int scalarPosition = Math.Clamp(scalar.Position, Math.Min(min, max), Math.Max(min, max));
                 int scalarIndex = ShapingActive
                     ? Array.FindIndex(ShaperAxes, axis => string.Equals(axis, scalar.Axis, StringComparison.OrdinalIgnoreCase))
                     : -1;
                 if (scalarIndex < 0)
                 {
+                    int lo = AxisLimit(scalar.Axis, lower: true);
+                    int hi = AxisLimit(scalar.Axis, lower: false);
+                    int scalarPosition = Math.Clamp(scalar.Position, Math.Min(lo, hi), Math.Max(lo, hi));
                     SendTCode($"{scalar.Axis}{scalarPosition:D4}I{BridgeMinInterpolationMs}");
                     LastCommand = $"标量 {scalar.Axis} → {scalarPosition / 100.0:P0}（立即置位 · 最小 ramp {BridgeMinInterpolationMs}ms）";
                     break;
@@ -746,11 +758,12 @@ public sealed class IntifaceBridgeService : IDisposable
                     state.Sustaining = false;
                     state.Repeats = 0;
                     state.LastValue = double.NaN;
-                    _shapeTarget[scalarIndex] = scalarPosition / 99.99;
+                    // 与 LinearAction 同理：整形路径交给 MapPosition 统一映射一次，这里不夹限位。
+                    _shapeTarget[scalarIndex] = Math.Clamp(scalar.Position / 99.99, 0, 100);
                     _shapeDriven[scalarIndex] = true;
                     _shapeDrivenAt[scalarIndex] = Environment.TickCount64;
                 }
-                LastCommand = $"标量 {scalar.Axis} → {scalarPosition / 100.0:P0}（整形中）";
+                LastCommand = $"标量 {scalar.Axis} → {Math.Clamp(scalar.Position / 99.99, 0, 100):0}%（整形中）";
                 break;
             }
 
@@ -783,11 +796,13 @@ public sealed class IntifaceBridgeService : IDisposable
                             }
                             else
                             {
+                                // 同 LinearAction：只有刚进入持续动作才清相位，否则每条振动消息清零一次，
+                                // 轴会钉在中位不动（振动→抽插这个模式等于坏的）。
+                                if (!state.Sustaining) state.Phase = 0;
                                 state.Sustaining = true;
                                 state.Mid = 50.0;
                                 state.Amplitude = Math.Clamp(5.0 + 13.0 * vibrate.Speed, 5.0, 20.0);
                                 state.PeriodMs = Math.Clamp(700.0 - 250.0 * vibrate.Speed, 300.0, 700.0);
-                                state.Phase = 0;
                                 _shapeDriven[strokeIndex] = true;
                                 _shapeDrivenAt[strokeIndex] = Environment.TickCount64;
                             }
@@ -1010,64 +1025,69 @@ public sealed class IntifaceBridgeService : IDisposable
             : BridgeMotionShaper.LegacyMaxSpeedPerSecond;
         double smoothingMs = cfg.BridgeInputSmoothing ? cfg.BridgeSmoothingMs : 0;
 
-        // 持续动作：把「一直发同一个值」渲染成正弦往复（目标每拍更新，交给下面的整形/限速与"变了才发"逻辑）。
-        for (int i = 0; i < 6; i++)
-        {
-            LevelState level = _levels[i];
-            if (!level.Sustaining) continue;
-            if (now - _shapeDrivenAt[i] > SustainIdleStopMs)
-            {
-                // 游戏两秒没消息（进菜单/挂机）：停下持续动作，停在当前位置。
-                level.Sustaining = false;
-                continue;
-            }
-            level.Phase += dt * 1000.0 / Math.Max(200.0, level.PeriodMs);
-            if (level.Phase >= 1.0) level.Phase -= Math.Floor(level.Phase);
-            _shapeTarget[i] = IntifaceProtocol.SustainTarget(level.Mid, level.Amplitude, level.Phase);
-            _shapeDriven[i] = true;
-            _shapeDrivenAt[i] = now;
-        }
-
         var values = new double[6];
         var mask = new bool[6];
-        bool anyDriven;
+        var rotating = new bool[6];
+        var toSend = new List<string>(6);
+        int interpolation = Math.Max(BridgeMinInterpolationMs, (int)Math.Round(dt * 1000) + 10);
+
+        // 一整拍都在同一把锁里算：持续动作改写 _shapeTarget/_levels，联动改写 _shapeLinkActive，
+        // ResetShaping/FreezeShaping 也改同一批字段。分成两段锁的话，复位恰好落在中间就会把
+        // 「停下」写回成旧值 —— 用户看到的是「喊了停还在走」。锁里没有阻塞 IO（串口写挪到锁外）。
         lock (_shapeLock)
         {
-            anyDriven = _shapeDriven.Any(flag => flag);
+            for (int i = 0; i < 6; i++) rotating[i] = IsRotating(ShaperAxes[i]);
+
+            // 持续动作：把「一直发同一个值」渲染成正弦往复（目标每拍更新，交给下面的整形/限速与"变了才发"逻辑）。
+            for (int i = 0; i < 6; i++)
+            {
+                LevelState level = _levels[i];
+                if (!level.Sustaining) continue;
+                if (now - _shapeDrivenAt[i] > SustainIdleStopMs)
+                {
+                    // 游戏两秒没消息（进菜单/挂机）：停下持续动作，停在当前位置。
+                    level.Sustaining = false;
+                    continue;
+                }
+                level.Phase += dt * 1000.0 / Math.Max(200.0, level.PeriodMs);
+                if (level.Phase >= 1.0) level.Phase -= Math.Floor(level.Phase);
+                _shapeTarget[i] = IntifaceProtocol.SustainTarget(level.Mid, level.Amplitude, level.Phase);
+                _shapeDriven[i] = true;
+                _shapeDrivenAt[i] = now;
+            }
+
+            bool anyDriven = _shapeDriven.Any(flag => flag);
             for (int i = 0; i < 6; i++)
             {
                 _shapeValue[i] = BridgeMotionShaper.Step(_shapeValue[i], _shapeTarget[i], dt, smoothingMs, maxSpeed);
                 values[i] = _shapeValue[i];
                 // 正在被「旋转」驱动的轴不算整形可写的轴：否则联动会和旋转抢同一根轴。
-                mask[i] = _shapeDriven[i] || IsRotating(ShaperAxes[i]);
+                mask[i] = _shapeDriven[i] || rotating[i];
             }
-        }
-        if (!anyDriven)
-        {
-            // 没有任何轴被驱动：把（可能还挂着的）联动派生量平滑收回中位，然后什么都不发。
-            if (_shapeLinkActive) ShapeReleaseLink(values, dt, maxSpeed);
-            else return;
-        }
 
-        // 多轴联动：游戏只驱动 L0 时，把其余轴按同一套规则带起来（旋转中的轴让给旋转）。
-        if (cfg.BridgeAxisLink && mask[0])
-        {
-            _shapeLinker.Apply(values, mask, cfg.BridgeAxisLinkAmount, dt, 0, 100);
-            _shapeLinkActive = true;
-        }
-        else if (_shapeLinkActive)
-        {
-            ShapeReleaseLink(values, dt, maxSpeed);
-        }
+            if (!anyDriven)
+            {
+                // 没有任何轴被驱动：把（可能还挂着的）联动派生量平滑收回中位，然后什么都不发。
+                if (!_shapeLinkActive) return;
+                ShapeReleaseLink(values, dt, maxSpeed, rotating);
+            }
+            else if (cfg.BridgeAxisLink && mask[0])
+            {
+                // 多轴联动：游戏只驱动 L0 时，把其余轴按同一套规则带起来（旋转中的轴让给旋转）。
+                _shapeLinker.Apply(values, mask, cfg.BridgeAxisLinkAmount, dt, 0, 100);
+                _shapeLinkActive = true;
+            }
+            else if (_shapeLinkActive)
+            {
+                ShapeReleaseLink(values, dt, maxSpeed, rotating);
+            }
 
-        int interpolation = Math.Max(BridgeMinInterpolationMs, (int)Math.Round(dt * 1000) + 10);
-        // 锁内只算"这一拍要发哪些轴"，串口写放到锁外：
-        // SerialPort.Write 是阻塞调用，占着 _shapeLock 会把 WebSocket 收包线程一起卡住。
-        var toSend = new List<string>(6);
-        lock (_shapeLock)
-        {
+            // 锁内只算"这一拍要发哪些轴"，串口写放到锁外：
+            // SerialPort.Write 是阻塞调用，占着 _shapeLock 会把 WebSocket 收包线程一起卡住。
             for (int i = 0; i < 6; i++)
             {
+                // 旋转中的轴由旋转输出路径独占：整形再写一遍就是两条路径抢同一根轴（互相打断、抖）。
+                if (rotating[i]) continue;
                 // 和串口路径用同一套映射（TCodeFrameFormatter.MapPosition）：
                 // 0–100 → 该轴校准过的 [下限, 上限]。原来直接 ×99.99，两头会被夹成非线性，
                 // 用户在设置页收窄过的行程也得不到线性映射。
@@ -1104,11 +1124,11 @@ public sealed class IntifaceBridgeService : IDisposable
     }
 
     /// <summary>把联动派生出来的次要轴平滑收回中位（关掉联动的瞬间不让人看到"啪"地跳回去）。</summary>
-    private void ShapeReleaseLink(double[] values, double dt, double maxSpeed)
+    private void ShapeReleaseLink(double[] values, double dt, double maxSpeed, bool[] rotating)
     {
         for (int i = 1; i < 6; i++)
         {
-            if (_shapeDriven[i]) continue;
+            if (_shapeDriven[i] || rotating[i]) continue;
             values[i] = BridgeMotionShaper.Step(values[i], 50, dt, 120, maxSpeed);
             if (Math.Abs(values[i] - 50) < 0.3) values[i] = 50;
         }
@@ -1326,35 +1346,26 @@ internal static class IntifaceProtocol
         public int MessageVersion { get; set; } = 3;
     }
 
-    /// <summary>版本协商：客户端报 >= 4 才升到 v4；缺失或低版本一律落 v3。</summary>
-    internal static int NegotiateMessageVersion(JsonElement requestServerInfo)
-    {
-        if (requestServerInfo.ValueKind == JsonValueKind.Object
-            && requestServerInfo.TryGetProperty("MessageVersion", out JsonElement versionElement)
-            && versionElement.TryGetUInt32(out uint clientVersion)
-            && clientVersion >= 4)
-        {
-            return 4;
-        }
-        return 3;
-    }
+    /// <summary>
+    /// 版本协商：一律按 v3 应答（客户端报 4 也压回 3）。
+    /// 原因：Buttplug v4 的消息层是另一套（Linear/Rotate/Scalar 全删、改 OutputCmd、握手改
+    /// ProtocolVersionMajor/Minor），本桥只实现了 v3 那一套 + v3 的 ScalarCmd。以前报 4 却回 v3 报文，
+    /// 客户端会按 v4 解析而看不到设备；压到 3 是唯一自洽的答案。
+    /// </summary>
+    internal static int NegotiateMessageVersion(JsonElement requestServerInfo) => 3;
 
     private static bool IsSingle(string mode) => mode == "single";
+
 
     /// <summary>WebSocket 握手应答（RFC 6455）。</summary>
     public static string ComputeAccept(string key) =>
         Convert.ToBase64String(SHA1.HashData(Encoding.UTF8.GetBytes(key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11")));
 
     /// <summary>六轴直驱：LinearCmd 的 Vectors[]/ScalarCmd 的 Scalars[] 的 Index 就是轴序号（0..5 → L0/L1/L2/R0/R1/R2）；越界回 Error 并返回空串。</summary>
-    private static string AxisForIndex(JsonElement feature, uint id, List<string> responses, string commandName)
+    private static string AxisForIndex(JsonElement feature)
     {
         uint index = feature.TryGetProperty("Index", out JsonElement idx) && idx.TryGetUInt32(out uint parsed) ? parsed : 0u;
-        if (index >= SixAxisOrder.Length)
-        {
-            responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"{commandName} feature index out of range\",\"ErrorCode\":3}}}}]");
-            return string.Empty;
-        }
-        return SixAxisOrder[index];
+        return index >= SixAxisOrder.Length ? string.Empty : SixAxisOrder[index];
     }
 
     /// <summary>六轴直驱模式：一台设备里宣告 6 个位置轴（L0/L1/L2/R0/R1/R2），游戏可以按 Index 直接点名任意一根。</summary>
@@ -1370,30 +1381,29 @@ internal static class IntifaceProtocol
     private static readonly string[] RotateFeatures = new[] { "R0", "R1", "R2" };
 
     /// <summary>
-    /// Buttplug v4 的 ScalarCmd 能力：六根轴各一条，L0/L1/L2 是位置轴、R0/R1/R2 是角度轴（与 RotateCmd 的标法一致），
-    /// StepCount/StepRange 覆盖 0–100 全行程（含端点）。只有协商到 v4 才拼进 DeviceMessages。
+    /// ScalarCmd（v3 起就有）的能力宣告：六根轴各一条，ActuatorType 统一 "Position"。
+    /// Rotate/Oscillate 等类型在客户端看来是「无方向转速」，游戏会拿它当连续转动而不是角度位置；
+    /// 六轴机器要的是按位置驱动，所以全用 Position。StepRange 不宣告（客户端缺省按 0–1 归一处理）。
     /// </summary>
     private static string ScalarFeatures()
     {
         var scalars = new List<string>();
         foreach (string axis in SixAxisOrder)
         {
-            string actuator = Array.IndexOf(RotateFeatures, axis) >= 0 ? "Rotate" : "Position";
-            scalars.Add("{\"FeatureDescriptor\":\"" + axis + "\",\"ActuatorType\":\"" + actuator
-                + "\",\"StepCount\":100,\"StepRange\":[0,100]}");
+            scalars.Add("{\"FeatureDescriptor\":\"" + axis
+                + "\",\"ActuatorType\":\"Position\",\"StepCount\":100}");
         }
         return "\"ScalarCmd\":[" + string.Join(",", scalars) + "]";
     }
 
     /// <summary>
     /// 按当前配置追加的可选能力（拼在 LinearCmd/RotateCmd 之后、StopDeviceCmd 之前）：
-    /// ScalarCmd 只在协商到 v4 时宣告；VibrateCmd 只在振动模式非 off 时宣告 —— off 模式下桥会明确丢弃振动，
-    /// 再宣告出去等于骗客户端一直发。v3 + 振动 off 返回空串，输出与旧版逐字节一致。
+    /// VibrateCmd 只在振动模式非 off 时宣告 —— off 模式下桥会明确丢弃振动，再宣告出去等于骗客户端一直发。
+    /// ScalarCmd 不在这里：它是「按 Index 直接点名六根轴」，只属于六轴模式（见 SixAxisDeviceMessages）。
     /// </summary>
     private static string OptionalDeviceMessages(string vibrateMode, int messageVersion)
     {
         var parts = new List<string>();
-        if (messageVersion >= 4) parts.Add(ScalarFeatures());
         if (!string.Equals(vibrateMode, "off", StringComparison.OrdinalIgnoreCase))
             parts.Add("\"VibrateCmd\":[{\"FeatureDescriptor\":\"V0\",\"ActuatorType\":\"Vibrate\",\"StepCount\":100}]");
         return parts.Count == 0 ? string.Empty : "," + string.Join(",", parts);
@@ -1408,6 +1418,7 @@ internal static class IntifaceProtocol
         foreach (string axis in RotateFeatures)
             rotate.Add("{\"FeatureDescriptor\":\"" + axis + "\",\"ActuatorType\":\"Rotate\",\"StepCount\":100}");
         return "\"LinearCmd\":[" + string.Join(",", linear) + "],\"RotateCmd\":[" + string.Join(",", rotate) + "]"
+            + "," + ScalarFeatures()
             + OptionalDeviceMessages(vibrateMode, messageVersion) + ",\"StopDeviceCmd\":{}";
     }
 
@@ -1536,6 +1547,10 @@ internal static class IntifaceProtocol
                 case "LinearCmd":
                 {
                     uint deviceIndex = value.TryGetProperty("DeviceIndex", out JsonElement di) && di.TryGetUInt32(out uint parsedDi) ? parsedDi : 0u;
+                    // 规范要求一条消息（一个 Id）只回一个响应：先把整条 Vectors 校验完，
+                    // 全部合法才执行；任一条非法则整条报错、一条都不执行，避免「半条生效 + Error/Ok 双回」。
+                    var pendingLinear = new List<BridgeAction>();
+                    string failure = string.Empty;
                     foreach (JsonElement vector in value.GetProperty("Vectors").EnumerateArray())
                     {
                         if (!vector.TryGetProperty("Position", out JsonElement positionElement)
@@ -1543,8 +1558,8 @@ internal static class IntifaceProtocol
                             || !double.IsFinite(positionRaw))
                         {
                             // NaN/缺字段以前会被 (int) 转换夹到端点，看着像"静默跑到最下面"。
-                            responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"bad LinearCmd position\",\"ErrorCode\":3}}}}]");
-                            continue;
+                            failure = "bad LinearCmd position";
+                            break;
                         }
                         double position = Math.Clamp(positionRaw, 0.0, 1.0);
                         int duration = vector.TryGetProperty("Duration", out JsonElement durationElement)
@@ -1553,12 +1568,20 @@ internal static class IntifaceProtocol
                             ? Math.Clamp((int)Math.Round(durationRaw), 1, 9999)
                             : 200;
                         int raw = (int)Math.Round(position * 9999.0);
-                        string axis = IsSixAxis(mode)
-                            ? AxisForIndex(vector, id, responses, "LinearCmd")
-                            : LinearAxisFor(mode, deviceIndex);
-                        if (axis.Length == 0) continue;   // 越界已经回过 Error
-                        onAction(new LinearAction(axis, raw, duration));
+                        string axis = IsSixAxis(mode) ? AxisForIndex(vector) : LinearAxisFor(mode, deviceIndex);
+                        if (axis.Length == 0)
+                        {
+                            failure = "LinearCmd feature index out of range";
+                            break;
+                        }
+                        pendingLinear.Add(new LinearAction(axis, raw, duration));
                     }
+                    if (failure.Length != 0)
+                    {
+                        responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"{failure}\",\"ErrorCode\":3}}}}]");
+                        break;
+                    }
+                    foreach (BridgeAction pending in pendingLinear) onAction(pending);
                     responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
                     break;
                 }
@@ -1566,6 +1589,8 @@ internal static class IntifaceProtocol
                 {
                     // Buttplug v4：Scalars[].Scalar 是「立即置位」的强度比例，不是一段带 Duration 的轨迹，
                     // 所以这里刻意不补任何插值 —— 机械保护只剩服务侧固定的最小 ramp（BridgeMinInterpolationMs）。
+                    var pendingScalar = new List<BridgeAction>();
+                    string failure = string.Empty;
                     foreach (JsonElement scalar in value.GetProperty("Scalars").EnumerateArray())
                     {
                         if (!scalar.TryGetProperty("Scalar", out JsonElement scalarElement)
@@ -1573,41 +1598,61 @@ internal static class IntifaceProtocol
                             || !double.IsFinite(scalarRaw))
                         {
                             // NaN/缺字段不能落到 (int) 转换上（会被夹到端点，看着像"静默跑到最下面"）。
-                            responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"bad ScalarCmd scalar\",\"ErrorCode\":3}}}}]");
-                            continue;
+                            failure = "bad ScalarCmd scalar";
+                            break;
                         }
                         int raw = (int)Math.Round(Math.Clamp(scalarRaw, 0.0, 1.0) * 9999.0);
-                        string axis = AxisForIndex(scalar, id, responses, "ScalarCmd");
-                        if (axis.Length == 0) continue;   // 越界已经回过 Error
-                        onAction(new ScalarAction(axis, raw));
+                        string axis = AxisForIndex(scalar);
+                        if (axis.Length == 0)
+                        {
+                            failure = "ScalarCmd feature index out of range";
+                            break;
+                        }
+                        pendingScalar.Add(new ScalarAction(axis, raw));
                     }
+                    if (failure.Length != 0)
+                    {
+                        responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"{failure}\",\"ErrorCode\":3}}}}]");
+                        break;
+                    }
+                    foreach (BridgeAction pending in pendingScalar) onAction(pending);
                     responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
                     break;
                 }
                 case "RotateCmd":
                 {
                     uint deviceIndex = value.TryGetProperty("DeviceIndex", out JsonElement di) && di.TryGetUInt32(out uint parsedDi) ? parsedDi : 0u;
+                    var pendingRotate = new List<BridgeAction>();
+                    string failure = string.Empty;
                     foreach (JsonElement rotation in value.GetProperty("Rotations").EnumerateArray())
                     {
                         if (!rotation.TryGetProperty("Speed", out JsonElement speedElement)
                             || !speedElement.TryGetDouble(out double speedRaw)
                             || !double.IsFinite(speedRaw))
                         {
-                            responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"bad RotateCmd speed\",\"ErrorCode\":3}}}}]");
-                            continue;
+                            failure = "bad RotateCmd speed";
+                            break;
                         }
                         double speed = Math.Clamp(speedRaw, 0.0, 1.0);
-                        bool clockwise = rotation.GetProperty("Clockwise").GetBoolean();
+                        bool clockwise = rotation.TryGetProperty("Clockwise", out JsonElement clockwiseElement)
+                            && clockwiseElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+                            && clockwiseElement.GetBoolean();
                         uint featureIndex = rotation.TryGetProperty("Index", out JsonElement rotateIndex)
                             && rotateIndex.TryGetUInt32(out uint parsedRotateIndex) ? parsedRotateIndex : 0u;
                         if (IsSixAxis(mode) && featureIndex >= RotateFeatures.Length)
                         {
-                            responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"RotateCmd feature index out of range\",\"ErrorCode\":3}}}}]");
-                            continue;
+                            failure = "RotateCmd feature index out of range";
+                            break;
                         }
                         string axis = IsSixAxis(mode) ? RotateFeatures[featureIndex] : RotateAxisFor(mode, deviceIndex);
-                        onAction(new RotateAction(axis, speed, clockwise));
+                        pendingRotate.Add(new RotateAction(axis, speed, clockwise));
                     }
+                    if (failure.Length != 0)
+                    {
+                        responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"{failure}\",\"ErrorCode\":3}}}}]");
+                        break;
+                    }
+                    foreach (BridgeAction pending in pendingRotate) onAction(pending);
                     responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
                     break;
                 }
