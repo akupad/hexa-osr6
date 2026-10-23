@@ -364,6 +364,10 @@ public sealed class IntifaceBridgeService : IDisposable
 
     private void StopLocked()
     {
+        // 先停设备、再关监听：SendTCode 见到 _listener == null 会直接 return，
+        // 以前先置空 listener ⇒ 这条 DSTOP 从来没发出去，关掉游戏桥后轴可能还在走最后一段长插值。
+        SendTCode("DSTOP");
+        ResetShaping();
         var listener = _listener;
         _listener = null;
         _cts?.Cancel();
@@ -376,11 +380,8 @@ public sealed class IntifaceBridgeService : IDisposable
 
         _transport.ConnectionChanged -= OnTransportConnectionChanged;
         lock (_rotateLock) _rotateStates.Clear();
-        // 关桥要停住设备、交还控制权、清干净状态：
-        // 以前这里什么都没做 —— 游戏最后一条长插值可能还在走，而 DirectInputOwner 永远停在 bridge
+        // 关桥还要交还控制权：以前这里什么都没做 —— DirectInputOwner 永远停在 bridge
         //（侧栏一直显示「运行中 · 游戏桥」，声音响应再也接不回来）。
-        SendTCode("DSTOP");
-        ResetShaping();
         // 诊断模式不触发引擎的收尾缓动：否则它会一路缓到 ~5000（六轴、I27），
         // 被后面「手动动轴页」那节算成"没人点的动作"而假红。
         if (Environment.GetEnvironmentVariable("HEXA_SELFTEST") is not { Length: > 0 })

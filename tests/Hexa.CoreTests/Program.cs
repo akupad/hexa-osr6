@@ -1035,6 +1035,68 @@ try
     Check("game bridge gives every intent a disposition (no silent drops)",
         silent.Count == 0);
 
+    // ── 服务层：桥自己有没有真的把「停」「动」「掉线」送出去 ────────────────
+    // 上面那些全在纯函数层（IntifaceProtocol）；这一节第一次落到 IntifaceBridgeService 本体：
+    // 起监听 → 真 WebSocket 客户端连进来 → 看设备侧到底收到了什么。
+    var fakeTransport = new FakeTransport();
+    var svcCfg = new AppSettings
+    {
+        GameBridgePort = 34999,
+        GameBridgeMode = "six",
+        GameBridgeVibrateMode = "off",
+        GameBridgeEnabled = true,
+    };
+    using var svcEngine = new MotionEngine(fakeTransport, svcCfg);
+    using var bridgeSvc = new IntifaceBridgeService(fakeTransport, svcEngine, svcCfg);
+    Check("bridge service starts listening on the configured port", bridgeSvc.Start() && bridgeSvc.Active);
+    Check("bridge service takes over output at startup (DSTOP first)",
+        fakeTransport.Sent.Count > 0 && fakeTransport.Sent[0] == "DSTOP");
+
+    using var bridgeClient = new System.Net.WebSockets.ClientWebSocket();
+    bool connected = bridgeClient.ConnectAsync(new Uri("ws://127.0.0.1:34999/"), CancellationToken.None)
+        .Wait(TimeSpan.FromSeconds(5));
+    Check("bridge service accepts a real Intiface websocket client",
+        connected && bridgeClient.State == System.Net.WebSockets.WebSocketState.Open);
+
+    if (connected)
+    {
+        byte[] payload = System.Text.Encoding.UTF8.GetBytes(
+            "[{\"LinearCmd\":{\"Id\":1,\"DeviceIndex\":0,\"Vectors\":[{\"Index\":0,\"Position\":0.9,\"Duration\":300}]}}]");
+        bridgeClient.SendAsync(new ArraySegment<byte>(payload),
+            System.Net.WebSockets.WebSocketMessageType.Text, true, CancellationToken.None)
+            .Wait(TimeSpan.FromSeconds(3));
+        bool gotLinearFrame = false;
+        for (int i = 0; i < 40 && !gotLinearFrame; i++)
+        {
+            Thread.Sleep(50);
+            gotLinearFrame = fakeTransport.Sent.Any(command => command.StartsWith("L0", StringComparison.Ordinal));
+        }
+        Check("bridge service turns a LinearCmd into a TCode frame on the device side", gotLinearFrame);
+
+        // 设备掉线（串口拔掉/断电）必须主动告诉客户端 DeviceRemoved，否则游戏一直以为设备还在。
+        // 客户端还欠一条 LinearCmd 的 Ok 应答，所以这里要一直读到 DeviceRemoved 为止，不能只看第一帧。
+        string dropNotice = string.Empty;
+        var receiveBuffer = new byte[65536];
+        fakeTransport.RaiseConnectionChanged(false);
+        for (int i = 0; i < 40 && !dropNotice.Contains("DeviceRemoved"); i++)
+        {
+            var receiveTask = bridgeClient.ReceiveAsync(new ArraySegment<byte>(receiveBuffer),
+                CancellationToken.None);
+            if (!receiveTask.Wait(TimeSpan.FromSeconds(1))) break;
+            if (receiveTask.Result.MessageType != System.Net.WebSockets.WebSocketMessageType.Text) continue;
+            dropNotice += System.Text.Encoding.UTF8.GetString(receiveBuffer, 0, receiveTask.Result.Count);
+        }
+        Check("bridge service pushes DeviceRemoved to the game when the device drops",
+            dropNotice.Contains("DeviceRemoved"));
+
+        int beforeStop = fakeTransport.Sent.Count;
+        bridgeSvc.Stop();
+        Check("bridge service stops the device on shutdown (DSTOP)",
+            !bridgeSvc.Active && fakeTransport.Sent.Skip(beforeStop).Any(command => command == "DSTOP"));
+    }
+
+
+
     // 持续动作渲染：把「一直发同一个值」画成正弦往复；电平离中位越远，幅度越大。
     Check("game bridge sustain target oscillates around the level",
         Math.Abs(IntifaceProtocol.SustainTarget(80, 20, 0.0) - 80) < 0.001
@@ -2842,4 +2904,22 @@ sealed class WsProbe : IDisposable
         try { _stream.Dispose(); } catch (IOException) { }
         try { _tcp.Dispose(); } catch (IOException) { }
     }
+}
+/// <summary>桥的服务层测试用：只记下发出去的指令，不碰真串口；可手动模拟设备掉线。</summary>
+sealed class FakeTransport : Hexa.Services.ICommandTransport
+{
+    private readonly List<string> _sent = new();
+    public bool IsOpen => true;
+    public bool OutputEnabled { get; set; } = true;
+    public string PortName => "FAKE";
+    public string? UserAdvice => null;
+    public event Action<bool>? ConnectionChanged;
+    public IReadOnlyList<string> Sent { get { lock (_sent) return _sent.ToArray(); } }
+    public void RaiseConnectionChanged(bool connected) => ConnectionChanged?.Invoke(connected);
+    public void Send(string command) { lock (_sent) _sent.Add(command); }
+    public void StopMotion() { }
+    public void SendAxes(double[] values, Dictionary<string, int> axisMin, Dictionary<string, int> axisMax,
+        int interpolationMs = 16, bool changedOnly = true) { }
+    public void SendFrame(IEnumerable<Hexa.Services.TCodeAxisTarget> targets,
+        Dictionary<string, int> axisMin, Dictionary<string, int> axisMax, bool changedOnly = true) { }
 }
