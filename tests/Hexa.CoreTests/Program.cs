@@ -1060,6 +1060,23 @@ try
 
     if (connected)
     {
+        // 第一件事：像真客户端那样自报身份。追踪文件里必须留下「谁、按哪个版本、什么模式、哪个端口」。
+        byte[] hello = System.Text.Encoding.UTF8.GetBytes(
+            "[{\"RequestServerInfo\":{\"Id\":0,\"ClientName\":\"HexaTest\",\"MessageVersion\":3}}]");
+        bridgeClient.SendAsync(new ArraySegment<byte>(hello),
+            System.Net.WebSockets.WebSocketMessageType.Text, true, CancellationToken.None)
+            .Wait(TimeSpan.FromSeconds(3));
+        string sessionLine = string.Empty;
+        for (int i = 0; i < 40 && sessionLine.Length == 0; i++)
+        {
+            Thread.Sleep(50);
+            sessionLine = bridgeSvc.RecentLog.Select(entry => entry.Text)
+                .FirstOrDefault(text => text.Contains("已接入")) ?? string.Empty;
+        }
+        Check("bridge trace records who connected, the negotiated version, mode and port",
+            sessionLine.Contains("HexaTest") && sessionLine.Contains("MessageVersion=3")
+            && sessionLine.Contains("模式 six") && sessionLine.Contains("端口 34999"));
+
         byte[] payload = System.Text.Encoding.UTF8.GetBytes(
             "[{\"LinearCmd\":{\"Id\":1,\"DeviceIndex\":0,\"Vectors\":[{\"Index\":0,\"Position\":0.9,\"Duration\":300}]}}]");
         bridgeClient.SendAsync(new ArraySegment<byte>(payload),

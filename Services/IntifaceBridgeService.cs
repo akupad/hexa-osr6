@@ -49,14 +49,20 @@ public sealed class IntifaceBridgeService : IDisposable
     private bool ShapingActive =>
         _cfg.BridgeInputSmoothing || _cfg.BridgeAxisLink || _cfg.BridgeUseComfortLimits;
     private int _clientCount;
+    /// <summary>连接短号自增；只用于追踪文件里区分同名客户端的多条连接。</summary>
+    private int _sessionSerial;
 
     /// <summary>一个已连接的 Buttplug 客户端：写入要串行化（Tick 线程和会话线程都会写）。</summary>
     private sealed class ClientSession
     {
         public required Stream Stream { get; init; }
         public SemaphoreSlim WriteLock { get; } = new(1, 1);
-        /// <summary>这条连接自己协商出来的协议版本（v3 缺省；客户端在 RequestServerInfo 里报 >=4 才升 v4）。</summary>
+        /// <summary>这条连接自己协商出来的协议版本（v3 缺省）。</summary>
         public IntifaceProtocol.SessionState Protocol { get; } = new();
+        /// <summary>连接短号（01、02…）：追踪文件里同一个游戏的多条连接要分得清。</summary>
+        public required string Tag { get; init; }
+        /// <summary>客户端在 RequestServerInfo 里报的名字（Intiface Central / Game Haptics Router…），接入后才有。</summary>
+        public string ClientName { get; set; } = "未知客户端";
     }
     private readonly List<ClientSession> _sessions = new();
     /// <summary>让位说明只写一次（进入让位时），避免每 50ms 刷屏。</summary>
@@ -507,7 +513,7 @@ public sealed class IntifaceBridgeService : IDisposable
                 await stream.WriteAsync(handshake).ConfigureAwait(false);
                 await stream.FlushAsync().ConfigureAwait(false);
                 AppLogger.Info("游戏已连接桥（Intiface 客户端）");
-                session = new ClientSession { Stream = stream };
+                session = new ClientSession { Stream = stream, Tag = Interlocked.Increment(ref _sessionSerial).ToString("D2") };
                 lock (_sessionsLock)
                 {
                     _sessions.Add(session);
@@ -531,7 +537,7 @@ public sealed class IntifaceBridgeService : IDisposable
                     }
                     if (frame.Opcode == 0xA || frame.Opcode != 0x1) continue;   // 只处理文本帧
                     string json = Encoding.UTF8.GetString(frame.Payload);
-                    Log("RX", json.Length > 180 ? json[..180] + "…" : json);
+                    Log("RX", $"[会话 {session.Tag}] " + (json.Length > 180 ? json[..180] + "…" : json));
                     // 仲裁：不是当前有发言权的客户端时，只回错误、不动设备（否则两边抢同一根轴 -> 设备乱抖）。
                     // 注意：仲裁刻意不拦停车类指令（StopDeviceCmd / StopAllDevices）——「谁都能让机器停」
                     // 是安全语义，把停车也挡掉只会让某个客户端以为自己停了而机器还在动。别顺手补上。
@@ -543,15 +549,27 @@ public sealed class IntifaceBridgeService : IDisposable
                         byte[] denied = Encoding.UTF8.GetBytes(
                             "[{\"Error\":{\"Id\":0,\"ErrorMessage\":\"another client owns the device\",\"ErrorCode\":4}}]");
                         await SendAsync(session, denied).ConfigureAwait(false);
-                        Note("另一个客户端正在驱动设备：已忽略这次指令（最后连上的客户端有发言权）");
+                        Note($"[会话 {session.Tag}] 丢弃：另一个客户端正在驱动设备（最后连上的客户端有发言权）");
                         continue;
                     }
-                    foreach (string response in IntifaceProtocol.Process(json, Mode, EnqueueAction, _cfg.GameBridgeVibrateMode, NoteVibrateIgnored,
-                        session.Protocol))
+                    long dispatchStart = Environment.TickCount64;
+                    foreach (string response in IntifaceProtocol.Process(json, Mode, EnqueueAction, _cfg.GameBridgeVibrateMode,
+                        note => NoteVibrateIgnored($"[会话 {session.Tag}] 丢弃：{note}"), session.Protocol))
                     {
                         byte[] payload = Encoding.UTF8.GetBytes(response);
                         await SendAsync(session, payload).ConfigureAwait(false);
                     }
+                    long dispatchMs = Environment.TickCount64 - dispatchStart;
+                    if (json.Contains("\"RequestServerInfo\"", StringComparison.Ordinal))
+                    {
+                        session.ClientName = ClientNameOf(json);
+                        // 一行交代清楚「对面是谁、按哪个版本说话、本桥跑在什么模式/端口」——排障先看这一行。
+                        Note($"[会话 {session.Tag}] 客户端「{session.ClientName}」已接入 · 协商 MessageVersion={session.Protocol.MessageVersion}"
+                            + $" · 模式 {Mode} · 端口 {Port}");
+                    }
+                    // RX→TX 处理耗时：超过 5ms 就写一条，方便定位「哪一类指令在卡」。
+                    if (dispatchMs >= 5)
+                        Note($"[会话 {session.Tag}] 处理耗时 {dispatchMs}ms · {MessageKind(json)}");
                 }
                 AppLogger.Info("游戏断开桥连接");
             }
@@ -585,6 +603,51 @@ public sealed class IntifaceBridgeService : IDisposable
                 }
             }
         }
+    }
+
+    /// <summary>从 RequestServerInfo 里取客户端名（取不到就返回「未知客户端」）。</summary>
+    private static string ClientNameOf(string json)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind != JsonValueKind.Array) return "未知客户端";
+            foreach (JsonElement item in document.RootElement.EnumerateArray())
+            {
+                if (item.TryGetProperty("RequestServerInfo", out JsonElement info)
+                    && info.TryGetProperty("ClientName", out JsonElement nameElement)
+                    && nameElement.ValueKind == JsonValueKind.String
+                    && nameElement.GetString() is { Length: > 0 } name)
+                {
+                    return name;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+            // 报文不合法就走不出去，交给后面的 ErrorCode 3 路径；这里只负责取名字。
+        }
+        return "未知客户端";
+    }
+
+    /// <summary>这条命令叫什么（追踪文件里按消息名归类耗时，比截一段 JSON 好认）。</summary>
+    private static string MessageKind(string json)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            if (document.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement item in document.RootElement.EnumerateArray())
+                {
+                    foreach (JsonProperty property in item.EnumerateObject()) return property.Name;
+                }
+            }
+        }
+        catch (JsonException)
+        {
+        }
+        return json.Length > 40 ? json[..40] : json;
     }
 
     private void ResetToCenter()
