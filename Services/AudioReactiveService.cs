@@ -564,7 +564,12 @@ public sealed class AudioReactiveService : IDisposable
             if (!_cfg.AudioReactiveEnabled || _engine.RuleEngineActive)
             {
                 // 规则引擎接管时音频不驱动设备，攒下的事件再放出来只会「落后于画面」。
-                if (_engine.RuleEngineActive) DiscardEventQueues();
+                // 用户自己把「声音响应」关掉时同理 —— 但那时必须把状态收干净：
+                // 以前这里只 return，正在渲染的事件还挂在 _active 上、_motionActiveFlag 还是 1，
+                // 界面一直写「在动」，声音这条来源也一直不把控制权交还出去。
+                DiscardEventQueues();
+                CancelActiveEvent();
+                if (_motionActive) { _motionActive = false; Volatile.Write(ref _motionActiveFlag, 0); }
                 return;
             }
 
@@ -718,7 +723,9 @@ public sealed class AudioReactiveService : IDisposable
             MotionEvent ev = _pendingEvents[read & PendingEventMask];
             _pendingRead = read + 1;
             if (calibrationSeconds > 0) HoldEvent(ev, ev.AtSeconds + calibrationSeconds);
-            else { ActivateEvent(ev, -calibrationSeconds); activated = true; }
+            // 只有真的接手了这个事件才算「刚激活」：ActivateEvent 会因为预测拍去重、
+            // 时长非法提前返回，那时把相位清零等于把正在演的那一下掐回去重放（一拍抖两下）。
+            else if (ActivateEvent(ev, -calibrationSeconds)) activated = true;
         }
 
         // ② 到点的延迟事件开始渲染（单调时钟判定，不受系统时间调整影响）。
@@ -727,8 +734,7 @@ public sealed class AudioReactiveService : IDisposable
             if (_heldDueSeconds[i] > now) { i++; continue; }
             MotionEvent ev = _heldEvents[i];
             RemoveHeldEvent(i);
-            ActivateEvent(ev, 0);
-            activated = true;
+            if (ActivateEvent(ev, 0)) activated = true;
         }
 
         if (!_active)
@@ -746,7 +752,7 @@ public sealed class AudioReactiveService : IDisposable
 
         double duration = Math.Max(0.05, _activeDuration);
         double phase = _activeElapsed / duration + _activePhaseOffset;
-        if (phase >= 1.0) { FinishActiveEvent(); return; }
+        if (!double.IsFinite(phase) || phase >= 1.0) { FinishActiveEvent(); return; }
 
         double comfort = Math.Clamp(_engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0);
         double range = Math.Clamp(_cfg.AudioMotionRange, 5, 60) * comfort;
@@ -764,17 +770,19 @@ public sealed class AudioReactiveService : IDisposable
     /// 没法穿越回过去，就把相位起点往后挪同样的时间 —— 等于「假装它已经开始了这么久」。
     /// 挪动量封顶 <see cref="MaxPhaseOffset"/>（半个事件），保证前半段被吞掉后仍有可见动作。
     /// </summary>
-    private void ActivateEvent(in MotionEvent ev, double leadSeconds, bool predicted = false)
+    private bool ActivateEvent(in MotionEvent ev, double leadSeconds, bool predicted = false)
     {
         // 同一拍如果已经被"拍点预测"发过了，这个 onset 的 Beat 就丢掉：
         // 否则一拍两次起手（观感是抖一下而不是干净的一下），界面上的"已响应 N 次"也会翻倍。
         if (!predicted && ev.Kind == MotionEventKind.Beat && _lastPredictedBeatTicks != 0)
         {
             long nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
-            if (System.Diagnostics.Stopwatch.GetElapsedTime(_lastPredictedBeatTicks, nowTicks).TotalSeconds < 0.25) return;
+            if (System.Diagnostics.Stopwatch.GetElapsedTime(_lastPredictedBeatTicks, nowTicks).TotalSeconds < 0.25) return false;
         }
         double duration = MotionVocabulary.DurationSeconds(ev.Kind, ev.Strength);
-        if (duration <= 0) return;                       // None 之类没有时长的语汇直接忽略
+        // NaN / ∞ 单独拦：duration <= 0 对 NaN 恒为 false，漏过去的后果是相位恒为 NaN、
+        // 这个事件永远「演不完」，设备卡在一个姿态上再也不动。
+        if (!double.IsFinite(duration) || !double.IsFinite(ev.Strength) || duration <= 0) return false;
         _activeKind = ev.Kind;
         _activeStrength = Math.Clamp(ev.Strength, 0, 1);
         _activeDuration = duration;
@@ -782,6 +790,7 @@ public sealed class AudioReactiveService : IDisposable
         _activeElapsed = 0;
         _active = true;
         Interlocked.Increment(ref _respondedCount);      // 界面「已响应 N 次」
+        return true;
     }
 
     /// <summary>事件渲染结束：一次较长的缓动回中后停发 —— 不发明没有事件支撑的动作。</summary>

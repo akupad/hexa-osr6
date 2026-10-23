@@ -996,7 +996,10 @@ public sealed class ScreenWatchService : IDisposable
                 long start = clock.ElapsedMilliseconds;
                 try
                 {
-                    if (skip > 0) skip--;              // 上一帧太慢：这几帧只睡觉，把 CPU 让出去
+                    // 上一帧太慢：这几帧只睡觉，把 CPU 让出去。
+                    // 必须同时作废上一帧的亮度基准：恢复后的第一帧如果拿隔了几拍的
+                    // _prevLuma 去减，运动量会被凭空放大（节奏上多出一下并不存在的尖峰）。
+                    if (skip > 0) { skip--; _hasPrevFrame = false; }
                     else CaptureAndAnalyze(clock);
                 }
                 catch (Exception ex)
