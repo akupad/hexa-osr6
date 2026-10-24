@@ -173,8 +173,13 @@ public sealed class ScreenWatchService : IDisposable
     /// <summary>本类在设备上使用的控制权名字（见 MotionEngine.TryClaimDirectInput）。</summary>
     private const string FollowOwner = "screen";
 
-    /// <summary>跟随的半幅基准（轴行程百分比）：深度再乘场景强度、再乘舒适档上限。30 = 深度满时主轴在中位 ±30%。</summary>
-    private const double FollowAmplitudeBase = 30;
+    /// <summary>跟随的半幅基准（轴行程百分比）：深度再乘场景强度、再乘舒适档上限。42 = 深度满时主轴在中位 ±42%。
+    /// 实测（_work/probe_limiter 仿真 + 真机）：幅度是「动了多少%」的第一感知，30 时安静场景只剩 3–9 点，
+    /// 用户以为设备没动；42 配合下面的速度上限（360/(2π·42)=1.36Hz）实得行程 99%，比 30@1.9Hz 的 87% 更好。</summary>
+    private const double FollowAmplitudeBase = 42;
+
+    /// <summary>深度低于此值用「渐强」语汇（慢、连贯、多轴螺旋），否则用「抽插」语汇（进得干脆、退得明显）。</summary>
+    private const double FollowSlowShapeDepth = 0.45;
 
     /// <summary>没测出节奏频率、但场景确实过线时用的兜底频率（Hz）：总比让设备定住不动强。</summary>
     private const double FollowFallbackHz = 1.2;
@@ -1845,8 +1850,8 @@ public sealed class ScreenWatchService : IDisposable
 
         // ⑦ 深度 / 速度 / 锁相 / 下发。
         double depth = FollowComputeDepth();
-        double comfort = Math.Clamp(engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0);
-        double hz = FollowComputeHz(engine, depth);
+        double range = FollowComputeRange(engine, depth);
+        double hz = FollowComputeHz(engine, range);
         double dt = FollowDeltaSeconds(nowSeconds);
 
         // 相位推进 + 有界修正：
@@ -1875,7 +1880,6 @@ public sealed class ScreenWatchService : IDisposable
             }
         }
 
-        double range = Math.Clamp(FollowAmplitudeBase * comfort * depth, 5, 60);
         // 插值时间比下发间隔略长：13fps 配 77ms 插值会一顿一顿，0.12 秒左右才连得起来。
         double interpolation = Math.Clamp(dt * 1.6, 0.06, 0.30);
 
@@ -1884,8 +1888,10 @@ public sealed class ScreenWatchService : IDisposable
         // 锁定之后再晚一个定值，观感就是「节奏对但总拖在后面」。
         double leadSeconds = Math.Clamp(_lastCaptureSeconds + interpolation * 0.5, 0, 0.25);
         double sendPhase = Frac(_followPhase + hz * leadSeconds);
-        double[] values = MotionVocabulary.Render(
-            MotionEventKind.Voice, 1.0, sendPhase, range, engine.MultiAxisMotion);
+        // 语汇按深度换：浅场景用「渐强」（正弦往返、多轴螺旋，慢而连续），
+        // 深场景用「抽插」（0→0.45 快速推到底、之后慢收）。同一条 Voice 走到底会显得单调。
+        MotionEventKind kind = depth < FollowSlowShapeDepth ? MotionEventKind.Swell : MotionEventKind.Voice;
+        double[] values = MotionVocabulary.Render(kind, 1.0, sendPhase, range, engine.MultiAxisMotion);
 
         if (engine.TrySendDirectAxes(values, interpolation))
         {
@@ -1927,14 +1933,27 @@ public sealed class ScreenWatchService : IDisposable
     /// 而舒适档给的正是这个上限（170 / 360 / 620 %/s），所以 f 的上限 = 速度上限 ÷ (2πA)。
     /// 引擎里的安全限速器还会再管一道，这里先夹一次是为了别让它一直顶着限速器跑（那样动作会变形）。
     /// </summary>
-    private double FollowComputeHz(MotionEngine engine, double depth)
+    /// <summary>
+    /// 这一拍给的半幅（% 行程）：基准 × 舒适档上限 × √深度。
+    /// 为什么开方：深度是按场景分线性归一化的，线性乘上去会让「刚过线」永远只有十几点；
+    /// 开方把中低深度整体抬起来（过线那一刻 already ≈0.39×基准），高深度还是封在基准上。
+    /// </summary>
+    private double FollowComputeRange(MotionEngine engine, double depth)
+    {
+        double comfort = Math.Clamp(engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0);
+        double presence = Math.Sqrt(Math.Max(0.15, Math.Clamp(depth, 0, 1)));
+        return Math.Clamp(FollowAmplitudeBase * comfort * presence, 5, 60);
+    }
+
+    private double FollowComputeHz(MotionEngine engine, double range)
     {
         double hz = Volatile.Read(ref _rhythmHz);
         if (!double.IsFinite(hz) || hz < RhythmMinHz) hz = FollowFallbackHz;   // 节奏没测出来：用兜底频率，别定住不动
         hz = Math.Clamp(hz, FollowHzMin, FollowHzMax);
 
-        double comfort = Math.Clamp(engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0);
-        double travel = Math.Max(5, FollowAmplitudeBase * comfort * Math.Max(0.15, depth));
+        // travel 必须和实际下发的 range 用同一个数：用 depth 估会让上限偏高，
+        // 于是实得行程被限速器吃掉（仿真：30@1.9Hz 只走出 87%，深处还会掉到 53%）。
+        double travel = Math.Max(5, range);
         double maxHz = engine.ActiveComfortProfile.MaxAxisSpeedPerSecond / (Math.Tau * travel);
         return Math.Clamp(Math.Min(hz, maxHz), FollowHzMin, FollowHzMax);
     }
@@ -2030,9 +2049,7 @@ public sealed class ScreenWatchService : IDisposable
         lock (_followLock)
         {
             if (Volatile.Read(ref _followEasing) != 0) return;
-            _followEaseRange = Math.Clamp(FollowAmplitudeBase
-                * Math.Clamp(engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0)
-                * Math.Max(0.15, Volatile.Read(ref _followDepth)), 5, 60);
+            _followEaseRange = FollowComputeRange(engine, Volatile.Read(ref _followDepth));
             _followEaseHz = Math.Clamp(Volatile.Read(ref _followHz), FollowHzMin, FollowHzMax);
             _followEaseStartMs = now;
             Volatile.Write(ref _followActive, 0);
