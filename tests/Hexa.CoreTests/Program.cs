@@ -2701,6 +2701,40 @@ try
             try { if (File.Exists(exportPath)) File.Delete(exportPath); } catch { }
         }
     }
+
+    // ── 方向感知：行剖面互相关的位移估计 ─────────────────────────────
+    {
+        static double[] Shifted(double[] src, double shift)
+        {
+            var dst = new double[src.Length];
+            for (int y = 0; y < src.Length; y++)
+            {
+                double q = y - shift;
+                int i0 = (int)Math.Floor(q);
+                double frac = q - i0;
+                double a = i0 >= 0 && i0 < src.Length ? src[i0] : 0;
+                double b = i0 + 1 >= 0 && i0 + 1 < src.Length ? src[i0 + 1] : 0;
+                dst[y] = a * (1 - frac) + b * frac;
+            }
+            return dst;
+        }
+
+        var profile = new double[90];
+        for (int y = 0; y < profile.Length; y++)
+            profile[y] = 1000 + 400 * Math.Sin(y * 0.37) + 150 * Math.Sin(y * 1.9 + 0.4);
+
+        double down3 = FlowEstimator.VerticalShift(Shifted(profile, 3), profile);
+        Check("方向：内容下移 3 像素 → +3（±0.5）", Math.Abs(down3 - 3) < 0.5);
+        double up2 = FlowEstimator.VerticalShift(Shifted(profile, -2), profile);
+        Check("方向：内容上移 2 像素 → -2（±0.5）", Math.Abs(up2 + 2) < 0.5);
+        double sub = FlowEstimator.VerticalShift(Shifted(profile, 0.6), profile);
+        Check("方向：亚像素位移也要报出来（0.6 → 0.6±0.4）", Math.Abs(sub - 0.6) < 0.4);
+        var flat = new double[90];
+        Array.Fill(flat, 512);
+        Check("方向：纯色画面不瞎猜（判 0）", FlowEstimator.VerticalShift(flat, flat) == 0);
+        double far = FlowEstimator.VerticalShift(Shifted(profile, 20), profile, maxShift: 6);
+        Check("方向：超出搜索范围时夹在边界内", Math.Abs(far) <= 6.0 + 1e-9);
+    }
 }
 catch (Exception ex)
 {

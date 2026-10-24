@@ -182,6 +182,15 @@ public sealed class ScreenWatchService : IDisposable
     /// 用户以为设备没动；42 配合下面的速度上限（360/(2π·42)=1.36Hz）实得行程 99%，比 30@1.9Hz 的 87% 更好。</summary>
     private const double FollowAmplitudeBase = 42;
 
+    /// <summary>方向位移的平滑系数（每帧向新值靠 35%）：20fps 下约 6 帧到 90%，抖动看得见但不迟钝。</summary>
+    private const double FlowSmoothing = 0.35;
+
+    /// <summary>位移「满偏」多少像素算 +1/-1：90 行里 4 像素≈4.4% 画面高度，正常平移就已经明显了。</summary>
+    private const double FlowFullScalePx = 4.0;
+
+    /// <summary>方向对行程重心的最大偏移（占半幅的比例）：只改「这一下推多深」，不改幅度。</summary>
+    private const double FollowDirectionLean = 0.35;
+
     /// <summary>深度低于此值用「渐强」语汇（慢、连贯、多轴螺旋），否则用「抽插」语汇（进得干脆、退得明显）。</summary>
     private const double FollowSlowShapeDepth = 0.45;
 
@@ -238,6 +247,16 @@ public sealed class ScreenWatchService : IDisposable
     private int _sourceHeight;
     private readonly byte[] _bgra = new byte[FrameWidth * FrameHeight * 4];
     private readonly byte[] _prevLuma = new byte[FrameWidth * FrameHeight];
+
+    // ── 方向感知（画面整体上下位移）──────────────────────────────────
+    /// <summary>每一行的亮度和：0.4ms 量级的互相关输入，比逐像素光流便宜得多。</summary>
+    private readonly double[] _rowProfile = new double[FrameHeight];
+    private readonly double[] _prevRowProfile = new double[FrameHeight];
+    private bool _hasProfile;
+    /// <summary>平滑后的位移（像素，正 = 内容向下移动）。</summary>
+    private double _flowShiftPx;
+    /// <summary>推导给跟随用的方向量：+1 = 画面在往上跑（主体靠近），-1 = 往下跑（退开）。</summary>
+    private double _followApproach;
     private bool _hasPrevFrame;
 
     // 节奏性：Motion 环形缓冲 + 两次计算的临时数组（避免每帧 new）。
@@ -1270,6 +1289,7 @@ public sealed class ScreenWatchService : IDisposable
 
         for (int y = 0; y < FrameHeight; y++)
         {
+            int rowLuma = 0;
             bool rowInCenter = y >= centerY0 && y < centerY1;
             bool rowInMotion = y >= motionY0 && y < motionY1;
             int rowBase = y * FrameWidth;
@@ -1297,9 +1317,29 @@ public sealed class ScreenWatchService : IDisposable
                     diffSum += Math.Abs(luma - _prevLuma[index]);
                 }
                 _prevLuma[index] = (byte)luma;
+                rowLuma += luma;
             }
+            _rowProfile[y] = rowLuma;
         }
         _hasPrevFrame = true;
+
+        // ⓪ 方向：画面整体往上还是往下跑（内容位移，正 = 向下）。
+        //    只吃「整幅的行剖面」，与肤色/运动区域无关 —— 镜头在平移时主体是往上走还是往下走，
+        //    这件事跟画面里有没有人无关。20fps 下单帧真实位移常常不到 1 像素，
+        //    所以先做亚像素估计，再用 0.35 的平滑把单帧噪声压下去。
+        if (hadPrev && _hasProfile)
+        {
+            double shift = FlowEstimator.VerticalShift(_rowProfile, _prevRowProfile);
+            _flowShiftPx += (shift - _flowShiftPx) * FlowSmoothing;
+        }
+        else
+        {
+            _flowShiftPx *= 0.5;
+        }
+        Array.Copy(_rowProfile, _prevRowProfile, FrameHeight);
+        _hasProfile = true;
+        // 画面上移（内容向上跑）= 主体在靠近/立起来 → approach 正；下移 = 退开。
+        Volatile.Write(ref _followApproach, Math.Clamp(-_flowShiftPx / FlowFullScalePx, -1, 1));
 
         // ① 整幅 / 中央的肤色占比
         double skinNow = skinAll / (double)(FrameWidth * FrameHeight);
@@ -1897,6 +1937,14 @@ public sealed class ScreenWatchService : IDisposable
         MotionEventKind kind = depth < FollowSlowShapeDepth ? MotionEventKind.Swell : MotionEventKind.Voice;
         double[] values = MotionVocabulary.Render(kind, 1.0, sendPhase, range, engine.MultiAxisMotion);
 
+        // 方向感知：画面在往上跑（主体靠近）→ 行程重心往「推」偏；往下跑（退开）→ 往「收」偏。
+        // 只搬重心、不改幅度，而且顶到端点就停 —— 否则大行程时会撞 0/100 被截平，形状反而变形。
+        double approach = Volatile.Read(ref _followApproach);
+        double leanHeadroom = Math.Max(0, 50 - range);
+        double lean = Math.Clamp(approach * range * FollowDirectionLean, -leanHeadroom, leanHeadroom);
+        if (Math.Abs(lean) > 0.01)
+            values[0] = Math.Clamp(values[0] + lean, 0, 100);
+
         if (engine.TrySendDirectAxes(values, interpolation))
         {
             Volatile.Write(ref _followActive, 1);
@@ -1904,8 +1952,12 @@ public sealed class ScreenWatchService : IDisposable
             Volatile.Write(ref _followHz, hz);
             _lastFollowSendMs = now;
             double lockPercent = Math.Clamp(_cfg.ScreenPhaseLock, 0, 1);
+            string direction = Math.Abs(approach) < 0.15
+                ? " · 画面没有明显上下位移"
+                : approach > 0 ? $" · 画面在靠近 {approach * 100:0}%" : $" · 画面在退开 {-approach * 100:0}%";
             SetFollowReason($"正在跟画面动：深度 {depth * 100:0}% · 每秒 {hz:0.0} 下"
-                + (lockPercent > 0 ? $" · 相位锁定 {lockPercent * 100:0}%" : " · 不锁相位（只跟速度）"));
+                + (lockPercent > 0 ? $" · 相位锁定 {lockPercent * 100:0}%" : " · 不锁相位（只跟速度）")
+                + direction);
         }
         else
         {
