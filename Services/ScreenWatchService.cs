@@ -272,7 +272,8 @@ public sealed class ScreenWatchService : IDisposable
     private double _subjectSpanEma;
     private double _subjectGrowthEma;
     private double _lastDirectionSeconds;
-    private volatile bool _subjectDirection = true;
+    // 不用 volatile 修饰：取值一律走 Volatile.Read/Write，否则 Volatile.Write(ref …) 会报 CS0420。
+    private bool _subjectDirection = true;
     private bool _hasPrevFrame;
 
     // 节奏性：Motion 环形缓冲 + 两次计算的临时数组（避免每帧 new）。
@@ -2013,7 +2014,7 @@ public sealed class ScreenWatchService : IDisposable
             _lastFollowSendMs = now;
             double lockPercent = Math.Clamp(_cfg.ScreenPhaseLock, 0, 1);
             // 用主体尺寸判的时候就说「主体在靠近」，退回整幅位移兜底时老实说「画面在靠近」。
-            bool fromSubject = _subjectDirection;
+            bool fromSubject = Volatile.Read(ref _subjectDirection);
             string what = fromSubject ? "主体" : "画面";
             string direction = Math.Abs(approach) < 0.15
                 ? (fromSubject ? " · 没看出主体在靠近还是退开" : " · 画面没有明显上下位移")
