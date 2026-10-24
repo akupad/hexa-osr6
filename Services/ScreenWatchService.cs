@@ -187,6 +187,16 @@ public sealed class ScreenWatchService : IDisposable
 
     /// <summary>位移「满偏」多少像素算 +1/-1：90 行里 4 像素≈4.4% 画面高度，正常平移就已经明显了。</summary>
     private const double FlowFullScalePx = 4.0;
+    // 主体方向：亮度变化超过这个值才算「这个像素在动」（低于它的多半是编码噪声）。
+    private const int SubjectPixelThreshold = 10;
+    // 包围盒至少要这么高（行）且至少这么多运动像素，才认为「画面里有个主体」。
+    private const int SubjectMinSpan = 6;
+    private const int SubjectMinPixels = 40;
+    // 包围盒高度的平滑与增长率的平滑：两层低通，避免一像素抖动就摆动整个行程。
+    private const double SubjectSpanSmoothing = 0.15;
+    private const double SubjectGrowthSmoothing = 0.25;
+    // 每秒增长 50% 算满幅靠近；死区 6%/秒。
+    private const double SubjectGrowthFullScale = 0.5;
 
     /// <summary>方向对行程重心的最大偏移（占半幅的比例）：只改「这一下推多深」，不改幅度。</summary>
     private const double FollowDirectionLean = 0.35;
@@ -255,8 +265,14 @@ public sealed class ScreenWatchService : IDisposable
     private bool _hasProfile;
     /// <summary>平滑后的位移（像素，正 = 内容向下移动）。</summary>
     private double _flowShiftPx;
-    /// <summary>推导给跟随用的方向量：+1 = 画面在往上跑（主体靠近），-1 = 往下跑（退开）。</summary>
+    /// <summary>推导给跟随用的方向量：+1 = 主体在靠近（画面里变大），-1 = 在退开。</summary>
     private double _followApproach;
+    // 主体运动：运动像素的上下包围盒 = 「主体在画面里占多高」。它变大就是在走近镜头，
+    // 这跟镜头自己动没动无关 —— 固定机位里人自己动也算数，比整幅位移靠谱。
+    private double _subjectSpanEma;
+    private double _subjectGrowthEma;
+    private double _lastDirectionSeconds;
+    private volatile bool _subjectDirection = true;
     private bool _hasPrevFrame;
 
     // 节奏性：Motion 环形缓冲 + 两次计算的临时数组（避免每帧 new）。
@@ -1286,6 +1302,10 @@ public sealed class ScreenWatchService : IDisposable
         int centerPixels = 0;
         int motionPixels = 0;
         long diffSum = 0;
+        // 主体包围盒：亮度变化够大的像素落在哪几行。高度变化 = 主体在画面里变大或变小。
+        int subjectTop = int.MaxValue;
+        int subjectBottom = -1;
+        int subjectPixels = 0;
 
         for (int y = 0; y < FrameHeight; y++)
         {
@@ -1313,8 +1333,15 @@ public sealed class ScreenWatchService : IDisposable
                 int index = rowBase + x;
                 if (hadPrev && rowInMotion && x >= motionX0 && x < motionX1)
                 {
+                    int delta = Math.Abs(luma - _prevLuma[index]);
                     motionPixels++;
-                    diffSum += Math.Abs(luma - _prevLuma[index]);
+                    diffSum += delta;
+                    if (delta >= SubjectPixelThreshold)
+                    {
+                        subjectPixels++;
+                        if (y < subjectTop) subjectTop = y;
+                        if (y > subjectBottom) subjectBottom = y;
+                    }
                 }
                 _prevLuma[index] = (byte)luma;
                 rowLuma += luma;
@@ -1323,10 +1350,17 @@ public sealed class ScreenWatchService : IDisposable
         }
         _hasPrevFrame = true;
 
-        // ⓪ 方向：画面整体往上还是往下跑（内容位移，正 = 向下）。
-        //    只吃「整幅的行剖面」，与肤色/运动区域无关 —— 镜头在平移时主体是往上走还是往下走，
-        //    这件事跟画面里有没有人无关。20fps 下单帧真实位移常常不到 1 像素，
-        //    所以先做亚像素估计，再用 0.35 的平滑把单帧噪声压下去。
+        // ⓪ 方向：主体是在靠近镜头还是退开。
+        //    主判据是**主体的包围盒高度变化率**：人在画面里变大 = 走近，变小 = 退开。
+        //    这跟「谁在动」无关 —— 固定机位里人自己动起来，包围盒照样会变，这是 v1 只看整幅位移
+        //    漏掉的情况（他一句话点破：多数都是人物在动）。
+        //    兜底：运动像素太少 / 包围盒退化（比如全屏就一条横线在动）时，才退回整幅行剖面位移。
+        double sinceLast = _lastDirectionSeconds > 0 ? clock.Elapsed.TotalSeconds - _lastDirectionSeconds : 0;
+        _lastDirectionSeconds = clock.Elapsed.TotalSeconds;
+
+        int span = subjectBottom >= subjectTop ? subjectBottom - subjectTop + 1 : 0;
+        bool haveSubject = span >= SubjectMinSpan && subjectPixels >= SubjectMinPixels;
+        // 整幅位移总要算（兜底 + 状态文字），代价是 90 个数做 13 次点积。
         if (hadPrev && _hasProfile)
         {
             double shift = FlowEstimator.VerticalShift(_rowProfile, _prevRowProfile);
@@ -1338,8 +1372,32 @@ public sealed class ScreenWatchService : IDisposable
         }
         Array.Copy(_rowProfile, _prevRowProfile, FrameHeight);
         _hasProfile = true;
-        // 画面上移（内容向上跑）= 主体在靠近/立起来 → approach 正；下移 = 退开。
-        Volatile.Write(ref _followApproach, Math.Clamp(-_flowShiftPx / FlowFullScalePx, -1, 1));
+
+        double approach;
+        if (haveSubject && sinceLast > 0.004 && sinceLast < 1.0)
+        {
+            if (_subjectSpanEma <= 0) _subjectSpanEma = span;
+            else
+            {
+                // 先对包围盒高度做 0.15 的指数平滑（≈0.3 秒时间常数），再对它求导：
+                // 直接对原始高度求差会被 ±1 像素的抖动放大成「每秒涨 40%」。
+                double previous = _subjectSpanEma;
+                _subjectSpanEma += (span - _subjectSpanEma) * SubjectSpanSmoothing;
+                double growth = (_subjectSpanEma - previous) / Math.Max(1.0, previous) / sinceLast;
+                _subjectGrowthEma += (growth - _subjectGrowthEma) * SubjectGrowthSmoothing;
+            }
+            approach = FlowEstimator.ApproachFromGrowth(_subjectGrowthEma, SubjectGrowthFullScale);
+            Volatile.Write(ref _subjectDirection, true);
+        }
+        else
+        {
+            // 主体看不见（运动太少）：尺寸这条线断掉，靠画面整体位移兜，并让增长率慢慢归零，
+            // 免得下次主体一出现就带着上一次的旧方向冲一下。
+            _subjectGrowthEma *= 0.85;
+            approach = Math.Clamp(-_flowShiftPx / FlowFullScalePx, -1, 1);
+            Volatile.Write(ref _subjectDirection, false);
+        }
+        Volatile.Write(ref _followApproach, approach);
 
         // ① 整幅 / 中央的肤色占比
         double skinNow = skinAll / (double)(FrameWidth * FrameHeight);
@@ -1952,9 +2010,12 @@ public sealed class ScreenWatchService : IDisposable
             Volatile.Write(ref _followHz, hz);
             _lastFollowSendMs = now;
             double lockPercent = Math.Clamp(_cfg.ScreenPhaseLock, 0, 1);
+            // 用主体尺寸判的时候就说「主体在靠近」，退回整幅位移兜底时老实说「画面在靠近」。
+            bool fromSubject = _subjectDirection;
+            string what = fromSubject ? "主体" : "画面";
             string direction = Math.Abs(approach) < 0.15
-                ? " · 画面没有明显上下位移"
-                : approach > 0 ? $" · 画面在靠近 {approach * 100:0}%" : $" · 画面在退开 {-approach * 100:0}%";
+                ? (fromSubject ? " · 没看出主体在靠近还是退开" : " · 画面没有明显上下位移")
+                : approach > 0 ? $" · {what}在靠近 {approach * 100:0}%" : $" · {what}在退开 {-approach * 100:0}%";
             SetFollowReason($"正在跟画面动：深度 {depth * 100:0}% · 每秒 {hz:0.0} 下"
                 + (lockPercent > 0 ? $" · 相位锁定 {lockPercent * 100:0}%" : " · 不锁相位（只跟速度）")
                 + direction);

@@ -65,7 +65,8 @@ if (-not $SkipChecks) {
         $code = $LASTEXITCODE
         $text = ($out | Out-String)
         Require ($code -eq 0) "dotnet build exit code = $code"
-        Require ($text -match '0\s*(个)?警告|0\s*Warning') 'zero warnings reported'
+        # 增量构建无事可做时 dotnet 只打「生成成功」，不带警告计数 —— 没有任何「警告」字样也算零警告。
+        Require (($text -match '0\s*(个)?警告|0\s*Warning') -or ($text -notmatch '警告|warning')) 'zero warnings reported'
     }
 
     Step 'unit tests (Hexa.CoreTests)' {

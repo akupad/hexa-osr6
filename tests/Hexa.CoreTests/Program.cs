@@ -2734,6 +2734,15 @@ try
         Check("方向：纯色画面不瞎猜（判 0）", FlowEstimator.VerticalShift(flat, flat) == 0);
         double far = FlowEstimator.VerticalShift(Shifted(profile, 20), profile, maxShift: 6);
         Check("方向：超出搜索范围时夹在边界内", Math.Abs(far) <= 6.0 + 1e-9);
+
+        // 方向量来自「主体在画面里变大还是变小」，不是整幅位移：人在固定镜头里动也算数。
+        Check("方向：主体每秒涨 50% → 满幅靠近", Math.Abs(FlowEstimator.ApproachFromGrowth(0.5) - 1.0) < 1e-9);
+        Check("方向：主体每秒涨 25% → 约四成靠近（扣掉死区）", Math.Abs(FlowEstimator.ApproachFromGrowth(0.25) - 0.43) < 0.03);
+        Check("方向：主体在缩小 → 负数（退开）", FlowEstimator.ApproachFromGrowth(-0.3) < -0.4);
+        Check("方向：包围盒抖出来的小变化走死区（不瞎偏）",
+            FlowEstimator.ApproachFromGrowth(0.03) == 0 && FlowEstimator.ApproachFromGrowth(0.06) == 0);
+        Check("方向：增长率离谱时夹在 ±1", FlowEstimator.ApproachFromGrowth(9.0) == 1.0
+            && FlowEstimator.ApproachFromGrowth(-9.0) == -1.0);
     }
 }
 catch (Exception ex)

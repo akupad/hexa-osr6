@@ -8,6 +8,20 @@ namespace Hexa.Services;
 /// </summary>
 public static class FlowEstimator
 {
+    /// <summary>
+    /// 主体的「变大/变小」速率（每秒相对增长率）换算成方向量：+1 = 明显在靠近镜头，-1 = 明显在退开。
+    /// 为什么用尺寸：2D 画面判不出前后，但**人在画面里变大就是走近**，这条对局部动作同样成立。
+    /// <paramref name="fullScale"/> = 每秒增长率达到多少就算「满幅靠近」，0.5 即 1 秒长一半。
+    /// </summary>
+    public static double ApproachFromGrowth(double growthPerSecond, double fullScale = 0.5, double deadband = 0.06)
+    {
+        if (!double.IsFinite(growthPerSecond) || fullScale <= 0) return 0;
+        // 死区：主体的包围盒在 160×90 上抖一像素就是 2% 的「变化」，不设死区会一直瞎偏。
+        if (Math.Abs(growthPerSecond) <= deadband) return 0;
+        double trimmed = growthPerSecond > 0 ? growthPerSecond - deadband : growthPerSecond + deadband;
+        return Math.Clamp(trimmed / (fullScale - deadband), -1, 1);
+    }
+
     /// <summary>亚像素位移：<paramref name="now"/> 与 <paramref name="prev"/> 是逐行亮度和。</summary>
     public static double VerticalShift(ReadOnlySpan<double> now, ReadOnlySpan<double> prev, int maxShift = 6)
     {
