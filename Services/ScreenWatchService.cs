@@ -316,6 +316,7 @@ public sealed class ScreenWatchService : IDisposable
     private double _followHz = FollowFallbackHz;      // 当前用的频率
     private double _followDepth;                      // 当前深度 0–1（= 场景强度过线之后的归一化值）
     private double _lastFollowPhaseSeconds;           // 上一拍的时刻（抓帧时钟，秒）
+    private double _lastCaptureSeconds;               // 上一帧抓取+分析用了多久（= 这份画面信息到手时已经过时多久）
     private long _lastFollowSendMs;                   // 最近一次成功下发的时刻（看门狗用，TickCount64）
     private int _followPhaseMisses;                   // 连续几拍相位误差过大（到 FollowPhaseResyncBeats 才重锁）
     private string _followReason = "";                // 白话状态（界面直接显示）
@@ -1000,7 +1001,12 @@ public sealed class ScreenWatchService : IDisposable
                     // 必须同时作废上一帧的亮度基准：恢复后的第一帧如果拿隔了几拍的
                     // _prevLuma 去减，运动量会被凭空放大（节奏上多出一下并不存在的尖峰）。
                     if (skip > 0) { skip--; _hasPrevFrame = false; }
-                    else CaptureAndAnalyze(clock);
+                    else
+                    {
+                        long captureStart = clock.ElapsedMilliseconds;
+                        CaptureAndAnalyze(clock);
+                        _lastCaptureSeconds = (clock.ElapsedMilliseconds - captureStart) / 1000.0;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -1870,10 +1876,16 @@ public sealed class ScreenWatchService : IDisposable
         }
 
         double range = Math.Clamp(FollowAmplitudeBase * comfort * depth, 5, 60);
-        double[] values = MotionVocabulary.Render(
-            MotionEventKind.Voice, 1.0, _followPhase, range, engine.MultiAxisMotion);
         // 插值时间比下发间隔略长：13fps 配 77ms 插值会一顿一顿，0.12 秒左右才连得起来。
         double interpolation = Math.Clamp(dt * 1.6, 0.06, 0.30);
+
+        // 超前量 = 这份画面到此为止已经过时多久：抓帧+分析耗时 + 设备走到指定位置还要的时间
+        //（插值按一半算）。不补这一段，设备永远比画面慢半拍：相位锁追的是**过去**的峰值，
+        // 锁定之后再晚一个定值，观感就是「节奏对但总拖在后面」。
+        double leadSeconds = Math.Clamp(_lastCaptureSeconds + interpolation * 0.5, 0, 0.25);
+        double sendPhase = Frac(_followPhase + hz * leadSeconds);
+        double[] values = MotionVocabulary.Render(
+            MotionEventKind.Voice, 1.0, sendPhase, range, engine.MultiAxisMotion);
 
         if (engine.TrySendDirectAxes(values, interpolation))
         {
