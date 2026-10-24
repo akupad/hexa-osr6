@@ -2743,6 +2743,26 @@ try
             FlowEstimator.ApproachFromGrowth(0.03) == 0 && FlowEstimator.ApproachFromGrowth(0.06) == 0);
         Check("方向：增长率离谱时夹在 ±1", FlowEstimator.ApproachFromGrowth(9.0) == 1.0
             && FlowEstimator.ApproachFromGrowth(-9.0) == -1.0);
+
+        // 三档手感：同一条相位，形状参数不同，落点就该不同（光调频率分不开档位）。
+        Check("抽插形状：相位 0 在最外面（0）", MotionVocabulary.ThrustWave(0, 0.45, 0.03) == 0);
+        Check("抽插形状：推进结束落在最里面（1）", Math.Abs(MotionVocabulary.ThrustWave(0.45, 0.45, 0.03) - 1) < 1e-9);
+        Check("抽插形状：到底停顿时保持满位", Math.Abs(MotionVocabulary.ThrustWave(0.465, 0.45, 0.03) - 1) < 1e-9);
+        Check("抽插形状：到相位 1 回到最外面", Math.Abs(MotionVocabulary.ThrustWave(0.999999, 0.45, 0.03)) < 1e-3);
+        Check("抽插形状：推进是单调的（不会来回抖）",
+            MotionVocabulary.ThrustWave(0.1, 0.45, 0.03) < MotionVocabulary.ThrustWave(0.25, 0.45, 0.03)
+            && MotionVocabulary.ThrustWave(0.25, 0.45, 0.03) < MotionVocabulary.ThrustWave(0.4, 0.45, 0.03));
+        Check("抽插形状：同一相位下 动感档比舒缓档进得更深",
+            MotionVocabulary.ThrustWave(0.12, 0.30, 0.0) > MotionVocabulary.ThrustWave(0.12, 0.52, 0.06));
+
+        var gentleStroke = MotionVocabulary.FollowStroke(0.10, 40, 0.52, 0.06);
+        var dynamicStroke = MotionVocabulary.FollowStroke(0.10, 40, 0.30, 0.0);
+        Check("跟随落点：六轴齐全且都在 0–100", gentleStroke.Length == 6 && gentleStroke.All(v => v >= 0 && v <= 100));
+        Check("跟随落点：副轴只轻微跟随（比主轴小）",
+            Math.Abs(gentleStroke[3] - MotionVocabulary.Center) < Math.Abs(gentleStroke[0] - MotionVocabulary.Center));
+        Check("跟随落点：关掉多轴就只有 L0 动",
+            MotionVocabulary.FollowStroke(0.6, 40, 0.45, 0.03, multiAxis: false).Skip(1).All(v => v == MotionVocabulary.Center));
+        Check("跟随落点：这一相位下动感档比舒缓档更深", dynamicStroke[0] > gentleStroke[0] + 2);
     }
 }
 catch (Exception ex)

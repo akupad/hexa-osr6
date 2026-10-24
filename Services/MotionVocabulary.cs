@@ -47,6 +47,47 @@ public static class MotionVocabulary
     private const double VoiceThrustRatio = 0.45;
 
     /// <summary>
+    /// 一次抽插的形状（纯函数）：0 → <paramref name="thrustRatio"/> 推进（先快后缓，落点斜率为 0，不会在
+    /// 推到最里面那一刻「撞」一下），<paramref name="dwellRatio"/> 到底停一下，剩下的相位抽回来。
+    /// 三档舒适度靠这三个参数把手感分开——光调频率只会让同一套动作快慢不同。
+    /// </summary>
+    public static double ThrustWave(double phase, double thrustRatio, double dwellRatio)
+    {
+        double p = phase - Math.Floor(phase);
+        double thrust = Math.Clamp(thrustRatio, 0.15, 0.9);
+        double dwell = Math.Clamp(dwellRatio, 0, 0.3);
+        if (p < thrust)
+        {
+            double u = p / thrust;
+            return 1.0 - (1.0 - u) * (1.0 - u);
+        }
+        if (p < thrust + dwell) return 1.0;
+        double q = (p - thrust - dwell) / Math.Max(1e-6, 1.0 - thrust - dwell);
+        return Math.Pow(1.0 - q, 1.6);
+    }
+
+    /// <summary>跟随用的「一次抽插」六轴落点：主轴按 <see cref="ThrustWave"/>，副轴按人声语汇的比例轻微跟随。</summary>
+    public static double[] FollowStroke(double phase, double amplitude, double thrustRatio, double dwellRatio, bool multiAxis = true)
+    {
+        double amp = Math.Clamp(amplitude, 0, 60);
+        double punch = ThrustWave(phase, thrustRatio, dwellRatio);
+        double main = amp * punch;
+        double twist = amp * 0.10 * punch;
+        double tilt = amp * 0.08 * punch;
+        double surge = amp * 0.14 * punch;
+        if (!multiAxis) { twist = 0; tilt = 0; surge = 0; }
+        return
+        [
+            Math.Clamp(Center + main, 0, 100),
+            Math.Clamp(Center + surge, 0, 100),
+            Math.Clamp(Center + tilt, 0, 100),
+            Math.Clamp(Center + twist, 0, 100),
+            Math.Clamp(Center + twist * 0.6, 0, 100),
+            Math.Clamp(Center + tilt * 0.6, 0, 100),
+        ];
+    }
+
+    /// <summary>
     /// 渲染一个事件在某一相位的六轴落点。
     /// </summary>
     /// <param name="kind">事件类型。</param>

@@ -9,7 +9,11 @@ public sealed record ComfortProfile(
     double MaxAxisAccelerationPerSecond2,
     double MaxAxisJerkPerSecond3,
     double SoftStartSeconds,
-    double Variation)
+    double Variation,
+    // 一次抽插的形状：推进占比与到底停顿占比。三档靠这两个数真的「摸起来不一样」，
+    // 光调频率只是把同一套动作放快放慢。
+    double ThrustRatio = 0.45,
+    double DwellRatio = 0.03)
 {
     // 加速度/急动度是**软件包络**，不是机器极限。2026-10-20 用正弦目标 60Hz 喂
     // MotionSafetyLimiter 实测（_work/probe_limiter）：舒缓档 900/6000 时相位滞后 161ms，
@@ -18,15 +22,15 @@ public sealed record ComfortProfile(
     // accel 追不上，实得行程反而从 87% 掉到 60%。
     public static readonly ComfortProfile Gentle = new(
         "gentle", "舒缓", "柔和起步和较低冲击，适合长时间游玩",
-        0.9, 170, 1350, 9000, 2.2, 0.16);
+        0.9, 170, 1350, 9000, 2.2, 0.16, 0.52, 0.06);
 
     public static readonly ComfortProfile Immersive = new(
         "immersive", "沉浸", "响应清晰并保留流动变化，适合游戏",
-        1.3, 360, 3600, 27000, 1.0, 0.34);
+        1.3, 360, 3600, 27000, 1.0, 0.34, 0.45, 0.03);
 
     public static readonly ComfortProfile Dynamic = new(
         "dynamic", "动感", "快速、大行程且保留最终机械运动约束",
-        1.75, 620, 5200, 42000, 0.45, 0.52);
+        1.75, 620, 5200, 42000, 0.45, 0.52, 0.30, 0.0);
 
     public static IReadOnlyList<ComfortProfile> All { get; } = [Gentle, Immersive, Dynamic];
 

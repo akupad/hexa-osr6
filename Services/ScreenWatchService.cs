@@ -1992,8 +1992,10 @@ public sealed class ScreenWatchService : IDisposable
         double sendPhase = Frac(_followPhase + hz * leadSeconds);
         // 语汇按深度换：浅场景用「渐强」（正弦往返、多轴螺旋，慢而连续），
         // 深场景用「抽插」（0→0.45 快速推到底、之后慢收）。同一条 Voice 走到底会显得单调。
-        MotionEventKind kind = depth < FollowSlowShapeDepth ? MotionEventKind.Swell : MotionEventKind.Voice;
-        double[] values = MotionVocabulary.Render(kind, 1.0, sendPhase, range, engine.MultiAxisMotion);
+        ComfortProfile profile = engine.ActiveComfortProfile;
+        double[] values = depth < FollowSlowShapeDepth
+            ? MotionVocabulary.Render(MotionEventKind.Swell, 1.0, sendPhase, range, engine.MultiAxisMotion)
+            : MotionVocabulary.FollowStroke(sendPhase, range, profile.ThrustRatio, profile.DwellRatio, engine.MultiAxisMotion);
 
         // 方向感知：画面在往上跑（主体靠近）→ 行程重心往「推」偏；往下跑（退开）→ 往「收」偏。
         // 只搬重心、不改幅度，而且顶到端点就停 —— 否则大行程时会撞 0/100 被截平，形状反而变形。
