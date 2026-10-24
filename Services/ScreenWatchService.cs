@@ -66,13 +66,17 @@ public sealed class ScreenWatchService : IDisposable
     public const int FrameWidth = 160;
     public const int FrameHeight = 90;
 
-    /// <summary>目标帧率 13 fps（要求 12–15 之间）。再慢看不出节奏，再快是白烧 CPU。</summary>
-    private const int TargetFps = 13;
-    private const int FrameIntervalMs = 1000 / TargetFps;   // ≈76ms
+    /// <summary>
+    /// 目标帧率 20 fps。原来 13 fps（76ms 一拍），而节奏峰值时间是「帧到帧」量出来的，
+    /// 量化误差 ±半个帧间隔 = ±38ms 直接变成相位锁定误差，13 fps 时就是 ±38ms 的抖动；
+    /// 20 fps 降到 ±25ms。160×90 的小图一次遍历不到 1ms，多出来的开销是 sleep 变短，可忽略。
+    /// </summary>
+    private const int TargetFps = 20;
+    private const int FrameIntervalMs = 1000 / TargetFps;   // 50ms
 
-    /// <summary>抓一次超过它就算「这帧太慢」：跳过后面两帧只睡觉（自适应降频）。</summary>
-    private const int SlowFrameMs = 60;
-    private const int SlowFrameSkip = 2;
+    /// <summary>抓一次超过它就算「这帧太慢」：跳过下一帧只睡觉（自适应降频，20fps 时退到 10fps 而不是 6fps）。</summary>
+    private const int SlowFrameMs = 50;
+    private const int SlowFrameSkip = 1;
 
     /// <summary>整帧平均亮度低于这个值（全黑）或高于上限（全白）= 没抓到画面。</summary>
     private const double BlankLumaLow = 2;
