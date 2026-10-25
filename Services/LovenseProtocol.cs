@@ -47,7 +47,8 @@ public static class LovenseProtocol
 
     /// <summary>
     /// 把 "Vibrate:16,Rotate:8" 这类串整个拆开。Thrust 是抽插机（Solace / Gravity）的动作，
-    /// 最贴近 OSR6 的直线行程；Pump 是 max 的气泵，只有 0–3。
+    /// 最贴近 OSR6 的直线行程；Pump 是 max 的气泵，只有 0–3；
+    /// All:n 是「所有功能一起到 n」（Pure Onyx 主用这个），我们把 n 同时给抽插和转动。
     /// </summary>
     public static IReadOnlyList<(string Name, int Strength)> ParseActions(string? action)
     {
@@ -62,6 +63,7 @@ public static class LovenseProtocol
             bool known = name.Equals("Vibrate", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("Rotate", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("Thrust", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("All", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("Pump", StringComparison.OrdinalIgnoreCase);
             if (!known) continue;
             if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int strength)) strength = 20;
@@ -180,6 +182,11 @@ public static class LovenseProtocol
             return new Outcome(true, OkBody(false), "Vibrate", peak, StrokeAmplitude(peak), StrokeHz(peak), seconds);
         }
 
+        // 游戏每隔两秒发一次 {"type":"ping"} 探活：这种没有 command 的报文回 200 就行，
+        // 回 400 会被它当成"玩具坏了"，之后就再也不发动作了。
+        if (command.Length == 0 && body is not null && body.Contains("\"type\"", StringComparison.Ordinal))
+            return new Outcome(true, OkBody(false), "", 0, 0, 0);
+
         if (!command.Equals("Function", StringComparison.OrdinalIgnoreCase))
             return new Outcome(false, ErrorBody(400, "Invalid Command"), "", 0, 0, 0);
 
@@ -195,6 +202,13 @@ public static class LovenseProtocol
             {
                 rotateStrength = Math.Max(rotateStrength, value);
                 labels.Add("Rotate");
+                continue;
+            }
+            if (name == "All")
+            {
+                if (value > strokeStrength) strokeStrength = value;
+                rotateStrength = Math.Max(rotateStrength, value);
+                labels.Add("All");
                 continue;
             }
             int scaled = name == "Pump" ? (int)Math.Round(value * 20.0 / 3.0) : value;
