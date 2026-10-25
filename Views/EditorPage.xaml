@@ -229,11 +229,11 @@
                                             <ColumnDefinition Width="*"/>
                                             <ColumnDefinition Width="Auto"/>
                                         </Grid.ColumnDefinitions>
-                                        <TextBox x:Name="ComposeLibrarySearch" Height="24" FontSize="11"
+                                        <TextBox x:Name="ComposeLibrarySearch" Height="28" FontSize="12"
                                                  VerticalContentAlignment="Center"
                                                  ToolTip="按名称或分类筛选动作"
                                                  TextChanged="ComposeLibrarySearch_TextChanged"/>
-                                        <TextBlock Text="搜索动作名称/分类…" FontSize="11"
+                                        <TextBlock Text="搜索动作名称/分类…" FontSize="12"
                                                    Foreground="{StaticResource Faint}"
                                                    IsHitTestVisible="False"
                                                    VerticalAlignment="Center" Margin="6,0,0,0">
@@ -320,8 +320,8 @@
                                                        VerticalAlignment="Center"
                                                        ToolTip="这一段播放多久；也可直接改右边输入框的数字（回车或点别处生效）"/>
                                             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                                                <TextBox x:Name="SegDurationBox" Text="2" Width="64" Height="24"
-                                                         FontSize="12" VerticalContentAlignment="Center"
+                                                <TextBox x:Name="SegDurationBox" Text="2" Width="86" Height="28"
+                                                         FontSize="14" FontFamily="Consolas" TextAlignment="Center" VerticalContentAlignment="Center"
                                                          ToolTip="输入精确时长（0.5–600），回车或点别处生效"/>
                                                 <TextBlock Text="s" FontSize="11" Foreground="{StaticResource Muted}"
                                                            VerticalAlignment="Center" Margin="6,0,0,0"/>
