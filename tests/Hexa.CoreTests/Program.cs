@@ -2810,6 +2810,10 @@ try
             "{\"command\":\"Function\",\"action\":\"All:13\",\"timeSec\":1,\"toy\":\"osr6hexa\",\"stopPrevious\":1,\"apiVer\":1}");
         Check("Lovense：All:13（Pure Onyx 用的写法）抽插和转动一起动",
             allAction.Ok && allAction.Amplitude > 0 && allAction.RotateAmplitude > 0);
+        Check("Lovense：一条消息里同时有抽和振动时，振动接到转轴上",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Thrusting:10,Vibrate:14\"}") is { Ok: true, Amplitude: > 0, RotateAmplitude: > 0 });
+        Check("Lovense：只有振动（没有抽）时仍然驱动直线，别只剩转",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:14\"}") is { Ok: true, Amplitude: > 0, RotateAmplitude: 0 });
         Check("Lovense：官方写的 Thrusting / Fingering / Suction / Depth 都认",
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Thrusting:12\"}").Ok
             && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Fingering:12\"}").Amplitude > 0

@@ -201,10 +201,20 @@ public static class LovenseProtocol
 
         // 一条消息里可以同时带抽插和转动（"Vibrate:16,Rotate:8"）：两路都留下来，
         // OSR6 本来就有直线和扭转两组轴，能同时动。
+        IReadOnlyList<(string Name, int Strength)> actions = ParseActions(actionText);
         int strokeStrength = 0;
         int rotateStrength = 0;
         var labels = new List<string>(2);
-        foreach ((string name, int value) in ParseActions(actionText))
+
+        // 我们对外报的玩具是 gravity（抽 + 振动）：分得清能力的游戏会一条消息里同时发
+        // Thrusting（抽）和 Vibrate（振）。振动马达我们没有，但转轴有——这种时候把振动
+        // 接到转轴上，两路就都动起来了。只有振动、没有抽的消息仍按"主菜"算到直线上，
+        // 否则那些只会发 Vibrate 的老游戏就只剩下转了。
+        bool hasThrust = false;
+        foreach ((string name, int value) in actions)
+            if (name is "Thrust" or "Thrusting" or "Fingering" or "Suction" or "Depth" or "Pump") { hasThrust = true; break; }
+
+        foreach ((string name, int value) in actions)
         {
             if (name == "Stop") return new Outcome(true, OkBody(false), "Stop", 0, 0, 0);
             if (name == "Rotate")
@@ -218,6 +228,12 @@ public static class LovenseProtocol
                 if (value > strokeStrength) strokeStrength = value;
                 rotateStrength = Math.Max(rotateStrength, value);
                 labels.Add("All");
+                continue;
+            }
+            if (name == "Vibrate" && hasThrust)
+            {
+                rotateStrength = Math.Max(rotateStrength, value);
+                labels.Add("Vibrate>转");
                 continue;
             }
             int scaled = name == "Pump" ? (int)Math.Round(value * 20.0 / 3.0) : value;
