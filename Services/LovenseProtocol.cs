@@ -73,6 +73,20 @@ public static class LovenseProtocol
         return Math.Clamp(Math.Min(desiredHz, cap), 0.35, 2.6);
     }
 
+    /// <summary>把任意相位收进 [0,1)。</summary>
+    public static double Frac(double value)
+    {
+        if (!double.IsFinite(value)) return 0;
+        double wrapped = value - Math.Floor(value);
+        return wrapped >= 1 ? 0 : wrapped;
+    }
+
+    /// <summary>
+    /// 相位离「这一抽的起点（0）」还差多少，结果收在 -0.5~0.5（走短的那边）。
+    /// 每条指令到达时用它把动作对齐到指令上，而不是让波形自己一直转。
+    /// </summary>
+    public static double PhaseError(double phase) => Frac(phase + 0.5) - 0.5;
+
     /// <summary>转动通道（nora 的 Rotate）单独一根滑杆：扭的幅度比抽插小得多，25% 已经很明显。</summary>
     public static double RotateAmplitude(int strength)
     {

@@ -45,6 +45,15 @@ public sealed class LovenseBridgeService : IDisposable
     /// <summary>上一条动作指令到达的时刻：游戏一抽发一条，间隔就是动作周期。</summary>
     private DateTime _lastArrivalUtc = DateTime.MinValue;
     private double _intervalSeconds;
+    /// <summary>相位修正量：每条指令到达时把相位误差记进来，几百毫秒内衰减掉，相当于轻轻加/减速而不是一下子跳过去。</summary>
+    private double _phaseOffset;
+    private bool _phaseLockPending;
+    private double _smoothedAmplitude = -1;
+    private double _smoothedRotateAmplitude = -1;
+    /// <summary>timeSec 用完但这一抽还没走完时置位：等它走完再回中位，别在半路上突然停。</summary>
+    private bool _finishing;
+    private double _lastPhaseSeen;
+    private DateTime _finishStartedUtc = DateTime.MinValue;
     private DateTime _blockedSinceUtc = DateTime.MinValue;
     private volatile int _depthPercent = LovenseProtocol.DefaultDepthPercent;
     private volatile bool _sawClient;
@@ -216,15 +225,35 @@ public sealed class LovenseBridgeService : IDisposable
                     Trace($"handshake ok {ssl.SslProtocol} cipher={ssl.NegotiatedCipherSuite}");
                 }
 
-                (string method, string path, string? body) = await ReadRequestAsync(stream, token).ConfigureAwait(false);
-                Trace($"request {method} {path} body={body?.Length ?? 0}");
-                if (path.Length == 0) return;
+                // 支持长连接：游戏每条动作都新建一条 TCP+TLS（实测 1775 次握手 / 1773 条请求），
+                // 每多一次握手就多几毫秒不确定延迟，相位也就跟着飘。
+                while (!token.IsCancellationRequested)
+                {
+                    bool keepAlive;
+                    string method, path;
+                    string? body;
+                    using (var idle = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    {
+                        idle.CancelAfter(15000);
+                        try
+                        {
+                            (method, path, body, keepAlive) = await ReadRequestAsync(stream, idle.Token).ConfigureAwait(false);
+                        }
+                        catch (OperationCanceledException)
+                        {
+                            break;   // 客户端闲着不发了，安静地关掉
+                        }
+                    }
+                    Trace($"request {method} {path} body={body?.Length ?? 0}");
+                    if (path.Length == 0) return;
 
-                if (body is { Length: > 0 }) Trace("body " + (body.Length > 200 ? body[..200] + "…" : body));
-                LovenseProtocol.Outcome outcome = LovenseProtocol.Handle(method, path, body, _toyName);
-                (string status, byte[] payload) = await BuildResponseAsync(method, path, outcome).ConfigureAwait(false);
-                await WriteResponseAsync(stream, status, "application/json; charset=utf-8", payload).ConfigureAwait(false);
-                Apply(outcome);
+                    if (body is { Length: > 0 }) Trace("body " + (body.Length > 200 ? body[..200] + "…" : body));
+                    LovenseProtocol.Outcome outcome = LovenseProtocol.Handle(method, path, body, _toyName);
+                    (string status, byte[] payload) = await BuildResponseAsync(method, path, outcome).ConfigureAwait(false);
+                    await WriteResponseAsync(stream, status, "application/json; charset=utf-8", payload, keepAlive).ConfigureAwait(false);
+                    Apply(outcome);
+                    if (!keepAlive) return;
+                }
             }
             catch (Exception ex)
             {
@@ -280,6 +309,11 @@ public sealed class LovenseBridgeService : IDisposable
 
             _action = outcome.Action;
             _amplitude = outcome.Amplitude;
+            // 游戏一抽发一条：动作要从这条指令到达的瞬间开始（真正对齐在 Tick 里做，
+            // 因为被限速器压慢时不该对齐——那样它永远追不上，反而一顿一顿）。
+            _phaseLockPending = true;
+            _finishing = false;
+            _finishStartedUtc = DateTime.MinValue;
             _hz = LovenseProtocol.TempoHz(_intervalSeconds, Math.Clamp(outcome.Hz, 0.1, 3.0));
             _rotateAmplitude = outcome.RotateAmplitude;
             _rotateHz = Math.Clamp(outcome.RotateHz, 0.1, 2.0);
@@ -313,12 +347,12 @@ public sealed class LovenseBridgeService : IDisposable
         }
         if (action.Length == 0) return;
 
-        // 到时收尾：timeSec 用完（游戏关了、暂停了也一样），别让设备一直抽。
-        if (now > until)
+        // timeSec 用完（游戏关了、暂停了也一样）：先把这一抽走完再回中位，中途掐断会明显一顿。
+        if (now > until && !_finishing)
         {
-            lock (_gate) { _action = ""; }
-            _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
-            return;
+            _finishing = true;
+            _finishStartedUtc = now;
+            _lastPhaseSeen = _phase;
         }
 
         // 深度滑杆决定走多长，舒适档的速度上限决定能跑多快；两者打架时压频率，
@@ -326,17 +360,33 @@ public sealed class LovenseBridgeService : IDisposable
         double speedLimit = _engine.ActiveComfortProfile.MaxAxisSpeedPerSecond;
         amplitude = LovenseProtocol.ScaleAmplitude(amplitude, depth);
         rotateAmplitude = LovenseProtocol.ScaleAmplitude(rotateAmplitude, depth);
+        // 游戏强度是一档一档跳的（13→19）：直接跟会让行程一步甩出去，这里用 120ms 平滑过去。
+        double blend = Math.Clamp(dt / 0.12, 0, 1);
+        _smoothedAmplitude = _smoothedAmplitude < 0 ? amplitude : _smoothedAmplitude + (amplitude - _smoothedAmplitude) * blend;
+        _smoothedRotateAmplitude = _smoothedRotateAmplitude < 0 ? rotateAmplitude : _smoothedRotateAmplitude + (rotateAmplitude - _smoothedRotateAmplitude) * blend;
+        amplitude = _smoothedAmplitude;
+        rotateAmplitude = _smoothedRotateAmplitude;
+        double commandedHz = hz;
         hz = LovenseProtocol.FitHz(hz, amplitude, speedLimit);
         rotateHz = LovenseProtocol.FitHz(rotateHz, rotateAmplitude, speedLimit);
+        if (_phaseLockPending)
+        {
+            _phaseLockPending = false;
+            // 只有真能按游戏的节拍跑时才对齐；被物理限速压慢时对齐没有意义（它根本追不上）。
+            if (hz >= commandedHz * 0.95)
+                _phaseOffset = Math.Clamp(-LovenseProtocol.PhaseError(_phase), -0.25, 0.25);
+        }
 
         // 抽插和转动各走各的相位：一条命令里同时有 Vibrate 和 Rotate 时两根轴一起动。
         double half = amplitude / 2.0;
         double main = 50;
         if (amplitude > 0)
         {
-            _phase += dt * hz;
-            if (_phase >= 1.0) _phase -= Math.Floor(_phase);
-            main = 50 + half * Math.Sin(2 * Math.PI * _phase);
+            _phase = LovenseProtocol.Frac(_phase + dt * hz);
+            // 用「相位 + 修正量」出波形：修正量在 150ms 内衰减到 0，看起来只是这一抽略快或略慢，不会跳。
+            double shown = LovenseProtocol.Frac(_phase + _phaseOffset);
+            _phaseOffset *= Math.Exp(-dt / 0.15);
+            main = 50 + half * Math.Sin(2 * Math.PI * shown);
         }
         double twist = 50;
         if (rotateAmplitude > 0)
@@ -345,6 +395,24 @@ public sealed class LovenseBridgeService : IDisposable
             if (_rotatePhase >= 1.0) _rotatePhase -= Math.Floor(_rotatePhase);
             twist = 50 + rotateAmplitude / 2.0 * Math.Sin(2 * Math.PI * _rotatePhase);
         }
+        // 收尾：这一抽绕回起点（或等满 1.5 秒）就停在中位。
+        if (_finishing)
+        {
+            bool wrapped = _phase < _lastPhaseSeen;
+            _lastPhaseSeen = _phase;
+            if (wrapped || (now - _finishStartedUtc).TotalSeconds > 1.5)
+            {
+                lock (_gate)
+                {
+                    _action = "";
+                    _finishing = false;
+                    _finishStartedUtc = DateTime.MinValue;
+                }
+                _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
+                return;
+            }
+        }
+
         bool sent = _engine.TrySendDirectAxes(
             [main, 50 + (main - 50) * 0.10, 50 + (main - 50) * 0.08, twist, 50, 50], 0.06);
 
@@ -484,7 +552,7 @@ public sealed class LovenseBridgeService : IDisposable
         return X509CertificateLoader.LoadPkcs12(pfxBytes, null);
     }
 
-    private static async Task<(string Method, string Path, string? Body)> ReadRequestAsync(Stream stream, CancellationToken token)
+    private static async Task<(string Method, string Path, string? Body, bool KeepAlive)> ReadRequestAsync(Stream stream, CancellationToken token)
     {
         var buffer = new MemoryStream();
         var chunk = new byte[2048];
@@ -492,26 +560,32 @@ public sealed class LovenseBridgeService : IDisposable
         while (headerEnd < 0 && buffer.Length < 64 * 1024)
         {
             int read = await stream.ReadAsync(chunk, token).ConfigureAwait(false);
-            if (read <= 0) return ("", "", null);
+            if (read <= 0) return ("", "", null, false);
             buffer.Write(chunk, 0, read);
             headerEnd = IndexOf(buffer.GetBuffer(), (int)buffer.Length, "\r\n\r\n"u8);
         }
-        if (headerEnd < 0) return ("", "", null);
+        if (headerEnd < 0) return ("", "", null, false);
 
         byte[] bytes = buffer.GetBuffer();
         string head = Encoding.ASCII.GetString(bytes, 0, headerEnd);
         string[] lines = head.Split("\r\n", StringSplitOptions.None);
         string[] requestLine = lines[0].Split(' ');
-        if (requestLine.Length < 2) return ("", "", null);
+        if (requestLine.Length < 2) return ("", "", null, false);
         string method = requestLine[0].ToUpperInvariant();
         string path = requestLine[1];
 
         int contentLength = 0;
+        bool keepAlive = true;
         for (int i = 1; i < lines.Length; i++)
         {
             int colon = lines[i].IndexOf(':');
-            if (colon > 0 && lines[i][..colon].Trim().Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
-                int.TryParse(lines[i][(colon + 1)..].Trim(), out contentLength);
+            if (colon <= 0) continue;
+            string name = lines[i][..colon].Trim();
+            string value = lines[i][(colon + 1)..].Trim();
+            if (name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                int.TryParse(value, out contentLength);
+            else if (name.Equals("Connection", StringComparison.OrdinalIgnoreCase))
+                keepAlive = !value.Contains("close", StringComparison.OrdinalIgnoreCase);
         }
 
         // 有些 HTTP 客户端（Unity 的 curl）会先发 Expect: 100-continue 等响应再发 body，不回它就一直等到超时。
@@ -533,7 +607,7 @@ public sealed class LovenseBridgeService : IDisposable
         string body = contentLength > 0 && already > 0
             ? Encoding.UTF8.GetString(bytes, bodyStart, Math.Min(contentLength, (int)buffer.Length - bodyStart))
             : "";
-        return (method, path, body.Length > 0 ? body : null);
+        return (method, path, body.Length > 0 ? body : null, keepAlive);
     }
 
     /// <summary>排查用：把每条连接的关键动作写进 lovense-trace.log（游戏那边只报超时，看不到细节）。</summary>
@@ -563,12 +637,12 @@ public sealed class LovenseBridgeService : IDisposable
         return -1;
     }
 
-    private static async Task WriteResponseAsync(Stream stream, string status, string contentType, byte[] payload)
+    private static async Task WriteResponseAsync(Stream stream, string status, string contentType, byte[] payload, bool keepAlive)
     {
         string head = "HTTP/1.1 " + status + "\r\n"
             + "Content-Type: " + contentType + "\r\n"
             + "Content-Length: " + payload.Length.ToString() + "\r\n"
-            + "Connection: close\r\n\r\n";
+            + (keepAlive ? "Connection: keep-alive\r\n\r\n" : "Connection: close\r\n\r\n");
         await stream.WriteAsync(Encoding.ASCII.GetBytes(head)).ConfigureAwait(false);
         if (payload.Length > 0) await stream.WriteAsync(payload).ConfigureAwait(false);
         await stream.FlushAsync().ConfigureAwait(false);

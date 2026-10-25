@@ -622,6 +622,17 @@ try
     Check("unknown axes fall back to the middle position",
         pacedFrame.Split(' ').Skip(1).All(token => token[2..6] == "5000"));
 
+    // 相位对齐：游戏一抽发一条指令，动作必须从这条指令到达的时刻开始。
+    Check("phase error points to the shortest way back to a stroke start",
+        Math.Abs(LovenseProtocol.PhaseError(0.1) - 0.1) < 1e-9
+        && Math.Abs(LovenseProtocol.PhaseError(0.9) + 0.1) < 1e-9);
+    Check("correcting by the reported error lands on a stroke start",
+        Math.Abs(LovenseProtocol.Frac(0.1 - LovenseProtocol.PhaseError(0.1))) < 1e-9
+        && Math.Abs(LovenseProtocol.Frac(0.9 - LovenseProtocol.PhaseError(0.9))) < 1e-9);
+    Check("phase wrap keeps the oscillator inside one stroke",
+        Math.Abs(LovenseProtocol.Frac(1.25) - 0.25) < 1e-9
+        && Math.Abs(LovenseProtocol.Frac(-0.25) - 0.75) < 1e-9);
+
     // 真机实测：每帧跳 500 单位不崩、1000 单位七秒就 panic，所以单帧位移必须在节拍器里削平。
     Check("a huge jump is cut down to one safe step",
         TCodeFrameFormatter.LimitStep(1735, 9148, SerialService.MaxStepPerFrame)
