@@ -180,6 +180,7 @@ public sealed class LovenseBridgeService : IDisposable
             client.NoDelay = true;
             Stream stream = client.GetStream();
             SslStream? ssl = null;
+            Trace($"accept tls={tls} from {client.Client?.RemoteEndPoint}");
             try
             {
                 if (tls && _certificate is not null)
@@ -187,9 +188,11 @@ public sealed class LovenseBridgeService : IDisposable
                     ssl = new SslStream(stream, false);
                     await ssl.AuthenticateAsServerAsync(_certificate, false, false).ConfigureAwait(false);
                     stream = ssl;
+                    Trace($"handshake ok {ssl.SslProtocol} cipher={ssl.NegotiatedCipherSuite}");
                 }
 
                 (string method, string path, string? body) = await ReadRequestAsync(stream, token).ConfigureAwait(false);
+                Trace($"request {method} {path} body={body?.Length ?? 0}");
                 if (path.Length == 0) return;
 
                 LovenseProtocol.Outcome outcome = LovenseProtocol.Handle(method, path, body);
@@ -197,9 +200,10 @@ public sealed class LovenseBridgeService : IDisposable
                 await WriteResponseAsync(stream, status, "application/json; charset=utf-8", payload).ConfigureAwait(false);
                 Apply(outcome);
             }
-            catch
+            catch (Exception ex)
             {
                 // 游戏半路断开、证书被拒都走这儿：连接是短连接，坏一条不影响服务。
+                Trace("error " + ex.GetType().Name + ": " + ex.Message);
             }
             finally
             {
@@ -429,6 +433,13 @@ public sealed class LovenseBridgeService : IDisposable
                 int.TryParse(lines[i][(colon + 1)..].Trim(), out contentLength);
         }
 
+        // 有些 HTTP 客户端（Unity 的 curl）会先发 Expect: 100-continue 等响应再发 body，不回它就一直等到超时。
+        if (head.Contains("100-continue", StringComparison.OrdinalIgnoreCase))
+        {
+            await stream.WriteAsync("HTTP/1.1 100 Continue\r\n\r\n"u8.ToArray()).ConfigureAwait(false);
+            await stream.FlushAsync().ConfigureAwait(false);
+        }
+
         int bodyStart = headerEnd + 4;
         int already = (int)buffer.Length - bodyStart;
         while (already < contentLength)
@@ -442,6 +453,21 @@ public sealed class LovenseBridgeService : IDisposable
             ? Encoding.UTF8.GetString(bytes, bodyStart, Math.Min(contentLength, (int)buffer.Length - bodyStart))
             : "";
         return (method, path, body.Length > 0 ? body : null);
+    }
+
+    /// <summary>排查用：把每条连接的关键动作写进 lovense-trace.log（游戏那边只报超时，看不到细节）。</summary>
+    private static void Trace(string line)
+    {
+        try
+        {
+            string path = Path.Combine(CertificateFolder, "lovense-trace.log");
+            FileInfo info = new(path);
+            if (info.Exists && info.Length > 2 * 1024 * 1024) File.Delete(path);
+            File.AppendAllText(path, DateTime.Now.ToString("HH:mm:ss.fff") + " " + line + Environment.NewLine);
+        }
+        catch
+        {
+        }
     }
 
     private static int IndexOf(byte[] haystack, int length, ReadOnlySpan<byte> needle)

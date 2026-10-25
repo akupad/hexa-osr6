@@ -39,10 +39,12 @@
                         </Grid.ColumnDefinitions>
                         <CheckBox x:Name="LovenseEnabledCheck" Content="游戏里当 Lovense 玩具" FontSize="12"
                                   VerticalAlignment="Center" Checked="LovenseEnabled_Changed" Unchecked="LovenseEnabled_Changed"/>
-                        <TextBlock Grid.Column="1" Text="SSL 端口" FontSize="11" Foreground="{StaticResource Muted}"
-                                   VerticalAlignment="Center" Margin="14,0,6,0"/>
-                        <TextBox x:Name="LovensePortBox" Grid.Column="2" Width="70" Height="24" FontSize="11"
-                                 VerticalContentAlignment="Center" LostFocus="LovensePort_LostFocus"/>
+                        <TextBlock Grid.Column="1" Text="端口" FontSize="12" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="16,0,8,0"/>
+                        <TextBox x:Name="LovensePortBox" Grid.Column="2" Width="104" Height="28" FontSize="14"
+                                 FontFamily="Consolas" TextAlignment="Center" Padding="0,2,0,0"
+                                 VerticalContentAlignment="Center" LostFocus="LovensePort_LostFocus"
+                                 ToolTip="游戏设置里「Lovense SSL 端口」照填这个数"/>
                         <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right"
                                     VerticalAlignment="Center">
                             <Button x:Name="LovenseTrustBtn" Content="信任证书" FontSize="11" Padding="7,1"
@@ -53,8 +55,8 @@
                                        TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                     </Grid>
-                    <TextBlock x:Name="LovenseAddressText" Text="" FontSize="10" Foreground="{StaticResource Faint}"
-                               Margin="0,4,0,0" TextWrapping="Wrap"/>
+                    <TextBlock x:Name="LovenseAddressText" Text="" FontSize="11" Foreground="{StaticResource Muted}"
+                               Margin="0,6,0,0" TextWrapping="Wrap" LineHeight="17"/>
                 </StackPanel>
             </Border>
 

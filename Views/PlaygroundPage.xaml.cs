@@ -281,9 +281,9 @@ public partial class PlaygroundPage : Page
         if (LovenseAddressText is null) return;
         var addresses = LovenseBridgeService.LocalAddresses();
         string where = addresses.Count == 0
-            ? "（本机没找到局域网地址，先连 Wi-Fi 或网线）"
-            : "（IP 填 " + string.Join(" 或 ", addresses) + "，同机也可以填 127.0.0.1）";
-        LovenseAddressText.Text = "游戏设置里「Lovense IP 地址」填这里显示的地址、「Lovense 网页」选是、端口填上面这个。" + where;
+            ? "本机没找到局域网地址，先连 Wi-Fi 或网线"
+            : "IP 填 " + string.Join(" 或 ", addresses) + "（同一台电脑上填 127.0.0.1 也行）";
+        LovenseAddressText.Text = "游戏设置里这样填：" + where + "；SSL 端口填上面的数字；「Lovense 网页」选「是」。";
     }
 
     private void RefreshLovenseStatus()
