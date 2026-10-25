@@ -2763,6 +2763,60 @@ try
         Check("跟随落点：关掉多轴就只有 L0 动",
             MotionVocabulary.FollowStroke(0.6, 40, 0.45, 0.03, multiAxis: false).Skip(1).All(v => v == MotionVocabulary.Center));
         Check("跟随落点：这一相位下动感档比舒缓档更深", dynamicStroke[0] > gentleStroke[0] + 2);
+
+        // ── Lovense 兼容：游戏问「有什么玩具」必须看见一台 nora，命令强度要翻成动作 ──
+        LovenseProtocol.Outcome toys = LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}");
+        Check("Lovense：GetToys 回了 200", toys.Ok);
+        using (System.Text.Json.JsonDocument outer = System.Text.Json.JsonDocument.Parse(toys.Body))
+        {
+            string inner = outer.RootElement.GetProperty("data").GetProperty("toys").GetString() ?? "";
+            using System.Text.Json.JsonDocument toyDoc = System.Text.Json.JsonDocument.Parse(inner);
+            System.Text.Json.JsonElement toy = toyDoc.RootElement.GetProperty(LovenseProtocol.ToyId);
+            Check("Lovense：GetToys 把玩具名报成 nora",
+                toy.GetProperty("name").GetString() == "nora" && toy.GetProperty("nickName").GetString() == "OSR6");
+            Check("Lovense：toys 是二次转义的 JSON 字符串（游戏要再解一次才拿到 name）",
+                inner.Contains("\"name\":\"nora\""));
+        }
+        Check("Lovense：Function Vibrate:16 解出动作与强度",
+            LovenseProtocol.ParseAction("Vibrate:16") == ("Vibrate", 16));
+        Check("Lovense：Function 里 Rotate 也认（nora 有转动，游戏会给两根滑杆）",
+            LovenseProtocol.ParseAction("Vibrate:2,Rotate:3") == ("Vibrate", 2));
+        Check("Lovense：Pump 上限是 3 不是 20",
+            LovenseProtocol.ParseAction("Pump:9") == ("Pump", 3));
+        Check("Lovense：Stop 直接给停止",
+            LovenseProtocol.ParseAction("Stop") == ("Stop", 0)
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Stop\"}").Action == "Stop");
+        Check("Lovense：强度 0 也要真的停下来（不然游戏以为振了）",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:0\"}").Action == "Stop");
+        LovenseProtocol.Outcome vib = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Vibrate:16\",\"timeSec\":20,\"apiVer\":1}");
+        Check("Lovense：Vibrate:16 给 16/20 的强度、幅度不到半程",
+            vib.Ok && vib.Strength == 16 && vib.Amplitude > 35 && vib.Amplitude < 42 &&
+            Math.Abs(vib.Amplitude - LovenseProtocol.StrokeAmplitude(16)) < 1e-9);
+        Check("Lovense：强度越大越深越快，且幅度不超过 50（半行程）",
+            LovenseProtocol.StrokeAmplitude(20) > LovenseProtocol.StrokeAmplitude(5)
+            && LovenseProtocol.StrokeHz(20) > LovenseProtocol.StrokeHz(5)
+            && LovenseProtocol.StrokeAmplitude(20) <= 50);
+        Check("Lovense：Preset earthquake 最强、wave 最轻",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Preset\",\"name\":\"earthquake\"}").Strength
+                > LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Preset\",\"name\":\"wave\"}").Strength);
+        Check("Lovense：Pattern 取最强的一格当持续强度",
+            LovenseProtocol.Handle("POST", "/command",
+                "{\"command\":\"Pattern\",\"strength\":\"5;12;18;3\",\"rule\":\"V:1;F:v;S:1000#\"}").Strength == 18);
+        Check("Lovense：老式 GET /Vibrate?v=10 也认",
+            LovenseProtocol.Handle("GET", "/Vibrate?v=10", null).Strength == 10
+            && LovenseProtocol.Handle("GET", "/Stop", null).Action == "Stop");
+        Check("Lovense：乱发的命令回 400 而不是装作成功",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Nope\"}").Body.Contains("\"code\":400")
+            && LovenseProtocol.Handle("POST", "/command", "{oops").Body.Contains("\"code\":400"));
+        Check("Lovense：命令名大小写不敏感（不同游戏写法不一样）",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"gettoys\"}").Ok);
+        Check("Lovense：timeSec 被读出来（游戏一条命令只发一次，靠它说跑多久）",
+            Math.Abs(vib.Seconds - 20) < 1e-9
+            && Math.Abs(LovenseProtocol.Handle("POST", "/command",
+                "{\"command\":\"Function\",\"action\":\"Vibrate:9\",\"timeSec\":7.5}").Seconds - 7.5) < 1e-9);
+        Check("Lovense：没写 timeSec 交给服务端按默认 20 秒处理",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:9\"}").Seconds == 0);
     }
 }
 catch (Exception ex)

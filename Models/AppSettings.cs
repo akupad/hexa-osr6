@@ -404,6 +404,12 @@ public class AppSettings
     /// <summary>是否允许局域网设备连接桥（VR 头显/手机）。默认关闭，仅本机回环，避免防火墙弹窗与暴露。</summary>
     public bool   GameBridgeAllowLan  { get; set; } = false;
 
+    // ── Lovense 兼容：游戏那一栏「Lovense IP / SSL 端口」连的就是它 ──
+    /// <summary>开着才会监听；默认关，免得平白开一个对外的 https 端口。</summary>
+    public bool   LovenseBridgeEnabled { get; set; } = false;
+    /// <summary>Lovense 的 SSL 端口，官方 PC 版就是 30010，多数游戏默认也是这个。</summary>
+    public int    LovenseBridgePort    { get; set; } = 30010;
+
     /// <summary>上次编辑的动作合成文件路径（打开/保存时更新，供下次继续编辑）。</summary>
     public string LastCompositionPath { get; set; } = "";
 
@@ -768,6 +774,7 @@ public class AppSettings
 
         // ── 游戏桥 ───────────────────────────────────────────────
         GameBridgePort = GameBridgePort is >= 1024 and <= 65535 ? GameBridgePort : 12345;
+        LovenseBridgePort = LovenseBridgePort is >= 1024 and <= 65535 ? LovenseBridgePort : 30010;
         WindowWidth = double.IsFinite(WindowWidth) ? Math.Clamp(WindowWidth, 900, 4096) : 1280;
         WindowHeight = double.IsFinite(WindowHeight) ? Math.Clamp(WindowHeight, 600, 2160) : 800;
         if (!double.IsFinite(WindowLeft) || WindowLeft < -10000) WindowLeft = -1;

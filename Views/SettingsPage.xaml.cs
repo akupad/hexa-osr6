@@ -165,6 +165,7 @@ public partial class SettingsPage : Page
         InitAboutCard();
         UpdateFirmwareSummary();   // 固件设置那一行的摘要在构造时就位，别让用户看到一行空白
         _linkStatusTimer.Tick += (_, _) => RefreshLinkStatus();
+        InitLovenseCard();
         RefreshLinkStatus();
         IsVisibleChanged += (_, _) =>
         {
@@ -1739,6 +1740,70 @@ public partial class SettingsPage : Page
         LinkStatusText.Foreground = connected && snapshot.IsDead
             ? (Brush)FindResource("Danger")
             : (Brush)FindResource("Muted");
+    }
+
+    /// <summary>
+    /// Lovense 兼容那一格：开关与端口都直接写配置并即时重开服务。
+    /// 端口只改了没重开的话，游戏连的仍然是旧端口 —— 所以这里永远走一次 Stop/Start。
+    /// </summary>
+    private void InitLovenseCard()
+    {
+        if (LovenseEnabledCheck is null) return;
+        LovenseEnabledCheck.IsChecked = App.Settings.LovenseBridgeEnabled;
+        LovensePortBox.Text = App.Settings.LovenseBridgePort.ToString();
+        UpdateLovenseAddressText();
+        RefreshLovenseStatus();
+    }
+
+    private void UpdateLovenseAddressText()
+    {
+        if (LovenseAddressText is null) return;
+        var addresses = LovenseBridgeService.LocalAddresses();
+        LovenseAddressText.Text = addresses.Count == 0
+            ? "本机没找到局域网地址（先连上 Wi-Fi 或网线，游戏才连得到）"
+            : "游戏里填这个 IP：" + string.Join(" 或 ", addresses);
+    }
+
+    private void RefreshLovenseStatus()
+    {
+        if (LovenseStatusText is null) return;
+        LovenseBridgeService lovense = App.Lovense;
+        LovenseStatusText.Text = lovense is null
+            ? "未开启"
+            : (lovense.IsRunning ? "正在监听 " + lovense.HttpsPort + " · " + lovense.Status : lovense.Status);
+        LovenseStatusText.Foreground = lovense is { IsRunning: true } && lovense.Status.Contains("已连上")
+            ? (Brush)FindResource("Accent")
+            : (Brush)FindResource("Muted");
+    }
+
+    private void RestartLovenseBridge()
+    {
+        App.Settings.Save();
+        LovenseBridgeService? lovense = App.Lovense;
+        lovense?.Stop();
+        if (!App.Settings.LovenseBridgeEnabled) { RefreshLovenseStatus(); return; }
+        lovense?.Start(App.Settings.LovenseBridgePort, LovenseBridgeService.DefaultHttpPort);
+        RefreshLovenseStatus();
+    }
+
+    private void LovenseEnabled_Changed(object sender, RoutedEventArgs e)
+    {
+        if (LovenseEnabledCheck is null) return;
+        App.Settings.LovenseBridgeEnabled = LovenseEnabledCheck.IsChecked == true;
+        RestartLovenseBridge();
+    }
+
+    private void LovensePort_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (LovensePortBox is null) return;
+        if (!int.TryParse(LovensePortBox.Text, out int port) || port is < 1024 or > 65535)
+        {
+            LovensePortBox.Text = App.Settings.LovenseBridgePort.ToString();
+            return;
+        }
+        if (port == App.Settings.LovenseBridgePort) return;
+        App.Settings.LovenseBridgePort = port;
+        RestartLovenseBridge();
     }
 
     private async void ExportBlackBox_Click(object sender, RoutedEventArgs e)

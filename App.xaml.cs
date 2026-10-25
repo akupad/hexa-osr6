@@ -24,6 +24,9 @@ public partial class App : System.Windows.Application
     public static GameKeyPoller GameKeyPoller { get; private set; } = null!;
     public static FunscriptPlayerService FunscriptPlayer { get; private set; } = null!;
     public static IntifaceBridgeService Bridge { get; private set; } = null!;
+
+    /// <summary>Lovense 兼容服务：游戏把本机当 Lovense 玩具连进来时，命令从这儿落到设备。</summary>
+    public static LovenseBridgeService Lovense { get; private set; } = null!;
     public static AyvaWebSocketService AyvaWeb { get; private set; } = null!;
     public static TcodeFanout Fanout { get; private set; } = null!;
     public static LibraryWebService LibraryWeb { get; private set; } = null!;
@@ -224,6 +227,8 @@ public partial class App : System.Windows.Application
         GameKeyPoller.Start();
         Bridge = new IntifaceBridgeService(Serial, Engine, Settings);
         if (Settings.GameBridgeEnabled) Bridge.Start();
+        Lovense = new LovenseBridgeService(Engine);
+        if (Settings.LovenseBridgeEnabled) Lovense.Start(Settings.LovenseBridgePort, LovenseBridgeService.DefaultHttpPort);
         AyvaWeb = new AyvaWebSocketService(Engine);
         if (Settings.AyvaWebSocketEnabled) AyvaWeb.Start();
 
