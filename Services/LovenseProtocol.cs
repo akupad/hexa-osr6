@@ -10,9 +10,13 @@ namespace Hexa.Services;
 /// </summary>
 public static class LovenseProtocol
 {
-    /// <summary>我们报给游戏的那台玩具。默认 nora：它在 Lovense 家同时支持振动与转动，游戏因此把两根滑杆都给出来。</summary>
+    /// <summary>
+    /// 我们报给游戏的那台玩具。默认 gravity：Lovense 家的抽插机（抽 + 振动），
+    /// 和我们这台「抽 + 转」的机器最接近——主菜都是抽，而不是振动。
+    /// 名字只影响游戏对能力的认知（它连上问一次），实际怎么动由我们这边的映射决定。
+    /// </summary>
     public const string ToyId = "osr6hexa";
-    public const string DefaultToyName = "nora";
+    public const string DefaultToyName = "gravity";
     private const string ToyNickName = "OSR6";
 
     /// <summary>Lovense 的强度是 0–20 的整数，抽插幅度按它线性映射。</summary>

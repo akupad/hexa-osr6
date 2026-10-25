@@ -410,7 +410,7 @@ public class AppSettings
     /// <summary>Lovense 的 SSL 端口，官方 PC 版就是 30010，多数游戏默认也是这个。</summary>
     public int    LovenseBridgePort    { get; set; } = 30010;
     /// <summary>报给游戏的那台玩具名。游戏按名字决定能发哪些动作：nora = 振动+转动，max = 振动+抽送。</summary>
-    public string LovenseToyName       { get; set; } = "nora";
+    public string LovenseToyName       { get; set; } = "gravity";
 
     /// <summary>上次编辑的动作合成文件路径（打开/保存时更新，供下次继续编辑）。</summary>
     public string LastCompositionPath { get; set; } = "";

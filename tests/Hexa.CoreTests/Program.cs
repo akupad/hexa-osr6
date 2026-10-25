@@ -2772,10 +2772,10 @@ try
             string inner = outer.RootElement.GetProperty("data").GetProperty("toys").GetString() ?? "";
             using System.Text.Json.JsonDocument toyDoc = System.Text.Json.JsonDocument.Parse(inner);
             System.Text.Json.JsonElement toy = toyDoc.RootElement.GetProperty(LovenseProtocol.ToyId);
-            Check("Lovense：GetToys 把玩具名报成 nora",
-                toy.GetProperty("name").GetString() == "nora" && toy.GetProperty("nickName").GetString() == "OSR6");
+            Check("Lovense：GetToys 把玩具名报成 gravity",
+                toy.GetProperty("name").GetString() == "gravity" && toy.GetProperty("nickName").GetString() == "OSR6");
             Check("Lovense：toys 是二次转义的 JSON 字符串（游戏要再解一次才拿到 name）",
-                inner.Contains("\"name\":\"nora\""));
+                inner.Contains("\"name\":\"gravity\""));
         }
         Check("Lovense：Function Vibrate:16 解出动作与强度",
             LovenseProtocol.ParseAction("Vibrate:16") == ("Vibrate", 16));
