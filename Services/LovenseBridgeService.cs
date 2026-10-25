@@ -318,16 +318,19 @@ public sealed class LovenseBridgeService : IDisposable
             // 文件坏了就当没有，下面重生成一份。
         }
 
-        X509Certificate2 fresh = CreateCertificate(wanted);
+        X509Certificate2 fresh = CreateCertificate(wanted, out byte[] freshPfx);
         try
         {
             Directory.CreateDirectory(CertificateFolder);
-            File.WriteAllBytes(CertificateFile, fresh.Export(X509ContentType.Pfx));
+            // 必须写「刚生成那份」的字节：从 LoadPkcs12 拿回来的证书再 Export(Pfx) 会抛
+            // CryptographicException「该项不适于在指定状态下使用」（临时密钥句柄不可再导出）。
+            File.WriteAllBytes(CertificateFile, freshPfx);
             File.WriteAllLines(CertificateSanFile, wanted);
         }
-        catch
+        catch (Exception ex)
         {
             // 存不下去也不影响本次运行，只是下次启动又生成一份。
+            try { File.AppendAllText(Path.Combine(CertificateFolder, "lovense-cert.log"), DateTime.Now + " save failed: " + ex + Environment.NewLine); } catch { }
         }
         return fresh;
     }
@@ -374,7 +377,7 @@ public sealed class LovenseBridgeService : IDisposable
         if (certificate is not null) CertificateTrusted = IsTrusted(certificate);
     }
 
-    private static X509Certificate2 CreateCertificate(List<string> names)
+    private static X509Certificate2 CreateCertificate(List<string> names, out byte[] pfxBytes)
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest("CN=lovense-bridge.local", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
@@ -392,7 +395,8 @@ public sealed class LovenseBridgeService : IDisposable
         request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));
         using X509Certificate2 selfSigned = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(5));
         // SslStream 在 Windows 上要用带私钥的 PFX 往返一次，否则握手会报「凭据没有私钥」。
-        return X509CertificateLoader.LoadPkcs12(selfSigned.Export(X509ContentType.Pfx), null);
+        pfxBytes = selfSigned.Export(X509ContentType.Pfx);
+        return X509CertificateLoader.LoadPkcs12(pfxBytes, null);
     }
 
     private static async Task<(string Method, string Path, string? Body)> ReadRequestAsync(Stream stream, CancellationToken token)
