@@ -2810,6 +2810,11 @@ try
             "{\"command\":\"Function\",\"action\":\"All:13\",\"timeSec\":1,\"toy\":\"osr6hexa\",\"stopPrevious\":1,\"apiVer\":1}");
         Check("Lovense：All:13（Pure Onyx 用的写法）抽插和转动一起动",
             allAction.Ok && allAction.Amplitude > 0 && allAction.RotateAmplitude > 0);
+        Check("Lovense：官方写的 Thrusting / Fingering / Suction / Depth 都认",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Thrusting:12\"}").Ok
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Fingering:12\"}").Amplitude > 0
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Suction:12\"}").Amplitude > 0
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Depth:12\"}").Amplitude > 0);
         Check("Lovense：探活 ping 回 200 不当成坏命令",
             LovenseProtocol.Handle("POST", "/command", "{\"type\":\"ping\"}").Ok);
         Check("Lovense：乱发的命令回 400 而不是装作成功",

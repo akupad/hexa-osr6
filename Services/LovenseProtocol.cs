@@ -46,8 +46,9 @@ public static class LovenseProtocol
     }
 
     /// <summary>
-    /// 把 "Vibrate:16,Rotate:8" 这类串整个拆开。Thrust 是抽插机（Solace / Gravity）的动作，
-    /// 最贴近 OSR6 的直线行程；Pump 是 max 的气泵，只有 0–3；
+    /// 把 "Vibrate:16,Rotate:8" 这类串整个拆开。官方动作名有 Vibrate / Rotate / Pump /
+    /// Thrusting / Fingering / Suction / Depth / All / Stop（前六个 0–20，Pump 只有 0–3）；
+    /// 除 Rotate 外都落到 OSR6 的直线行程上。Thrust 是 Thrusting 的简写，也认。
     /// All:n 是「所有功能一起到 n」（Pure Onyx 主用这个），我们把 n 同时给抽插和转动。
     /// </summary>
     public static IReadOnlyList<(string Name, int Strength)> ParseActions(string? action)
@@ -63,6 +64,10 @@ public static class LovenseProtocol
             bool known = name.Equals("Vibrate", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("Rotate", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("Thrust", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Thrusting", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Fingering", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Suction", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Depth", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("All", StringComparison.OrdinalIgnoreCase)
                 || name.Equals("Pump", StringComparison.OrdinalIgnoreCase);
             if (!known) continue;
