@@ -409,6 +409,8 @@ public class AppSettings
     public bool   LovenseBridgeEnabled { get; set; } = false;
     /// <summary>Lovense 的 SSL 端口，官方 PC 版就是 30010，多数游戏默认也是这个。</summary>
     public int    LovenseBridgePort    { get; set; } = 30010;
+    /// <summary>报给游戏的那台玩具名。游戏按名字决定能发哪些动作：nora = 振动+转动，max = 振动+抽送。</summary>
+    public string LovenseToyName       { get; set; } = "nora";
 
     /// <summary>上次编辑的动作合成文件路径（打开/保存时更新，供下次继续编辑）。</summary>
     public string LastCompositionPath { get; set; } = "";
@@ -775,6 +777,7 @@ public class AppSettings
         // ── 游戏桥 ───────────────────────────────────────────────
         GameBridgePort = GameBridgePort is >= 1024 and <= 65535 ? GameBridgePort : 12345;
         LovenseBridgePort = LovenseBridgePort is >= 1024 and <= 65535 ? LovenseBridgePort : 30010;
+        LovenseToyName = Services.LovenseProtocol.Sanitize(LovenseToyName);
         WindowWidth = double.IsFinite(WindowWidth) ? Math.Clamp(WindowWidth, 900, 4096) : 1280;
         WindowHeight = double.IsFinite(WindowHeight) ? Math.Clamp(WindowHeight, 600, 2160) : 800;
         if (!double.IsFinite(WindowLeft) || WindowLeft < -10000) WindowLeft = -1;

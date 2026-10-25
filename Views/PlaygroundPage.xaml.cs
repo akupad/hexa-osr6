@@ -272,7 +272,35 @@ public partial class PlaygroundPage : Page
         if (LovenseEnabledCheck is null) return;
         LovenseEnabledCheck.IsChecked = App.Settings.LovenseBridgeEnabled;
         LovensePortBox.Text = App.Settings.LovenseBridgePort.ToString();
+        SyncLovenseToyBox();
         UpdateLovenseAddressText();
+        RefreshLovenseStatus();
+    }
+
+    private void SyncLovenseToyBox()
+    {
+        if (LovenseToyBox is null) return;
+        string want = App.Settings.LovenseToyName;
+        foreach (object item in LovenseToyBox.Items)
+        {
+            if (item is ComboBoxItem box && string.Equals(box.Content?.ToString(), want, StringComparison.OrdinalIgnoreCase))
+            {
+                LovenseToyBox.SelectedItem = box;
+                return;
+            }
+        }
+        LovenseToyBox.SelectedIndex = 0;
+    }
+
+    private void LovenseToy_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (LovenseToyBox?.SelectedItem is not ComboBoxItem item) return;
+        string? name = item.Content?.ToString();
+        if (string.IsNullOrWhiteSpace(name)) return;
+        if (string.Equals(name, App.Settings.LovenseToyName, StringComparison.OrdinalIgnoreCase)) return;
+        App.Settings.LovenseToyName = name;
+        if (App.Lovense is not null) App.Lovense.ToyName = name;
+        App.Settings.Save();
         RefreshLovenseStatus();
     }
 

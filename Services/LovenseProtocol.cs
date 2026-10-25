@@ -10,9 +10,9 @@ namespace Hexa.Services;
 /// </summary>
 public static class LovenseProtocol
 {
-    /// <summary>我们报给游戏的那台玩具。名字用 nora：它在 Lovense 家同时支持转动与抽插，游戏会因此把两个滑杆都给出来。</summary>
+    /// <summary>我们报给游戏的那台玩具。默认 nora：它在 Lovense 家同时支持振动与转动，游戏因此把两根滑杆都给出来。</summary>
     public const string ToyId = "osr6hexa";
-    public const string ToyName = "nora";
+    public const string DefaultToyName = "nora";
     private const string ToyNickName = "OSR6";
 
     /// <summary>Lovense 的强度是 0–20 的整数，抽插幅度按它线性映射。</summary>
@@ -50,14 +50,28 @@ public static class LovenseProtocol
     }
 
     /// <summary>GetToys 里的 toys 字段是一段「被转义的 JSON 字符串」，游戏会再解一次。</summary>
-    public static string ToysJson() =>
+    public static string ToysJson(string toyName = DefaultToyName) =>
         "{" + string.Create(CultureInfo.InvariantCulture,
-            $"\"{ToyId}\":{{\"id\":\"{ToyId}\",\"status\":\"1\",\"version\":\"\",\"name\":\"{ToyName}\",\"battery\":100,\"nickName\":\"{ToyNickName}\"}}")
+            $"\"{ToyId}\":{{\"id\":\"{ToyId}\",\"status\":\"1\",\"version\":\"\",\"name\":\"{Sanitize(toyName)}\",\"battery\":100,\"nickName\":\"{ToyNickName}\"}}")
         + "}";
 
-    public static string OkBody(bool withToys)
+    /// <summary>玩具名会原样进 JSON，只留字母数字下划线，避免用户手输把报文写坏。</summary>
+    public static string Sanitize(string? toyName)
     {
-        string toys = withToys ? ",\"data\":{\"toys\":" + JsonSerializer.Serialize(ToysJson()) + ",\"platform\":\"windows\",\"appType\":\"remote\"}" : "";
+        if (string.IsNullOrWhiteSpace(toyName)) return DefaultToyName;
+        Span<char> buffer = stackalloc char[24];
+        int n = 0;
+        foreach (char c in toyName.Trim())
+        {
+            if (n >= buffer.Length) break;
+            if (char.IsLetterOrDigit(c) || c == '_' || c == '-') buffer[n++] = char.ToLowerInvariant(c);
+        }
+        return n == 0 ? DefaultToyName : new string(buffer[..n]);
+    }
+
+    public static string OkBody(bool withToys, string toyName = DefaultToyName)
+    {
+        string toys = withToys ? ",\"data\":{\"toys\":" + JsonSerializer.Serialize(ToysJson(toyName)) + ",\"platform\":\"windows\",\"appType\":\"remote\"}" : "";
         return "{\"code\":200" + toys + ",\"message\":\"\",\"result\":true,\"type\":\"OK\"}";
     }
 
@@ -70,7 +84,7 @@ public static class LovenseProtocol
     public sealed record Outcome(bool Ok, string Body, string Action, int Strength, double Amplitude, double Hz, double Seconds = 0);
 
     /// <summary>把一条 /command 请求翻成「要做什么动作 + 回什么」。纯函数，端口与设备都不在这儿。</summary>
-    public static Outcome Handle(string method, string path, string? body)
+    public static Outcome Handle(string method, string path, string? body, string toyName = DefaultToyName)
     {
         // 先剥掉 ?query 再判 verb：老式接口是 /Vibrate?v=10，不剥就整条当成一个陌生的 verb。
         int question = path.IndexOf('?');
@@ -118,7 +132,7 @@ public static class LovenseProtocol
         else if (verb is "gettoys") command = "GetToys";
 
         if (command.Equals("GetToys", StringComparison.OrdinalIgnoreCase))
-            return new Outcome(true, OkBody(true), "", 0, 0, 0);
+            return new Outcome(true, OkBody(true, toyName), "", 0, 0, 0);
 
         if (command.Equals("Preset", StringComparison.OrdinalIgnoreCase))
             return PresetToOutcome(presetName, seconds);

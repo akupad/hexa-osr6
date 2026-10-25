@@ -40,8 +40,16 @@ public sealed class LovenseBridgeService : IDisposable
     private DateTime _runUntilUtc = DateTime.MinValue;
     private DateTime _lastTickUtc = DateTime.UtcNow;
     private volatile bool _sawClient;
+    private volatile string _toyName = LovenseProtocol.DefaultToyName;
 
     public LovenseBridgeService(MotionEngine engine) => _engine = engine;
+
+    /// <summary>报给游戏的那台玩具名（nora / max / …）。游戏按名字推它能做什么动作，所以这个名字决定它发 Vibrate 还是 Rotate。</summary>
+    public string ToyName
+    {
+        get => _toyName;
+        set => _toyName = LovenseProtocol.Sanitize(value);
+    }
 
     public bool IsRunning { get; private set; }
     public int HttpsPort { get; private set; }
@@ -195,7 +203,8 @@ public sealed class LovenseBridgeService : IDisposable
                 Trace($"request {method} {path} body={body?.Length ?? 0}");
                 if (path.Length == 0) return;
 
-                LovenseProtocol.Outcome outcome = LovenseProtocol.Handle(method, path, body);
+                if (body is { Length: > 0 }) Trace("body " + (body.Length > 200 ? body[..200] + "…" : body));
+                LovenseProtocol.Outcome outcome = LovenseProtocol.Handle(method, path, body, _toyName);
                 (string status, byte[] payload) = await BuildResponseAsync(method, path, outcome).ConfigureAwait(false);
                 await WriteResponseAsync(stream, status, "application/json; charset=utf-8", payload).ConfigureAwait(false);
                 Apply(outcome);

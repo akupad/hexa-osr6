@@ -35,6 +35,8 @@
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="*"/>
                         </Grid.ColumnDefinitions>
                         <CheckBox x:Name="LovenseEnabledCheck" Content="游戏里当 Lovense 玩具" FontSize="12"
@@ -45,7 +47,17 @@
                                  FontFamily="Consolas" TextAlignment="Center" Padding="0,2,0,0"
                                  VerticalContentAlignment="Center" LostFocus="LovensePort_LostFocus"
                                  ToolTip="游戏设置里「Lovense SSL 端口」照填这个数"/>
-                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right"
+                        <TextBlock Grid.Column="3" Text="玩具名" FontSize="12" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="16,0,8,0"/>
+                        <ComboBox x:Name="LovenseToyBox" Grid.Column="4" Width="96" Height="28" FontSize="13"
+                                  VerticalContentAlignment="Center" SelectionChanged="LovenseToy_Changed"
+                                  ToolTip="游戏按名字决定能发哪些动作：nora 有振动+转动，max 有振动+抽送">
+                            <ComboBoxItem Content="nora" IsSelected="True"/>
+                            <ComboBoxItem Content="max"/>
+                            <ComboBoxItem Content="solace"/>
+                            <ComboBoxItem Content="gravity"/>
+                        </ComboBox>
+                        <StackPanel Grid.Column="5" Orientation="Horizontal" HorizontalAlignment="Right"
                                     VerticalAlignment="Center">
                             <Button x:Name="LovenseTrustBtn" Content="信任证书" FontSize="11" Padding="7,1"
                                     Margin="0,0,8,0" Visibility="Collapsed" Click="LovenseTrust_Click"

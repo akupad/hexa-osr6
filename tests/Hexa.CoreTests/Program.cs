@@ -2817,6 +2817,13 @@ try
                 "{\"command\":\"Function\",\"action\":\"Vibrate:9\",\"timeSec\":7.5}").Seconds - 7.5) < 1e-9);
         Check("Lovense：没写 timeSec 交给服务端按默认 20 秒处理",
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:9\"}").Seconds == 0);
+        Check("Lovense：玩具名可以换（游戏按名字推它能做哪些动作）",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}", "max").Body.Contains("max", StringComparison.Ordinal)
+            && !LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}", "max").Body.Contains("nora", StringComparison.Ordinal));
+        Check("Lovense：玩具名只留字母数字，手输的引号进不了报文",
+            LovenseProtocol.Sanitize(" \"ma\"x\\ ") == "max" && LovenseProtocol.Sanitize("") == LovenseProtocol.DefaultToyName);
+        Check("Lovense：玩具名换成 max 也不影响强度解析",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:16\"}", "max").Strength == 16);
     }
 }
 catch (Exception ex)
