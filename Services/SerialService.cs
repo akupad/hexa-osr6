@@ -2,6 +2,7 @@ using Microsoft.Win32;
 using System.Diagnostics;
 using System.IO;
 using System.IO.Ports;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Hexa.Services;
@@ -34,6 +35,13 @@ public sealed class SerialService : ICommandTransport, IDisposable
     /// 主机侧永远只能证明「banner 出现了」，查不出为什么重启。
     /// </summary>
     private readonly Queue<string> _recentRxChunks = new();
+
+    /// <summary>
+    /// 板子重启后静默发帧的截止时刻（TickCount64）。重启那几秒写进去的帧不但无效，
+    /// 还会把驱动内部信号量堵住 500ms → 抛「信号灯超时」→ 锁输出 + 重连，
+    /// 用户感觉就是「卡住，然后又好，又卡住」。
+    /// </summary>
+    private long _quietUntilMs;
 
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private readonly System.Timers.Timer _reconnectTimer;
@@ -868,6 +876,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
                                    "解锁请点侧栏「全部归中」。");
                 return;
             }
+            if (Environment.TickCount64 < Interlocked.Read(ref _quietUntilMs)) return;
             frame = TCodeFrameFormatter.FormatTargets(
                 targets, axisMin, axisMax, _lastSentRaw, _lastSentValid, changedOnly);
             if (frame.Length == 0) return;
@@ -1090,6 +1099,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             while (_recentRxChunks.Count > 4) _recentRxChunks.Dequeue();
             if (ReserveRecordSlot(ref _lastInRecordMs, InRecordIntervalMs))
                 BlackBox.Record("in", chunk);
+            AppendRawTelemetry(chunk);
             LogLinkTransitionIfNeeded();
         }
     }
@@ -1106,7 +1116,10 @@ public sealed class SerialService : ICommandTransport, IDisposable
         if (snapshot.ResetSeenCount != resetSeen)
         {
             Interlocked.Exchange(ref _loggedResetCount, snapshot.ResetSeenCount);
-            AppLogger.Warn($"链路：检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次）。输出状态未改动，如机器不动请拔插 USB。");
+            // 重启后给它 2.5 秒起启动，期间不写串口：这一静默既保住了输出锁定状态，
+            // 也避开了「端口还在但设备没起来」那几秒必定失败、且要堵 500ms 的写。
+            Interlocked.Exchange(ref _quietUntilMs, Environment.TickCount64 + 2500);
+            AppLogger.Warn($"链路：检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次）。已暂停发帧 2.5 秒等它启起来，不必拔插 USB。");
             LogRecentRx("设备重启现场");
         }
 
@@ -1117,6 +1130,59 @@ public sealed class SerialService : ICommandTransport, IDisposable
             {
                 AppLogger.Warn("链路：" + SerialLinkMonitor.Describe(snapshot) + "（仅提示，未锁输出）");
                 LogRecentRx("掉链现场");
+            }
+        }
+    }
+
+    private static readonly object _rawLogGate = new();
+    private static long _rawLogBytes = -1;
+
+    /// <summary>
+    /// 把设备自己说的话落到 serial-raw.log（丢掉每帧都重复的收发回显，否则 30–60Hz 几分钟就写满盘）。
+    /// 为什么要单独存：复位那一刻端口是断的，重启后才拿到的 banner 里没有原因码；
+    /// 真正值钱的是它崩之前自己打的行（panic / Guru Meditation / 掉压 / 看门狗），
+    /// 而 ring 只在重启后翻，翻不到「死之前」。
+    /// </summary>
+    private static void AppendRawTelemetry(string chunk)
+    {
+        StringBuilder? kept = null;
+        int start = 0;
+        while (start < chunk.Length)
+        {
+            int nl = chunk.IndexOf('\n', start);
+            int end = nl < 0 ? chunk.Length : nl;
+            ReadOnlySpan<char> line = chunk.AsSpan(start, end - start).TrimEnd('\r');
+            start = end + 1;
+            if (line.Length == 0) continue;
+            if (line.Contains("UART received", StringComparison.Ordinal)) continue;
+            if (line.Contains("UART echoed", StringComparison.Ordinal)) continue;
+            if (line.Contains("TCode: preprocess", StringComparison.Ordinal)) continue;
+            (kept ??= new StringBuilder()).Append(line).Append('\n');
+        }
+        if (kept is null) return;
+
+        string text = kept.ToString();
+        lock (_rawLogGate)
+        {
+            try
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Hexa");
+                Directory.CreateDirectory(dir);
+                string path = Path.Combine(dir, "serial-raw.log");
+                if (_rawLogBytes < 0)
+                    _rawLogBytes = File.Exists(path) ? new FileInfo(path).Length : 0;
+                if (_rawLogBytes > 4L * 1024 * 1024)
+                {
+                    File.Move(path, path + ".1", overwrite: true);
+                    _rawLogBytes = 0;
+                }
+                File.AppendAllText(path, text);
+                _rawLogBytes += text.Length;
+            }
+            catch
+            {
+                // 取证失败绝不能影响串口：这里静默。
             }
         }
     }
