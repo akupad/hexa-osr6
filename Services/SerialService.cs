@@ -27,6 +27,14 @@ public sealed class SerialService : ICommandTransport, IDisposable
     /// </summary>
     private static readonly object _writeGate = new();
 
+    /// <summary>
+    /// 最近几块原始串口输出（读线程单写者，不加密）。
+    /// 只为一件事：板子重启或掉链时把复位原因行留下来 —— ESP32 开机时会打
+    /// ESP-ROM / rst:0x… / Brownout detector / Guru Meditation，没有这些行，
+    /// 主机侧永远只能证明「banner 出现了」，查不出为什么重启。
+    /// </summary>
+    private readonly Queue<string> _recentRxChunks = new();
+
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private readonly System.Timers.Timer _reconnectTimer;
 
@@ -1078,6 +1086,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
 
             string chunk = new string(buffer, 0, read);
             LinkMonitor.Feed(chunk);
+            _recentRxChunks.Enqueue(chunk);
+            while (_recentRxChunks.Count > 4) _recentRxChunks.Dequeue();
             if (ReserveRecordSlot(ref _lastInRecordMs, InRecordIntervalMs))
                 BlackBox.Record("in", chunk);
             LogLinkTransitionIfNeeded();
@@ -1097,14 +1107,31 @@ public sealed class SerialService : ICommandTransport, IDisposable
         {
             Interlocked.Exchange(ref _loggedResetCount, snapshot.ResetSeenCount);
             AppLogger.Warn($"链路：检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次）。输出状态未改动，如机器不动请拔插 USB。");
+            LogRecentRx("设备重启现场");
         }
 
         if (snapshot.IsDead != _loggedDead)
         {
             _loggedDead = snapshot.IsDead;
             if (snapshot.IsDead)
+            {
                 AppLogger.Warn("链路：" + SerialLinkMonitor.Describe(snapshot) + "（仅提示，未锁输出）");
+                LogRecentRx("掉链现场");
+            }
         }
+    }
+
+    /// <summary>
+    /// 把最近收到的原始串口文本写进日志。只读缓冲区、不改任何状态，所以不违反
+    /// 「读线程绝不锁输出、绝不因没回话断线」的红线。换行压成 ⏎，一次复位在日志里占一行。
+    /// </summary>
+    private void LogRecentRx(string reason)
+    {
+        string text = string.Join("", _recentRxChunks).Replace("\r", "").Replace("\n", " ⏎ ");
+        if (text.Length == 0) return;
+        if (text.Length > 1200) text = text[^1200..];
+        AppLogger.Warn(reason + "（原始串口）: " + text);
+        BlackBox.Record("boot", reason + ": " + text);
     }
 
     /// <summary>
