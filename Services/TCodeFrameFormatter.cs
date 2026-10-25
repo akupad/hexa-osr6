@@ -132,6 +132,20 @@ public static class TCodeFrameFormatter
         return string.Join(' ', parts);
     }
 
+    /// <summary>
+    /// 限制单帧位移：target 离 from 太远时只走 maxStep，剩下的留给后面几帧。
+    /// 真机实测（COM3，20 帧/秒）：每帧跳 500 单位连跑 90 秒不崩，跳 1000 单位 7 秒就 panic ——
+    /// 固件处理大位移会写坏自己的堆，所以任何来源的大跳跃都必须在这里被削平。
+    /// </summary>
+    public static int LimitStep(int from, int to, int maxStep)
+    {
+        if (maxStep <= 0) return to;
+        int delta = to - from;
+        if (delta > maxStep) return from + maxStep;
+        if (delta < -maxStep) return from - maxStep;
+        return to;
+    }
+
     public static int MapPosition(
         string axisId,
         double position,

@@ -77,6 +77,11 @@ public sealed class SerialService : ICommandTransport, IDisposable
     private bool _preferWired = true;
     private readonly int[] _lastSentRaw = new int[6];
     private readonly bool[] _lastSentValid = new bool[6];
+    private readonly int[] _lastWrittenRaw = new int[6];
+    private bool _hasWrittenFrame;
+
+    /// <summary>单帧允许的最大位移（TCode 单位）。真机实测：每帧 500 连跑 90 秒没事，1000 七秒就崩。</summary>
+    public const int MaxStepPerFrame = 400;
     private readonly int[] _lastSentInterval = new int[6];
     private long _lastComposeLogMs;
     /// <summary>固件卡死（看门狗刷屏、心跳停）第一次被发现的时刻；0 = 没卡。</summary>
@@ -1046,7 +1051,19 @@ public sealed class SerialService : ICommandTransport, IDisposable
             bool known = false;
             for (int i = 0; i < _lastSentValid.Length; i++) known |= _lastSentValid[i];
             if (!known) return;
-            frame = TCodeFrameFormatter.FormatState(_lastSentRaw, _lastSentValid, FrameIntervalMs);
+            // 大跳跃必须削平：目标可能一帧从 1735 跳到 9148（实测抓到的真实帧），
+            // 固件处理这种位移会写坏堆并 panic，所以这里限速，剩下的位移交给后面几帧慢慢走。
+            if (!_hasWrittenFrame)
+            {
+                Array.Copy(_lastSentRaw, _lastWrittenRaw, _lastWrittenRaw.Length);
+                _hasWrittenFrame = true;
+            }
+            for (int i = 0; i < _lastSentRaw.Length; i++)
+            {
+                if (!_lastSentValid[i]) continue;
+                _lastWrittenRaw[i] = TCodeFrameFormatter.LimitStep(_lastWrittenRaw[i], _lastSentRaw[i], MaxStepPerFrame);
+            }
+            frame = TCodeFrameFormatter.FormatState(_lastWrittenRaw, _lastSentValid, FrameIntervalMs);
             if (frame.Length == 0) return;
         }
 

@@ -622,6 +622,18 @@ try
     Check("unknown axes fall back to the middle position",
         pacedFrame.Split(' ').Skip(1).All(token => token[2..6] == "5000"));
 
+    // 真机实测：每帧跳 500 单位不崩、1000 单位七秒就 panic，所以单帧位移必须在节拍器里削平。
+    Check("a huge jump is cut down to one safe step",
+        TCodeFrameFormatter.LimitStep(1735, 9148, SerialService.MaxStepPerFrame)
+            == 1735 + SerialService.MaxStepPerFrame);
+    Check("a huge jump downwards is cut down too",
+        TCodeFrameFormatter.LimitStep(9148, 1735, SerialService.MaxStepPerFrame)
+            == 9148 - SerialService.MaxStepPerFrame);
+    Check("a small move passes through untouched",
+        TCodeFrameFormatter.LimitStep(5000, 5123, SerialService.MaxStepPerFrame) == 5123);
+    Check("the safe step stays well under the measured crash threshold",
+        SerialService.MaxStepPerFrame <= 500);
+
     double[] coordinated = Osr6MotionComposer.Compose(
         "game_flow", 0.37, [35, 13, 11, 14, 10, 8], 1, 30, ComfortProfile.Immersive);
     Check("automatic pose contains six installed axes", coordinated.Length == 6
