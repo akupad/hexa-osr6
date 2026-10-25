@@ -43,6 +43,17 @@ public sealed class SerialService : ICommandTransport, IDisposable
     /// </summary>
     private long _quietUntilMs;
 
+    /// <summary>
+    /// 重启后"重新接手串口"是否已有人在跑（0/1）。读线程只负责举手，重活交给后台任务：
+    /// 板子重启后原来那个端口句柄经常还"能写"——写进驱动缓冲就返回成功，于是主机盲发十几秒
+    /// 才发现设备根本没在听（日志里最长的一次盲发了 27 秒）。既然横幅已经把"它刚重启"写在脸上，
+    /// 就趁静默期把端口重开一遍，把这段盲发压到两秒内。
+    /// </summary>
+    private int _rebootRecoveryPending;
+
+    /// <summary>重启后等板子重新枚举 CDC 再接手端口的延迟。</summary>
+    private const int RebootReattachDelayMs = 800;
+
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private readonly System.Timers.Timer _reconnectTimer;
 
@@ -1308,9 +1319,10 @@ public sealed class SerialService : ICommandTransport, IDisposable
             // 重启后给它 2.5 秒起启动，期间不写串口：这一静默既保住了输出锁定状态，
             // 也避开了「端口还在但设备没起来」那几秒必定失败、且要堵 500ms 的写。
             Interlocked.Exchange(ref _quietUntilMs, Environment.TickCount64 + 2500);
-            AppLogger.Warn($"链路：检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次）。已暂停发帧 2.5 秒等它启起来，不必拔插 USB。");
+            AppLogger.Warn($"链路：检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次）。已暂停发帧 2.5 秒并重新接手串口，不必拔插 USB。");
             LogRecentRx("设备重启现场");
             DumpTxRing("设备重启现场");
+            RequestRebootRecovery();
         }
 
         long nowMs = Environment.TickCount64;
@@ -1346,6 +1358,44 @@ public sealed class SerialService : ICommandTransport, IDisposable
                 LogRecentRx("掉链现场");
             }
         }
+    }
+
+    /// <summary>
+    /// 板子刚重启：等它把 CDC 重新枚举完，就把端口关掉重开，让输出尽快续上。
+    /// 只在本进程还在用真串口、端口仍然开着时动手；重连退避计数清零，因为这不是"连不上"，是"设备刚起"。
+    /// </summary>
+    private void RequestRebootRecovery()
+    {
+        if (Interlocked.Exchange(ref _rebootRecoveryPending, 1) == 1) return;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(RebootReattachDelayMs).ConfigureAwait(false);
+
+                lock (_lock)
+                {
+                    if (_disposed || _simulationEnabled) return;
+                    if (_port?.IsOpen != true) return;            // 已经断了，交给常规重连循环
+                    if (_pendingOpenTask is { IsCompleted: false }) return;
+                    ClosePortLocked();
+                    _outputEnabled = false;
+                    _consecutiveFailures = 0;
+                    _nextReconnectUtc = DateTime.MinValue;
+                }
+
+                AppLogger.Info("链路：重启后重新接手串口，尽快恢复输出。");
+                await TryConnectCoreAsync(notify: false).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                AppLogger.Warn("链路：重启后重新接手串口失败: " + ex.Message);
+            }
+            finally
+            {
+                Interlocked.Exchange(ref _rebootRecoveryPending, 0);
+            }
+        });
     }
 
     private static readonly object _rawLogGate = new();
