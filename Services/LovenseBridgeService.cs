@@ -45,6 +45,7 @@ public sealed class LovenseBridgeService : IDisposable
     /// <summary>上一条动作指令到达的时刻：游戏一抽发一条，间隔就是动作周期。</summary>
     private DateTime _lastArrivalUtc = DateTime.MinValue;
     private double _intervalSeconds;
+    private DateTime _blockedSinceUtc = DateTime.MinValue;
     private volatile int _depthPercent = LovenseProtocol.DefaultDepthPercent;
     private volatile bool _sawClient;
     private volatile string _toyName = LovenseProtocol.DefaultToyName;
@@ -344,8 +345,25 @@ public sealed class LovenseBridgeService : IDisposable
             if (_rotatePhase >= 1.0) _rotatePhase -= Math.Floor(_rotatePhase);
             twist = 50 + rotateAmplitude / 2.0 * Math.Sin(2 * Math.PI * _rotatePhase);
         }
-        _engine.TrySendDirectAxes(
+        bool sent = _engine.TrySendDirectAxes(
             [main, 50 + (main - 50) * 0.10, 50 + (main - 50) * 0.08, twist, 50, 50], 0.06);
+
+        // 帧被拒＝设备当场停住，而这条路径以前完全静默。连续被拒超过 0.4 秒记一条，测试完能直接看出卡在哪。
+        if (sent)
+        {
+            _blockedSinceUtc = DateTime.MinValue;
+            return;
+        }
+        if (_blockedSinceUtc == DateTime.MinValue)
+        {
+            _blockedSinceUtc = now;
+            return;
+        }
+        if ((now - _blockedSinceUtc).TotalMilliseconds >= 400)
+        {
+            Trace($"frame blocked {(now - _blockedSinceUtc).TotalMilliseconds:0}ms: {_engine.DirectInputBlockReason}");
+            _blockedSinceUtc = now;
+        }
     }
 
     /// <summary>证书放这儿：每次启动都重生成的话，游戏那边每次都得重新信任一次，等于永远连不上。</summary>

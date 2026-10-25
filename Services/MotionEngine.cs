@@ -219,6 +219,22 @@ public sealed class MotionEngine : IDisposable
     public bool CanAcceptDirectInput => CanRun && !IsRunning && !IsEasing && !TakenOverByOthers;
 
     /// <summary>
+    /// 直接输入被拒的原因（空串＝能接）。游戏桥、画面跟随这类连续源拿到 false 时一直是静默丢弃的，
+    /// 出问题只能看到「机器不动」，这个属性让调用方能把原因写进日志。
+    /// </summary>
+    public string DirectInputBlockReason
+    {
+        get
+        {
+            if (!CanRun) return EmergencyStopped ? "急停锁定" : IsHoming ? "归中中" : "串口没开";
+            if (IsRunning) return "正在播放";
+            if (IsEasing) return "过渡中";
+            if (TakenOverByOthers) return "规则引擎占用";
+            return "";
+        }
+    }
+
+    /// <summary>
     /// 「操作带动机器」这一刻是不是真的在叠加（手柄活跃度或动作键脉冲还有贡献）。
     /// 给状态板显示「正在响应：你的操作」用 —— 用户开着这个勾选框，最想知道的就是它到底生效没有。
     /// </summary>
