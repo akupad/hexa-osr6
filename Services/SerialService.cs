@@ -18,6 +18,15 @@ public sealed class SerialService : ICommandTransport, IDisposable
     /// 急停、锁定输出、断连都要 _lock，拿着它睡会把急停堵住（界面冻住、设备还在动）。
     /// </summary>
     private readonly Lock _ioLock = new();
+
+    /// <summary>
+    /// 串口写闸门。SerialPort.Write 不是线程安全的：运动帧（30–60Hz）、脚本、游戏桥、固件命令
+    /// 分属不同线程，同时写会把一行劈开，或者一起卡在驱动内部信号量上，500ms 后抛「信号灯超时」
+    /// （日志里这种超时出现过 300 多次，每次都连带锁输出、重连、停两三秒）。
+    /// 只管写动作本身，绝不与 <see cref="_lock"/> 嵌套，所以急停照样快。
+    /// </summary>
+    private static readonly object _writeGate = new();
+
     private readonly SemaphoreSlim _connectGate = new(1, 1);
     private readonly System.Timers.Timer _reconnectTimer;
 
@@ -538,8 +547,9 @@ public sealed class SerialService : ICommandTransport, IDisposable
             // 只发 D1，绝不和 D0/D2 拼成一批：真机实测（COM3 / VID_303A&PID_1001）D0 与 D1 同批到达时
             // 固件不吐 D1 回话，1.6 秒窗口里一条 "TCode" 都收不到 ⇒ 身份判定失败、整台设备连不上；
             // 单独发 D1 立刻回 "TCode v0.3"。LF 与 CRLF 各发一遍，两种行尾固件都认。
-            port.Write("D1\n");
-            port.Write("D1\r\n");
+            bool sentLf = TryWriteGated(port, "D1\n", 1000);
+            bool sentCrlf = sentLf && TryWriteGated(port, "D1\r\n", 1000);
+            if (!sentLf || !sentCrlf) AppLogger.Warn("串口写闸门被占，身份探测没能两条都发出去。");
             long startedAt = Stopwatch.GetTimestamp();
             var response = new System.Text.StringBuilder();
             while (!cancellationToken.IsCancellationRequested
@@ -605,7 +615,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
                 var response = new System.Text.StringBuilder();
                 foreach (string command in new[] { "D1\n", "D0\n", "D2\n" })
                 {
-                    port.Write(command);
+                    if (!TryWriteGated(port, command, 1000)) AppLogger.Warn("串口写闸门被占，设备自检命令没发出去。");
                     long sliceStart = Stopwatch.GetTimestamp();
                     while (Stopwatch.GetElapsedTime(sliceStart).TotalMilliseconds < Math.Max(250, timeoutMs / 3.0))
                     {
@@ -658,6 +668,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         string cmd = command.Trim();
 
         Exception? failure = null;
+        SerialPort? port;
         lock (_lock)
         {
             if (_simulationEnabled)
@@ -668,12 +679,18 @@ public sealed class SerialService : ICommandTransport, IDisposable
             // 输出锁定（急停中）时不写固件设置：那一刻要的是「什么都别动」，而且设置会写 Flash，
             // 跟正在进行的急停保护混在一起更难排查。
             if (!_outputEnabled || _port?.IsOpen != true) return false;
-            try { _port.Write(cmd + (char)10); return true; }
-            catch (Exception ex)
-            {
-                failure = ex;
-                MarkDisconnectedLocked(ex.Message);
-            }
+            port = _port;
+        }
+
+        // 写放在 _lock 外面（与 Send/SendFrame 同理）：这里要取写闸门，拿着 _lock 等会把急停堵住。
+        try
+        {
+            return TryWriteGated(port, cmd + (char)10, 500);
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+            lock (_lock) { MarkDisconnectedLocked(ex.Message); }
         }
 
         if (failure != null)
@@ -705,7 +722,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             try
             {
                 port.DiscardInBuffer();
-                port.Write(command.Trim() + "\n");
+                if (!TryWriteGated(port, command.Trim() + "\n", 1000)) AppLogger.Warn("串口写闸门被占，固件查询命令没发出去。");
                 long startedAt = Stopwatch.GetTimestamp();
                 var response = new System.Text.StringBuilder();
                 while (Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds < timeoutMs)
@@ -763,7 +780,11 @@ public sealed class SerialService : ICommandTransport, IDisposable
             Exception? failure = null;
             try
             {
-                port.Write(safeCommand + (char)10);
+                if (!TryWriteGated(port, safeCommand + (char)10, 250))
+                {
+                    AppLogger.Warn("串口正忙，丢弃这条指令：" + safeCommand);
+                    return;
+                }
                 mirrored = safeCommand;
                 NoteWriteSucceeded(safeCommand, safeCommand.Length + 1);
             }
@@ -798,6 +819,23 @@ public sealed class SerialService : ICommandTransport, IDisposable
             axisMin,
             axisMax,
             changedOnly);
+    }
+
+    /// <summary>
+    /// 整行写入的唯一出口：拿不到闸门就不写（丢掉一帧没人看得出来，写半行才是事故）。
+    /// </summary>
+    private static bool TryWriteGated(SerialPort port, string text, int waitMs)
+    {
+        if (!Monitor.TryEnter(_writeGate, waitMs)) return false;
+        try
+        {
+            port.Write(text);
+            return true;
+        }
+        finally
+        {
+            Monitor.Exit(_writeGate);
+        }
     }
 
     public void SendFrame(
@@ -843,7 +881,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
         {
             try
             {
-                port.Write(frame + '\n');
+                // 帧走闸门：拿不到说明另一个线程卡在一次慢写里，这一帧丢掉比劈开一行安全。
+                if (!TryWriteGated(port, frame + '\n', 40)) return;
                 mirrored = frame;
                 // 热路径：这里只做两次原子自增 + 一次限流判定，不加锁、不分配大对象。
                 NoteWriteSucceeded(frame, frame.Length + 1);
@@ -890,7 +929,12 @@ public sealed class SerialService : ICommandTransport, IDisposable
         {
             try
             {
-                stopPort.Write("DSTOP\n");
+                // 急停优先于流整齐：先排队 300ms，排不上也照写（宁可插进半行，也不能不发停机）。
+                if (!TryWriteGated(stopPort, "DSTOP\n", 300))
+                {
+                    stopPort.Write("DSTOP\n");
+                    AppLogger.Warn("急停没排到写闸门，已强插一条 DSTOP。");
+                }
                 NoteWriteSucceeded("DSTOP", "DSTOP\n".Length);
                 lock (_lock) { ResetSentAxesLocked(); }
                 mirrored = true;
