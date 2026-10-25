@@ -2797,6 +2797,24 @@ try
             LovenseProtocol.StrokeAmplitude(20) > LovenseProtocol.StrokeAmplitude(5)
             && LovenseProtocol.StrokeHz(20) > LovenseProtocol.StrokeHz(5)
             && Math.Abs(LovenseProtocol.StrokeAmplitude(20) - 100) < 1e-9);
+        Check("Lovense：深度滑杆按百分比缩行程、越界会夹住",
+            Math.Abs(LovenseProtocol.ScaleAmplitude(100, 100) - 100) < 1e-9
+            && Math.Abs(LovenseProtocol.ScaleAmplitude(100, 50) - 50) < 1e-9
+            && Math.Abs(LovenseProtocol.ScaleAmplitude(100, 0)) < 1e-9
+            && LovenseProtocol.ScaleAmplitude(0, 100) == 0
+            && Math.Abs(LovenseProtocol.ScaleAmplitude(80, 999) - 80) < 1e-9);
+        Check("Lovense：快慢跟指令间隔走，间隔离谱时退回强度频率",
+            Math.Abs(LovenseProtocol.TempoHz(0.5, 1.0) - 2.0) < 1e-9
+            && Math.Abs(LovenseProtocol.TempoHz(0.2, 1.0) - 2.6) < 1e-9
+            && Math.Abs(LovenseProtocol.TempoHz(0.05, 1.0) - 1.0) < 1e-9
+            && Math.Abs(LovenseProtocol.TempoHz(9.0, 1.0) - 1.0) < 1e-9
+            && Math.Abs(LovenseProtocol.TempoHz(double.NaN, 1.3) - 1.3) < 1e-9);
+        Check("Lovense：行程与快慢相冲时压低频率，避免被限速器削平",
+            // 170%/s 的舒适档，走满 100% 行程最多 π×100 的速度 ⇒ 频率约 0.54Hz
+            Math.Abs(LovenseProtocol.FitHz(2.0, 100, 170) - 170 / (Math.PI * 100)) < 1e-9
+            && Math.Abs(LovenseProtocol.FitHz(0.5, 100, 170) - 0.5) < 1e-9
+            && Math.Abs(LovenseProtocol.FitHz(2.0, 20, 170) - 2.0) < 1e-9
+            && Math.Abs(LovenseProtocol.FitHz(1.5, 60, 620) - 1.5) < 1e-9);
         Check("Lovense：Preset earthquake 最强、wave 最轻",
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Preset\",\"name\":\"earthquake\"}").Strength
                 > LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Preset\",\"name\":\"wave\"}").Strength);

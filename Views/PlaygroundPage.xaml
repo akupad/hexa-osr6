@@ -57,6 +57,24 @@
                                        TextTrimming="CharacterEllipsis"/>
                         </StackPanel>
                     </Grid>
+                    <Grid Margin="0,6,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="深度" FontSize="12" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <Slider x:Name="LovenseDepthSlider" Grid.Column="1" Minimum="10" Maximum="100"
+                                SmallChange="5" LargeChange="10" TickFrequency="5" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center" ValueChanged="LovenseDepth_Changed"
+                                LostMouseCapture="LovenseDepth_LostMouseCapture"
+                                ToolTip="手动设行程：越深幅度越大；机器追不上时它自己会放慢节奏"/>
+                        <TextBlock x:Name="LovenseDepthText" Grid.Column="2" Text="100%" FontSize="12"
+                                   FontFamily="Consolas" Foreground="{StaticResource Muted}" MinWidth="42"
+                                   TextAlignment="Right" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </Grid>
+
                     <TextBlock x:Name="LovenseAddressText" Text="" FontSize="11" Foreground="{StaticResource Muted}"
                                Margin="0,6,0,0" TextWrapping="Wrap" LineHeight="17"/>
                 </StackPanel>

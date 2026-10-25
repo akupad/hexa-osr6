@@ -37,6 +37,42 @@ public static class LovenseProtocol
         return 0.3 + 1.1 * s;
     }
 
+    /// <summary>游玩页那根深度滑杆的默认值：拉满。</summary>
+    public const int DefaultDepthPercent = 100;
+
+    public const int MinDepthPercent = 10;
+
+    /// <summary>滑杆给的是深度上限：强度算出来的行程再乘用户设的百分比。</summary>
+    public static double ScaleAmplitude(double amplitude, int depthPercent)
+    {
+        if (amplitude <= 0) return 0;
+        double depth = Math.Clamp(depthPercent, 0, 100) / 100.0;
+        return amplitude * depth;
+    }
+
+    /// <summary>
+    /// 游戏基本是「角色抽一下发一条指令」，所以指令间隔就是这个动作的真实周期。
+    /// 间隔离谱（断续、卡顿、玩家暂停）时退回强度算出来的频率。
+    /// </summary>
+    public static double TempoHz(double intervalSeconds, double fallbackHz)
+    {
+        if (!double.IsFinite(intervalSeconds) || intervalSeconds < 0.15 || intervalSeconds > 3.0)
+            return fallbackHz;
+        return Math.Clamp(1.0 / intervalSeconds, 0.4, 2.6);
+    }
+
+    /// <summary>
+    /// 行程和节奏受同一个物理上限约束：峰速 = π × 行程% × 频率，超过舒适档允许值就会被限速器削平
+    /// （波形被磨圆、滞后几十上百毫秒）。与其让它削，不如按当前深度把频率压到刚好放得下。
+    /// </summary>
+    public static double FitHz(double desiredHz, double amplitude, double speedLimitPerSecond)
+    {
+        if (amplitude <= 0.5 || !double.IsFinite(speedLimitPerSecond) || speedLimitPerSecond <= 0)
+            return desiredHz;
+        double cap = speedLimitPerSecond / (Math.PI * amplitude);
+        return Math.Clamp(Math.Min(desiredHz, cap), 0.35, 2.6);
+    }
+
     /// <summary>转动通道（nora 的 Rotate）单独一根滑杆：扭的幅度比抽插小得多，25% 已经很明显。</summary>
     public static double RotateAmplitude(int strength)
     {

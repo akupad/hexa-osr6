@@ -272,6 +272,7 @@ public partial class PlaygroundPage : Page
         if (LovenseEnabledCheck is null) return;
         LovenseEnabledCheck.IsChecked = App.Settings.LovenseBridgeEnabled;
         LovensePortBox.Text = App.Settings.LovenseBridgePort.ToString();
+        LovenseDepthSlider.Value = App.Settings.LovenseDepthPercent;
         UpdateLovenseAddressText();
         RefreshLovenseStatus();
     }
@@ -356,6 +357,24 @@ public partial class PlaygroundPage : Page
         if (LovenseEnabledCheck is null) return;
         App.Settings.LovenseBridgeEnabled = LovenseEnabledCheck.IsChecked == true;
         RestartLovenseBridge();
+    }
+
+    /// <summary>
+    /// 深度滑杆：拖动时立刻改行程（不用等游戏再发指令），松手才落盘 —— 拖一下写一次配置没必要。
+    /// </summary>
+    private void LovenseDepth_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (LovenseDepthSlider is null || LovenseDepthText is null) return;
+        int depth = (int)Math.Round(LovenseDepthSlider.Value);
+        LovenseDepthText.Text = depth + "%";
+        if (App.Lovense is not null) App.Lovense.DepthPercent = depth;
+        App.Settings.LovenseDepthPercent = depth;
+    }
+
+    private void LovenseDepth_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        App.Settings.LovenseDepthPercent = (int)Math.Round(LovenseDepthSlider.Value);
+        App.Settings.Save();
     }
 
     private void LovensePort_LostFocus(object sender, RoutedEventArgs e)

@@ -42,6 +42,10 @@ public sealed class LovenseBridgeService : IDisposable
     /// <summary>这条指令跑到什么时候为止（Lovense 一条 Function 会带 timeSec，游戏不会再发第二遍）。</summary>
     private DateTime _runUntilUtc = DateTime.MinValue;
     private DateTime _lastTickUtc = DateTime.UtcNow;
+    /// <summary>上一条动作指令到达的时刻：游戏一抽发一条，间隔就是动作周期。</summary>
+    private DateTime _lastArrivalUtc = DateTime.MinValue;
+    private double _intervalSeconds;
+    private volatile int _depthPercent = LovenseProtocol.DefaultDepthPercent;
     private volatile bool _sawClient;
     private volatile string _toyName = LovenseProtocol.DefaultToyName;
 
@@ -52,6 +56,13 @@ public sealed class LovenseBridgeService : IDisposable
     {
         get => _toyName;
         set => _toyName = LovenseProtocol.Sanitize(value);
+    }
+
+    /// <summary>深度滑杆：抽插行程按这个百分比缩（10–100），改了立刻生效，不用等游戏再发指令。</summary>
+    public int DepthPercent
+    {
+        get => _depthPercent;
+        set => _depthPercent = Math.Clamp(value, LovenseProtocol.MinDepthPercent, 100);
     }
 
     public bool IsRunning { get; private set; }
@@ -254,9 +265,21 @@ public sealed class LovenseBridgeService : IDisposable
                 _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
                 return;
             }
+            // 游戏基本是一抽发一条指令，间隔就是这个动作的真实周期；断流、卡顿时退回强度算出来的频率。
+            DateTime arrival = DateTime.UtcNow;
+            if (_lastArrivalUtc != DateTime.MinValue)
+            {
+                double interval = (arrival - _lastArrivalUtc).TotalSeconds;
+                if (double.IsFinite(interval) && interval is >= 0.15 and <= 3.0)
+                    _intervalSeconds = _intervalSeconds <= 0
+                        ? interval
+                        : _intervalSeconds * 0.7 + interval * 0.3;
+            }
+            _lastArrivalUtc = arrival;
+
             _action = outcome.Action;
             _amplitude = outcome.Amplitude;
-            _hz = Math.Clamp(outcome.Hz, 0.1, 3.0);
+            _hz = LovenseProtocol.TempoHz(_intervalSeconds, Math.Clamp(outcome.Hz, 0.1, 3.0));
             _rotateAmplitude = outcome.RotateAmplitude;
             _rotateHz = Math.Clamp(outcome.RotateHz, 0.1, 2.0);
             // 游戏一条命令只发一次，时长靠 timeSec 说明（缺省 20 秒，和 Lovense 官方默认一致）。
@@ -274,6 +297,7 @@ public sealed class LovenseBridgeService : IDisposable
 
         string action;
         double amplitude, hz, rotateAmplitude, rotateHz;
+        int depth;
         DateTime last, until;
         lock (_gate)
         {
@@ -282,6 +306,7 @@ public sealed class LovenseBridgeService : IDisposable
             hz = _hz;
             rotateAmplitude = _rotateAmplitude;
             rotateHz = _rotateHz;
+            depth = _depthPercent;
             last = _lastCommandUtc;
             until = _runUntilUtc;
         }
@@ -294,6 +319,14 @@ public sealed class LovenseBridgeService : IDisposable
             _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
             return;
         }
+
+        // 深度滑杆决定走多长，舒适档的速度上限决定能跑多快；两者打架时压频率，
+        // 否则限速器会把整段波形削圆（行程到不了、还滞后几十上百毫秒）。
+        double speedLimit = _engine.ActiveComfortProfile.MaxAxisSpeedPerSecond;
+        amplitude = LovenseProtocol.ScaleAmplitude(amplitude, depth);
+        rotateAmplitude = LovenseProtocol.ScaleAmplitude(rotateAmplitude, depth);
+        hz = LovenseProtocol.FitHz(hz, amplitude, speedLimit);
+        rotateHz = LovenseProtocol.FitHz(rotateHz, rotateAmplitude, speedLimit);
 
         // 抽插和转动各走各的相位：一条命令里同时有 Vibrate 和 Rotate 时两根轴一起动。
         double half = amplitude / 2.0;

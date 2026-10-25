@@ -227,7 +227,11 @@ public partial class App : System.Windows.Application
         GameKeyPoller.Start();
         Bridge = new IntifaceBridgeService(Serial, Engine, Settings);
         if (Settings.GameBridgeEnabled) Bridge.Start();
-        Lovense = new LovenseBridgeService(Engine) { ToyName = Settings.LovenseToyName };
+        Lovense = new LovenseBridgeService(Engine)
+        {
+            ToyName = Settings.LovenseToyName,
+            DepthPercent = Settings.LovenseDepthPercent,
+        };
         if (Settings.LovenseBridgeEnabled) Lovense.Start(Settings.LovenseBridgePort, LovenseBridgeService.DefaultHttpPort);
         AyvaWeb = new AyvaWebSocketService(Engine);
         if (Settings.AyvaWebSocketEnabled) AyvaWeb.Start();
