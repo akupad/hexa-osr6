@@ -961,7 +961,9 @@ internal static class SelfTest
                     App.Serial.OutputEnabled = wasOutputEnabled;
                 }
 
-                Check($"多输出把指令真发到了 UDP 目标（收到“{received}”）", got && received == "L05000");
+                // 串口现在一律发完整六轴帧（真机固件吃不消残帧），所以这里只认「L0 的目标值到了」。
+                Check($"多输出把指令真发到了 UDP 目标（收到“{received}”）",
+                    got && received.Split(' ').Contains("L05000"));
             }
 
             Section("十八、节拍跟踪：能不能从起音序列里把 BPM 测出来");

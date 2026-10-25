@@ -38,6 +38,9 @@ public sealed class SerialLinkMonitor
     private const string HeartbeatToken = "Executor: Stats";
     private const string BootTokenAppMain = "app_main";
     private const string BootTokenExecutor = "SR6Executor(";
+    /// <summary>看门狗超时：固件里 executor_task 卡死、把 IDLE 饿死时每 5 秒刷这一行，而且心跳会彻底停。</summary>
+    private const string WatchdogToken = "task_wdt";
+
     private const string EchoToken = "uart echoed";
     private const string ReceivedToken = "uart received";
 
@@ -55,6 +58,7 @@ public sealed class SerialLinkMonitor
     private long _lastEvidenceTicks;
     private long _lastFrameTicks;
     private long _lastResetTicks;
+    private long _lastWatchdogTicks;
     private long _expectedBytes;
     private int _framesWritten;
     private int _resetSeenCount;
@@ -148,6 +152,7 @@ public sealed class SerialLinkMonitor
         long lastHeartbeat = Interlocked.Read(ref _lastHeartbeatTicks);
         long lastEvidence = Interlocked.Read(ref _lastEvidenceTicks);
         long lastFrame = Interlocked.Read(ref _lastFrameTicks);
+        long lastWatchdog = Interlocked.Read(ref _lastWatchdogTicks);
         long bytesSeen = Interlocked.Read(ref _bytesSeen);
         long expected = Interlocked.Read(ref _expectedBytes);
 
@@ -174,6 +179,11 @@ public sealed class SerialLinkMonitor
         // ② 正在发、心跳还在（执行器跑得好好的）、却没有回显：字节没到设备或被别人占了端口。
         bool stalled = writing && !alive && beating;
 
+        // 卡死：固件在刷看门狗告警、可执行器的心跳已经停了 —— 这不是「安静」，它是转不动了，
+        // 只能硬复位（RTS 拉一下 EN），否则会一直刷告警刷到人拔线。
+        double sWdt = SecondsBetween(now, lastWatchdog);
+        bool wedged = lastWatchdog != 0 && sWdt < 10 && !beating;
+
         return new SerialLinkSnapshot(
             IsAlive: alive,
             IsDead: dead,
@@ -193,7 +203,8 @@ public sealed class SerialLinkMonitor
             SecondsSinceEvidence: SecondsBetween(now, lastEvidence),
             SecondsSinceSilence: Math.Min(sFrame, sByte),
             IsIdle: idleOk,
-            IsStalled: stalled);
+            IsStalled: stalled,
+            IsWedged: wedged);
     }
 
     /// <summary>
@@ -229,6 +240,9 @@ public sealed class SerialLinkMonitor
     {
         if (line.Length > 0 && line[^1] == '\r') line = line[..^1];   // ESP-IDF 的日志行是 CRLF 结尾
         if (line.Length == 0) return;
+
+        if (Contains(line, WatchdogToken))
+            Interlocked.Exchange(ref _lastWatchdogTicks, nowTicks);
 
         if (Contains(line, HeartbeatToken))
         {
@@ -301,4 +315,6 @@ public readonly record struct SerialLinkSnapshot(
     /// <summary>① 空闲正常：没在发命令、心跳还在。不是故障。</summary>
     bool IsIdle,
     /// <summary>② 有去无回：在发、心跳还在、却没有回显 —— 字节没到设备，或被别的程序占了端口。</summary>
-    bool IsStalled);
+    bool IsStalled,
+    /// <summary>③ 固件卡死：在刷看门狗告警、执行器心跳已停。只能硬复位。</summary>
+    bool IsWedged = false);

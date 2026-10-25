@@ -1163,7 +1163,9 @@ public sealed class IntifaceBridgeService : IDisposable
                 toSend.Add($"{ShaperAxes[i]}{raw:D4}I{interpolation}");
             }
         }
-        foreach (string command in toSend) SendTCode(command);
+        // 一拍的轴合成一行发。以前是每根轴发一行——六行里每行只有一根轴，
+        // 真机固件在这种残帧下会 panic 重启（灌流量实验 20 秒复现），必须整帧下发。
+        if (toSend.Count > 0) SendTCode(string.Join(' ', toSend));
     }
 
     /// <summary>
@@ -1232,19 +1234,24 @@ public sealed class IntifaceBridgeService : IDisposable
     /// </summary>
     private void ReportOutputFromFrame(string frame)
     {
-        if (frame.Length < 7) return;                          // 至少 轴名(2) + 四位位置 + "I"
-        if (frame[2] < '0' || frame[2] > '9') return;          // 不是 轴名+四位数字 的形式
-        string axis = frame[..2];
-        if (!int.TryParse(frame.AsSpan(2, 4), out int position)) return;
-        if (frame[6] is not ('I' or 'S' or 'G')) return;
+        if (frame.Length < 7) return;
         try
         {
-            double[] snapshot = _engine.GetLastOutputSnapshot();
-            int index = Array.FindIndex(ShaperAxes,
-                candidate => string.Equals(candidate, axis, StringComparison.OrdinalIgnoreCase));
-            if (index < 0 || index >= snapshot.Length) return;
-            snapshot[index] = Math.Clamp(position / 99.99, 0, 100);
-            _engine.ReportExternalOutput(snapshot);
+            double[]? snapshot = null;
+            // 一行里可能有多根轴（整形节拍已合成整帧），逐根轴并进同一份快照，只回报一次。
+            foreach (string token in frame.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (token.Length < 6) continue;
+                if (token[2] < '0' || token[2] > '9') continue;
+                if (!int.TryParse(token.AsSpan(2, 4), out int position)) continue;
+                int index = Array.FindIndex(ShaperAxes,
+                    candidate => string.Equals(candidate, token[..2], StringComparison.OrdinalIgnoreCase));
+                if (index < 0) continue;
+                snapshot ??= _engine.GetLastOutputSnapshot();
+                if (index >= snapshot.Length) continue;
+                snapshot[index] = Math.Clamp(position / 99.99, 0, 100);
+            }
+            if (snapshot != null) _engine.ReportExternalOutput(snapshot);
         }
         catch (Exception ex) { AppLogger.Warn("回报输出姿态失败（忽略）: " + ex.Message); }
     }

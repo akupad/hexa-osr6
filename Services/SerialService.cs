@@ -66,6 +66,30 @@ public sealed class SerialService : ICommandTransport, IDisposable
     private bool _preferWired = true;
     private readonly int[] _lastSentRaw = new int[6];
     private readonly bool[] _lastSentValid = new bool[6];
+    private readonly int[] _lastSentInterval = new int[6];
+    private long _lastComposeLogMs;
+    /// <summary>固件卡死（看门狗刷屏、心跳停）第一次被发现的时刻；0 = 没卡。</summary>
+    private long _wedgedSinceMs;
+    private long _nextHardResetMs;
+    /// <summary>硬复位冷却：一次不成就别每轮都拉线，否则会把刚起来的板子又按下去。</summary>
+    private const int HardResetCooldownMs = 30000;
+    // 帧节拍器：真机固件只有在「固定节拍 + I 恒等于节拍」下才稳（25 Hz / I40 连跑 5 分钟不崩；
+    // 换成抖动间距几十秒到两分钟必 panic）。所以上层只管把期望位置放进帧状态，
+    // 真正写串口由这个节拍器按 40ms 一拍统一发——快慢不再受来源数量影响。
+    public const int FrameIntervalMs = 50;
+    // 节拍诊断：真机对「实际发送间隔」敏感（固件按 I 参数排插值窗口），
+    // 每 200 帧记一次实测间隔的 min/max/avg，出问题直接看日志就知道节拍歪没歪。
+    private long _pacerLastWriteMs;
+    private int _pacerGapMin = int.MaxValue;
+    private int _pacerGapMax;
+    private long _pacerGapSum;
+    private int _pacerGapCount;
+    /// <summary>启动以来累计写成功帧数（只做诊断，节拍日志里带出来，便于核实"真的在发"）。</summary>
+    private int _pacerTotalFrames;
+    /// <summary>最近写出的帧（诊断：崩了以后要知道最后发的是什么，才能拿去离线复现）。</summary>
+    private readonly Queue<string> _txRing = new();
+
+    private Thread? _pacerThread;
     private int _consecutiveFailures;
     /// <summary>输出锁定期间被丢弃的指令数（用于日志与诊断）。</summary>
     private int _droppedWhileLocked;
@@ -216,6 +240,10 @@ public sealed class SerialService : ICommandTransport, IDisposable
             catch (Exception ex) { AppLogger.Error("串口重连异常（已忽略）", ex); }
         };
         _reconnectTimer.Start();
+        // 节拍器必须用独立线程 + 单调时钟排程：System.Threading.Timer 在回调被锁或写阻塞时
+        // 会排队补发（实测 min=0ms / max=5000ms 的乱节拍），而真机固件对乱节拍零容忍。
+        _pacerThread = new Thread(PacerLoop) { IsBackground = true, Name = "HexaPacer", Priority = ThreadPriority.AboveNormal };
+        _pacerThread.Start();
     }
 
     public async Task<bool> ConnectAsync(string primaryPortName, string? fallbackPortName = null)
@@ -767,6 +795,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         //（标记掉线）即可，不会静默丢指令。
         SerialPort? port = null;
         string? mirrored = null;
+        string payload = safeCommand;
         lock (_lock)
         {
             if (!_outputEnabled)
@@ -779,10 +808,22 @@ public sealed class SerialService : ICommandTransport, IDisposable
                                    "解锁请点侧栏「全部归中」。");
                 return;
             }
+            // 游戏桥与校准只发一根轴的 TCode 行（"L08222I60"），原样写下去就是残帧；
+            // 真机固件收到缺轴帧会在 20 秒内 panic 重启（灌流量实验复现），所以先并进帧状态、
+            // 补成完整六轴帧再写。非轴指令（DSTOP / $save / V0xx…）照原样走。
+            if (TryComposeAxisLineLocked(safeCommand, out string composed))
+            {
+                payload = composed;
+                if (ReserveRecordSlot(ref _lastComposeLogMs, 5000))
+                    AppLogger.Info($"残帧补齐：{safeCommand} → {payload}");
+                // 位置已经并进帧状态，什么时候真写由节拍器决定（见 PaceFrame）。
+                if (!_simulationEnabled) return;
+            }
+
             if (_simulationEnabled)
             {
-                RecordSimulationCommandLocked(safeCommand);
-                mirrored = safeCommand;      // 模拟设备下也镜像：没插设备也能验证多输出
+                RecordSimulationCommandLocked(payload);
+                mirrored = payload;      // 模拟设备下也镜像：没插设备也能验证多输出
             }
             else
             {
@@ -796,13 +837,13 @@ public sealed class SerialService : ICommandTransport, IDisposable
             Exception? failure = null;
             try
             {
-                if (!TryWriteGated(port, safeCommand + (char)10, 250))
+                if (!TryWriteGated(port, payload + (char)10, 250))
                 {
                     AppLogger.Warn("串口正忙，丢弃这条指令：" + safeCommand);
                     return;
                 }
-                mirrored = safeCommand;
-                NoteWriteSucceeded(safeCommand, safeCommand.Length + 1);
+                mirrored = payload;
+                NoteWriteSucceeded(payload, payload.Length + 1);
             }
             catch (Exception ex)
             {
@@ -819,6 +860,68 @@ public sealed class SerialService : ICommandTransport, IDisposable
 
         // 镜像在网络层做，故意不放锁里：目标连不上时不能把设备输出堵住。
         if (mirrored != null) Mirror?.Invoke(mirrored);
+    }
+
+    /// <summary>
+    /// 硬复位设备：拉低 RTS（接芯片 EN）150ms 再放开，DTR 保持高电平，
+    /// 这样芯片走正常启动而不是进下载模式。卡死时只有这一招能救回来（不用拔插 USB）。
+    /// </summary>
+    public bool HardResetDevice()
+    {
+        SerialPort? port;
+        lock (_lock)
+        {
+            if (_simulationEnabled) return false;
+            port = _port;
+            if (port?.IsOpen != true) return false;
+        }
+        if (!Monitor.TryEnter(_writeGate, 500)) return false;
+        try
+        {
+            port.DtrEnable = false;
+            port.RtsEnable = true;
+            Thread.Sleep(150);
+            port.RtsEnable = false;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("硬复位失败：" + ex.Message);
+            return false;
+        }
+        finally
+        {
+            Monitor.Exit(_writeGate);
+        }
+        Interlocked.Exchange(ref _quietUntilMs, Environment.TickCount64 + 3000);
+        lock (_lock) ResetSentAxesLocked();
+        return true;
+    }
+
+    /// <summary>
+    /// 只含 TCode 轴标记的一行（游戏桥/校准命令）→ 补成完整帧；不是这种行就返回 false 原样发送。
+    /// </summary>
+    private bool TryComposeAxisLineLocked(string command, out string frame)
+    {
+        frame = "";
+        var updates = new List<(int Index, int Raw, int IntervalMs)>(6);
+        foreach (string token in command.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (token.Length < 6) return false;
+            int index = Array.IndexOf(Osr6DeviceProfile.InstalledAxes, token[..2].ToUpperInvariant());
+            if (index < 0) return false;
+            if (!int.TryParse(token.AsSpan(2, 4), out int raw)) return false;
+            int interpolation = 0;
+            if (token.Length > 6)
+            {
+                if (token.Length < 8) return false;
+                if (token[6] is not ('I' or 'S' or 'G')) return false;
+                if (!int.TryParse(token.AsSpan(7), out interpolation)) return false;
+            }
+            updates.Add((index, raw, interpolation));
+        }
+        if (updates.Count == 0) return false;
+        frame = TCodeFrameFormatter.FormatRaw(updates, _lastSentRaw, _lastSentValid, _lastSentInterval);
+        return frame.Length > 0;
     }
 
     public void SendAxes(
@@ -860,10 +963,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         Dictionary<string, int> axisMax,
         bool changedOnly = true)
     {
-        Exception? failure = null;
-        string? mirrored = null;
-        SerialPort? port = null;
-        string frame = "";
+        string frame;
         lock (_lock)
         {
             if (!_outputEnabled || (!_simulationEnabled && _port?.IsOpen != true))
@@ -878,46 +978,84 @@ public sealed class SerialService : ICommandTransport, IDisposable
             }
             if (Environment.TickCount64 < Interlocked.Read(ref _quietUntilMs)) return;
             frame = TCodeFrameFormatter.FormatTargets(
-                targets, axisMin, axisMax, _lastSentRaw, _lastSentValid, changedOnly);
+                targets, axisMin, axisMax, _lastSentRaw, _lastSentValid, changedOnly, _lastSentInterval);
             if (frame.Length == 0) return;
-
-            if (_simulationEnabled)
-            {
-                RecordSimulationCommandLocked(frame);
-                mirrored = frame;      // 模拟设备下也镜像：没插设备也能验证多输出
-            }
-            else
-            {
-                // 只取端口引用，**写放在锁外**：串口写最坏要等 WriteTimeout(500ms)，
-                // 拿 _lock 去写会把急停（它必须先拿 _lock/_dispatchLock）堵住半秒。
-                port = _port;
-            }
+            // 真机：这里只把位置并进帧状态。真的写串口交给 PaceFrame 按固定 40ms 一拍发，
+            // 这样引擎 30 Hz + 游戏桥 + Lovense 三个来源叠加也不会把节拍打歪。
+            if (!_simulationEnabled) return;
+            RecordSimulationCommandLocked(frame);
         }
 
-        if (port is not null)
+        // 模拟设备下也镜像：没插设备也能验证多输出。
+        Mirror?.Invoke(frame);
+    }
+
+    /// <summary>
+    /// 帧节拍器：固定 40ms 一拍，把当前帧状态整帧发出去（六轴全带 I40）。
+    /// 真机实测只有这种形态能长时间不崩——固件的插值窗口必须恒定接上下一条命令。
+    /// </summary>
+    /// <summary>
+    /// 节拍线程：按单调时钟排程，每 40ms 调一次 <see cref="PaceFrame"/>。
+    /// 用独立线程而不是 Timer，是因为 Timer 回调被阻塞时会排队补发，节拍就乱了。
+    /// </summary>
+    private void PacerLoop()
+    {
+        var clock = Stopwatch.StartNew();
+        double next = 0;
+        while (!_disposed)
         {
-            try
+            next += FrameIntervalMs / 1000.0;
+            double wait = next - clock.Elapsed.TotalSeconds;
+            if (wait > 0)
             {
-                // 帧走闸门：拿不到说明另一个线程卡在一次慢写里，这一帧丢掉比劈开一行安全。
-                if (!TryWriteGated(port, frame + '\n', 40)) return;
-                mirrored = frame;
-                // 热路径：这里只做两次原子自增 + 一次限流判定，不加锁、不分配大对象。
-                NoteWriteSucceeded(frame, frame.Length + 1);
+                Thread.Sleep(TimeSpan.FromSeconds(wait));
             }
-            catch (Exception ex)
+            else if (clock.Elapsed.TotalSeconds - next > 1.0)
             {
-                failure = ex;
-                lock (_lock) { MarkDisconnectedLocked(ex.Message); }
+                // 掉队超过 1 秒（锁等待/写超时之后）就重设基准，避免连续补发。
+                next = clock.Elapsed.TotalSeconds;
             }
+            try { PaceFrame(); }
+            catch (Exception ex) { AppLogger.Error("节拍器异常（已忽略）", ex); }
+        }
+    }
+
+    private void PaceFrame()
+    {
+        if (_disposed || _simulationEnabled) return;
+        SerialPort? port;
+        string frame;
+        lock (_lock)
+        {
+            if (_disposed || _simulationEnabled || !_outputEnabled) return;
+            port = _port;
+            if (port?.IsOpen != true) return;
+            if (Environment.TickCount64 < Interlocked.Read(ref _quietUntilMs)) return;
+            // 一条运动指令都还没收到时不发帧：否则一开串口就往中位下命令（机器会自己动一下）。
+            bool known = false;
+            for (int i = 0; i < _lastSentValid.Length; i++) known |= _lastSentValid[i];
+            if (!known) return;
+            frame = TCodeFrameFormatter.FormatState(_lastSentRaw, _lastSentValid, FrameIntervalMs);
+            if (frame.Length == 0) return;
         }
 
-        if (failure != null)
+        try
         {
-            AppLogger.Error("串口写入失败，输出已锁定", failure);
+            // 拿不到闸门说明有别的线程正卡在一次慢写里；这一拍就算了，下一拍会带着最新位置再发。
+            // 闸门只等 5ms：写闸门被别人占着就跳过这一拍，绝不为了凑一帧把节拍拖歪。
+            if (!TryWriteGated(port, frame + '\n', 5)) return;
+            lock (_txRing) { _txRing.Enqueue(frame); while (_txRing.Count > 400) _txRing.Dequeue(); }
+            NoteWriteSucceeded(frame, frame.Length + 1);
+            NotePacerGap();
+        }
+        catch (Exception ex)
+        {
+            lock (_lock) { MarkDisconnectedLocked(ex.Message); }
+            AppLogger.Error("串口写入失败，输出已锁定", ex);
             ConnectionChanged?.Invoke(false);
             return;
         }
-        if (mirrored != null) Mirror?.Invoke(mirrored);
+        Mirror?.Invoke(frame);
     }
 
     public void StopMotion()
@@ -931,8 +1069,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
             if (_simulationEnabled)
             {
                 // 与其它三处入口同样封顶：Stop 可能被反复调用，缺这一句就是唯一会无界增长的地方。
+                // 不清帧状态：DSTOP 只是停在原地，各轴位置没变，后面的帧继续按完整六轴发。
                 RecordSimulationCommandLocked("DSTOP");
-                ResetSentAxesLocked();
                 mirrored = true;
             }
             else
@@ -953,7 +1091,6 @@ public sealed class SerialService : ICommandTransport, IDisposable
                     AppLogger.Warn("急停没排到写闸门，已强插一条 DSTOP。");
                 }
                 NoteWriteSucceeded("DSTOP", "DSTOP\n".Length);
-                lock (_lock) { ResetSentAxesLocked(); }
                 mirrored = true;
             }
             catch (Exception ex)
@@ -970,6 +1107,53 @@ public sealed class SerialService : ICommandTransport, IDisposable
         // 急停也要镜像出去：网络那一头的设备同样必须停。本机串口写失败时**尤其**要发——
         // 那一刻正是最需要另一个出口停下的时刻。
         if (mirrored || stopPort is not null) Mirror?.Invoke("DSTOP");
+    }
+
+    /// <summary>
+    /// 把最近写出的帧落盘（每次崩溃覆盖）：复现固件崩溃要用**软件真实发过的帧**，
+    /// 拿这些帧喂 probe 的 replay 模式就能分辨"崩是内容引起"还是"端口/驱动引起"。
+    /// </summary>
+    private void DumpTxRing(string reason)
+    {
+        string[] frames;
+        lock (_txRing) frames = _txRing.ToArray();
+        if (frames.Length == 0) return;
+        try
+        {
+            var sb = new StringBuilder();
+            sb.Append("=== ").Append(reason).Append(" @ ")
+              .Append(DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff"))
+              .Append(" frames=").Append(frames.Length).AppendLine();
+            foreach (string frame in frames) sb.AppendLine(frame);
+            File.WriteAllText(
+                Path.Combine(Path.GetDirectoryName(AppLogger.LogFilePath)!, "tx-before-reset.log"),
+                sb.ToString());
+        }
+        catch { /* 诊断用，失败不影响输出 */ }
+    }
+
+    /// <summary>节拍诊断：累计 200 次实际写出的间隔，记 min/max/avg（出问题看日志就知道节拍歪没歪）。</summary>
+    private void NotePacerGap()
+    {
+        // 用 Stopwatch（微秒级）而不是 TickCount64（约 15.6ms 粒度，会把 40ms 读成 31/47）。
+        long now = Stopwatch.GetTimestamp();
+        if (_pacerLastWriteMs != 0)
+        {
+            int gap = (int)Math.Clamp(Stopwatch.GetElapsedTime(_pacerLastWriteMs, now).TotalMilliseconds, 0, 5000);
+            if (gap < _pacerGapMin) _pacerGapMin = gap;
+            if (gap > _pacerGapMax) _pacerGapMax = gap;
+            _pacerGapSum += gap;
+            if (++_pacerGapCount >= 200)
+            {
+                _pacerTotalFrames += _pacerGapCount;
+                AppLogger.Info($"节拍：最近 {_pacerGapCount} 帧间隔 min={_pacerGapMin}ms max={_pacerGapMax}ms avg={_pacerGapSum / _pacerGapCount}ms 累计={_pacerTotalFrames}");
+                _pacerGapMin = int.MaxValue;
+                _pacerGapMax = 0;
+                _pacerGapSum = 0;
+                _pacerGapCount = 0;
+            }
+        }
+        _pacerLastWriteMs = now;
     }
 
     private void MarkDisconnectedLocked(string error)
@@ -999,7 +1183,12 @@ public sealed class SerialService : ICommandTransport, IDisposable
         ResetSentAxesLocked();
     }
 
-    private void ResetSentAxesLocked() => Array.Clear(_lastSentValid);
+    private void ResetSentAxesLocked()
+    {
+        // 重连（含板子自己重启）后设备侧插值参数也回到默认，必须整帧重发一遍。
+        Array.Clear(_lastSentValid);
+        Array.Clear(_lastSentInterval);
+    }
 
     // ---- 链路存活 + 黑匣子 ----
 
@@ -1121,6 +1310,31 @@ public sealed class SerialService : ICommandTransport, IDisposable
             Interlocked.Exchange(ref _quietUntilMs, Environment.TickCount64 + 2500);
             AppLogger.Warn($"链路：检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次）。已暂停发帧 2.5 秒等它启起来，不必拔插 USB。");
             LogRecentRx("设备重启现场");
+            DumpTxRing("设备重启现场");
+        }
+
+        long nowMs = Environment.TickCount64;
+        if (snapshot.IsWedged)
+        {
+            if (_wedgedSinceMs == 0)
+            {
+                _wedgedSinceMs = nowMs;
+                AppLogger.Warn("链路：固件执行器卡住了（看门狗刷屏、心跳已停），4 秒后硬复位板子。");
+                LogRecentRx("卡死现场");
+            }
+            else if (nowMs - _wedgedSinceMs > 4000 && nowMs >= _nextHardResetMs)
+            {
+                _nextHardResetMs = nowMs + HardResetCooldownMs;
+                _wedgedSinceMs = nowMs;
+                AppLogger.Warn(HardResetDevice()
+                    ? "链路：已硬复位板子（拉低 RTS），等它重新启动后自动续上输出。"
+                    : "链路：想硬复位板子但串口正忙，下一轮再试。");
+            }
+        }
+        else if (!snapshot.IsWedged && _wedgedSinceMs != 0 && snapshot.HasHeartbeat)
+        {
+            _wedgedSinceMs = 0;
+            AppLogger.Info("链路：固件恢复正常，心跳回来了。");
         }
 
         if (snapshot.IsDead != _loggedDead)
@@ -1394,6 +1608,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
     {
         _reconnectTimer.Stop();
         _reconnectTimer.Dispose();
+
         lock (_lock)
         {
             _disposed = true;

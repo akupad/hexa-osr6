@@ -580,19 +580,47 @@ try
 
     int[] previousRaw = new int[6];
     bool[] previousValid = new bool[6];
+    int[] previousInterval = new int[6];
     string firstFrame = TCodeFrameFormatter.FormatAxes(
         [50, 50, 50, 50, 50, 50], defaults.AxisMin, defaults.AxisMax, 10,
-        previousRaw, previousValid, changedOnly: true);
+        previousRaw, previousValid, changedOnly: true, previousInterval);
     string unchangedFrame = TCodeFrameFormatter.FormatAxes(
         [50, 50, 50, 50, 50, 50], defaults.AxisMin, defaults.AxisMax, 10,
-        previousRaw, previousValid, changedOnly: true);
+        previousRaw, previousValid, changedOnly: true, previousInterval);
     string oneAxisFrame = TCodeFrameFormatter.FormatAxes(
         [51, 50, 50, 50, 50, 50], defaults.AxisMin, defaults.AxisMax, 10,
-        previousRaw, previousValid, changedOnly: true);
-    Check("dirty-only sends initial full pose", firstFrame.Split(' ').Length == 6);
-    Check("dirty-only suppresses unchanged frame", unchangedFrame.Length == 0);
-    Check("dirty-only sends only changed axis", oneAxisFrame.StartsWith("L0", StringComparison.Ordinal)
-        && !oneAxisFrame.Contains(' '));
+        previousRaw, previousValid, changedOnly: true, previousInterval);
+    Check("first frame is complete and carries the interpolation",
+        firstFrame.Split(' ').Length == 6
+        && firstFrame.Split(' ').All(token => token.EndsWith("I10", StringComparison.Ordinal)));
+    // 真机固件收到只有一根轴的残帧会 panic 重启（灌流量实验 20 秒复现），
+    // 所以「没变化」也只省掉 I 参数，帧本身永远是完整的六轴。
+    Check("unchanged pose still ships a complete frame but drops the I parameter",
+        unchangedFrame.Split(' ').Length == 6 && !unchangedFrame.Contains('I'));
+    Check("one changed axis still ships a complete frame",
+        oneAxisFrame.Split(' ').Length == 6
+        && oneAxisFrame.StartsWith("L0", StringComparison.Ordinal)
+        && oneAxisFrame.Split(' ')[0] != unchangedFrame.Split(' ')[0]);
+    string completedFrame = TCodeFrameFormatter.FormatRaw(
+        [(3, 7777, 0)], previousRaw, previousValid, previousInterval);
+    Check("partial raw line is completed into a six-axis frame",
+        completedFrame.Split(' ').Length == 6
+        && completedFrame.Split(' ')[3].StartsWith("R0", StringComparison.Ordinal)
+        && completedFrame.Split(' ')[3].EndsWith("7777", StringComparison.Ordinal));
+
+    var pacerRaw = new int[6];
+    var pacerValid = new bool[6];
+    pacerRaw[0] = 8123;
+    pacerValid[0] = true;
+    string pacedFrame = TCodeFrameFormatter.FormatState(pacerRaw, pacerValid, SerialService.FrameIntervalMs);
+    Check("pacer frame always carries all six axes",
+        pacedFrame.Split(' ').Length == 6);
+    Check("pacer frame uses one constant interval on every axis",
+        pacedFrame.Split(' ').All(token => token.EndsWith("I" + SerialService.FrameIntervalMs, StringComparison.Ordinal)));
+    Check("pacer keeps a known axis position",
+        pacedFrame.Split(' ')[0] == "L08123I" + SerialService.FrameIntervalMs);
+    Check("unknown axes fall back to the middle position",
+        pacedFrame.Split(' ').Skip(1).All(token => token[2..6] == "5000"));
 
     double[] coordinated = Osr6MotionComposer.Compose(
         "game_flow", 0.37, [35, 13, 11, 14, 10, 8], 1, 30, ComfortProfile.Immersive);
@@ -684,7 +712,9 @@ try
     serial.Send("V09999I10 A09999I10");
     Check("transport never emits absent accessories", serial.SimulationCommands.Count == beforeAccessory);
     serial.Send("L099999I99999");
-    Check("raw axis token is normalized to safe bounds", serial.SimulationCommands[^1] == "L09999I9999");
+    string[] normalizedTokens = serial.SimulationCommands[^1].Split(' ');
+    Check("raw axis token is normalized to safe bounds",
+        normalizedTokens[0] == "L09999I9999" && normalizedTokens.Length == 6);
     Check("calibration returns to center before playback", engine.TryMoveCalibrationAxis("L0", 5000));
 
     engine.EditWaves["L0"].Clear();
@@ -2612,7 +2642,19 @@ try
 
         // ④ 从来没写过帧：无论过多久都不判死 —— 设备开机后安静是正常状态，不是故障。
         var quietNow = linkNow;
-        var quiet = new SerialLinkMonitor(() => quietNow);
+        var wedgedNow = new DateTime(2026, 10, 25, 23, 0, 0, DateTimeKind.Utc);
+    var wedgedMonitor = new SerialLinkMonitor(() => wedgedNow);
+    wedgedMonitor.NoteFrameWritten(40);
+    wedgedMonitor.Feed("E (96167) task_wdt: Task watchdog got triggered. The following tasks/users did not reset the watchdog in time:\r\n");
+    SerialLinkSnapshot wedgedSnapshot = wedgedMonitor.Snapshot();
+    Check("watchdog spam with no heartbeat is reported as wedged",
+        wedgedSnapshot.IsWedged && !wedgedSnapshot.HasHeartbeat);
+    var healthyMonitor = new SerialLinkMonitor(() => wedgedNow);
+    healthyMonitor.NoteFrameWritten(40);
+    healthyMonitor.Feed("I (96167) Executor: Stats [1.0s window] - Compute: avg=0.6 ms\r\n");
+    Check("heartbeat keeps a board out of the wedged state", !healthyMonitor.Snapshot().IsWedged);
+
+    var quiet = new SerialLinkMonitor(() => quietNow);
         quietNow = quietNow.AddSeconds(30);
         quiet.Feed("I (9) just a log line\r\n");
         var quietSnapshot = quiet.Snapshot();
