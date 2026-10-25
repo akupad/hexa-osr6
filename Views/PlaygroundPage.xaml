@@ -25,6 +25,39 @@
                            Foreground="{StaticResource Warning}" TextWrapping="Wrap"/>
             </Border>
 
+            <!-- 给游戏当玩具：有些游戏（Pure Onyx 这类）只认 Lovense，设置里会问「Lovense IP / SSL 端口」。
+                 开着它，本机就冒充一只 Lovense 玩具，游戏发来的强度翻成抽插动作。
+                 放在游玩页而不是设置页：这是"玩游戏时要不要开"的开关，边玩边看状态。 -->
+            <Border Style="{StaticResource Card}" Margin="0,0,0,8" Padding="10,6">
+                <StackPanel>
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="LovenseEnabledCheck" Content="游戏里当 Lovense 玩具" FontSize="12"
+                                  VerticalAlignment="Center" Checked="LovenseEnabled_Changed" Unchecked="LovenseEnabled_Changed"/>
+                        <TextBlock Grid.Column="1" Text="SSL 端口" FontSize="11" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="14,0,6,0"/>
+                        <TextBox x:Name="LovensePortBox" Grid.Column="2" Width="70" Height="24" FontSize="11"
+                                 VerticalContentAlignment="Center" LostFocus="LovensePort_LostFocus"/>
+                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right"
+                                    VerticalAlignment="Center">
+                            <Button x:Name="LovenseTrustBtn" Content="信任证书" FontSize="11" Padding="7,1"
+                                    Margin="0,0,8,0" Visibility="Collapsed" Click="LovenseTrust_Click"
+                                    ToolTip="点一下，Windows 会弹一次确认框，点「是」以后游戏才认这个证书"/>
+                            <TextBlock x:Name="LovenseStatusText" Text="未开启" FontSize="11"
+                                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                       TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </Grid>
+                    <TextBlock x:Name="LovenseAddressText" Text="" FontSize="10" Foreground="{StaticResource Faint}"
+                               Margin="0,4,0,0" TextWrapping="Wrap"/>
+                </StackPanel>
+            </Border>
+
             <!-- ══ 开始之前：一行选档位、一行点预设（同一张卡，两行都不高）══════════
                  原来档位与预设各占卡片上下两大段（≈230px），右边空着一条；改成「标签 + 内容」两行后，
                  空出来的宽度正好放说明文字 —— 不分栏，也就没有"一栏空一截"的参差感。 -->

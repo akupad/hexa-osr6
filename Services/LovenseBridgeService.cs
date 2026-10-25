@@ -49,6 +49,12 @@ public sealed class LovenseBridgeService : IDisposable
     public string LastError { get; private set; } = "";
 
     /// <summary>
+    /// 证书有没有进「当前用户 → 受信任的根」。游戏（Unity）连的是 https，证书不被信任时它会直接报
+    /// Cert verify failed 然后当没这台玩具 —— 所以这个值决定界面上那句"游戏会拒绝连接"的提示。
+    /// </summary>
+    public bool CertificateTrusted { get; private set; }
+
+    /// <summary>
     /// 界面用：本机能被局域网访问的 IPv4 地址，游戏里那一栏「Lovense IP 地址」要填的就是它。
     /// 回环地址不列（游戏在另一台机器/头显上，填 127.0.0.1 连不回来）。
     /// </summary>
@@ -105,7 +111,10 @@ public sealed class LovenseBridgeService : IDisposable
         LastError = "";
         try
         {
-            _certificate = CreateCertificate();
+            _certificate = LoadOrCreateCertificate();
+            // 只查不改：往「受信任的根」里塞证书会让 Windows 弹一次安全警告并卡住调用线程，
+            // 所以这件事交给界面按钮用 certutil 在独立进程里做，服务本身保持无阻塞。
+            CertificateTrusted = IsTrusted(_certificate);
             _cancellation = new CancellationTokenSource();
 
             _httpsListener = new TcpListener(IPAddress.Any, httpsPort);
@@ -272,16 +281,112 @@ public sealed class LovenseBridgeService : IDisposable
             _engine.TrySendDirectAxes([main, 50 + (main - 50) * 0.10, 50 + (main - 50) * 0.08, 50, 50, 50], 0.06);
     }
 
-    private static X509Certificate2 CreateCertificate()
+    /// <summary>证书放这儿：每次启动都重生成的话，游戏那边每次都得重新信任一次，等于永远连不上。</summary>
+    private static string CertificateFolder => Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Hexa");
+
+    private static string CertificateFile => Path.Combine(CertificateFolder, "lovense-bridge.pfx");
+    private static string CertificateSanFile => Path.Combine(CertificateFolder, "lovense-bridge.san.txt");
+
+    /// <summary>这台机器现在该被证书认得的所有名字：回环、0.0.0.0、以及本机每个局域网 IP。</summary>
+    private static List<string> DesiredNames()
+    {
+        var names = new List<string> { "127-0-0-1.lovense.club", "localhost", "127.0.0.1", "0.0.0.0" };
+        foreach (string address in LocalAddresses())
+            if (!names.Contains(address)) names.Add(address);
+        return names;
+    }
+
+    /// <summary>复用旧证书（名字对得上、没过期）；换网络导致 IP 变了就重生成，否则游戏连新地址会证书不匹配。</summary>
+    private static X509Certificate2 LoadOrCreateCertificate()
+    {
+        List<string> wanted = DesiredNames();
+        try
+        {
+            if (File.Exists(CertificateFile) && File.Exists(CertificateSanFile))
+            {
+                string[] saved = File.ReadAllLines(CertificateSanFile);
+                bool sameNames = saved.Length == wanted.Count && wanted.All(saved.Contains);
+                X509Certificate2 cached = X509CertificateLoader.LoadPkcs12(File.ReadAllBytes(CertificateFile), null);
+                if (sameNames && cached.NotAfter > DateTime.Now.AddDays(30) && cached.HasPrivateKey)
+                    return cached;
+                cached.Dispose();
+            }
+        }
+        catch
+        {
+            // 文件坏了就当没有，下面重生成一份。
+        }
+
+        X509Certificate2 fresh = CreateCertificate(wanted);
+        try
+        {
+            Directory.CreateDirectory(CertificateFolder);
+            File.WriteAllBytes(CertificateFile, fresh.Export(X509ContentType.Pfx));
+            File.WriteAllLines(CertificateSanFile, wanted);
+        }
+        catch
+        {
+            // 存不下去也不影响本次运行，只是下次启动又生成一份。
+        }
+        return fresh;
+    }
+
+    /// <summary>证书现在有没有被系统信任（只读检查，不会弹任何窗口）。</summary>
+    public static bool IsTrusted(X509Certificate2 certificate)
+    {
+        try
+        {
+            using var store = new X509Store(StoreName.Root, StoreLocation.CurrentUser);
+            store.Open(OpenFlags.ReadOnly);
+            return store.Certificates.Find(X509FindType.FindByThumbprint, certificate.Thumbprint, false).Count > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 把证书的公钥部分导出成 .cer，放在证书旁边。界面用 certutil -addstore -user Root 装它，
+    /// 这样 Windows 那次确认框弹在独立进程里，不会把界面线程卡住。
+    /// </summary>
+    public string ExportTrustFile()
+    {
+        if (_certificate is null) return "";
+        string path = Path.Combine(CertificateFolder, "lovense-bridge.cer");
+        try
+        {
+            Directory.CreateDirectory(CertificateFolder);
+            File.WriteAllBytes(path, _certificate.Export(X509ContentType.Cert));
+            return path;
+        }
+        catch
+        {
+            return "";
+        }
+    }
+
+    /// <summary>装完证书后由界面回调，刷新这个标记。</summary>
+    public void RefreshTrustState()
+    {
+        X509Certificate2? certificate = _certificate;
+        if (certificate is not null) CertificateTrusted = IsTrusted(certificate);
+    }
+
+    private static X509Certificate2 CreateCertificate(List<string> names)
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest("CN=lovense-bridge.local", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         var san = new SubjectAlternativeNameBuilder();
-        san.AddDnsName("127-0-0-1.lovense.club");
-        san.AddDnsName("localhost");
-        san.AddIpAddress(IPAddress.Loopback);
-        san.AddIpAddress(IPAddress.Any);
+        foreach (string name in names)
+        {
+            if (IPAddress.TryParse(name, out IPAddress? address)) san.AddIpAddress(address);
+            else san.AddDnsName(name);
+        }
         request.CertificateExtensions.Add(san.Build());
+        // 故意不写成 CA:true：CA 证书装进受信任根时 Windows 会弹一次"安全警告"并卡住调用线程，
+        // 而 CA:false 的叶子证书是静默安装的，curl 实测（不带 -k）能通过校验，够用。
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));
         request.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.DigitalSignature | X509KeyUsageFlags.KeyEncipherment, false));
         request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension([new Oid("1.3.6.1.5.5.7.3.1")], false));

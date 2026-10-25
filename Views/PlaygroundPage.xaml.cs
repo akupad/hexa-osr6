@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows;
@@ -93,12 +94,13 @@ public partial class PlaygroundPage : Page
         WireSliderEvents();
         WireAutoParams();
         RestoreLastSelection();   // 回到上次那套（波形 + 快速预设高亮）
+        InitLovenseBar();
 
         _statusTimer = new System.Windows.Threading.DispatcherTimer
         {
             Interval = TimeSpan.FromMilliseconds(250),
         };
-        _statusTimer.Tick += (_, _) => { UpdateLiveBehavior(); RefreshBridgeSectionSummary(); };
+        _statusTimer.Tick += (_, _) => { UpdateLiveBehavior(); RefreshBridgeSectionSummary(); RefreshLovenseStatus(); };
         _statusTimer.Start();
 
         // 被挡下时闪一下原因条：不弹窗打断，但一定看得见"为什么没动"。
@@ -259,6 +261,114 @@ public partial class PlaygroundPage : Page
             ComfortPanel.Children.Add(button);
         }
         RefreshComfortButtons();
+    }
+
+    /// <summary>
+    /// Lovense 那一行：开关与端口直接写配置并即时重开服务。
+    /// 端口只改了没重开的话，游戏连的还是旧端口，所以永远走一次 Stop/Start。
+    /// </summary>
+    private void InitLovenseBar()
+    {
+        if (LovenseEnabledCheck is null) return;
+        LovenseEnabledCheck.IsChecked = App.Settings.LovenseBridgeEnabled;
+        LovensePortBox.Text = App.Settings.LovenseBridgePort.ToString();
+        UpdateLovenseAddressText();
+        RefreshLovenseStatus();
+    }
+
+    private void UpdateLovenseAddressText()
+    {
+        if (LovenseAddressText is null) return;
+        var addresses = LovenseBridgeService.LocalAddresses();
+        string where = addresses.Count == 0
+            ? "（本机没找到局域网地址，先连 Wi-Fi 或网线）"
+            : "（IP 填 " + string.Join(" 或 ", addresses) + "，同机也可以填 127.0.0.1）";
+        LovenseAddressText.Text = "游戏设置里「Lovense IP 地址」填这里显示的地址、「Lovense 网页」选是、端口填上面这个。" + where;
+    }
+
+    private void RefreshLovenseStatus()
+    {
+        if (LovenseStatusText is null) return;
+        LovenseBridgeService? lovense = App.Lovense;
+        if (lovense is null || !lovense.IsRunning)
+        {
+            LovenseStatusText.Text = lovense is null ? "未开启" : lovense.Status;
+            LovenseStatusText.Foreground = (Brush)FindResource("Muted");
+            return;
+        }
+        string trust = lovense.CertificateTrusted ? "" : " · 证书还没被信任（游戏会拒连，点右边「信任证书」）";
+        LovenseStatusText.Text = lovense.Status + trust;
+        if (LovenseTrustBtn is not null)
+            LovenseTrustBtn.Visibility = lovense.CertificateTrusted ? Visibility.Collapsed : Visibility.Visible;
+        LovenseStatusText.Foreground = lovense.Status.Contains("已连上")
+            ? (Brush)FindResource("Accent")
+            : lovense.CertificateTrusted ? (Brush)FindResource("Muted") : (Brush)FindResource("Warning");
+    }
+
+    /// <summary>
+    /// 装证书这件事必须走独立进程：certutil 会弹 Windows 确认框，在界面线程里等就等于卡死。
+    /// </summary>
+    private async void LovenseTrust_Click(object sender, RoutedEventArgs e)
+    {
+        LovenseBridgeService? lovense = App.Lovense;
+        if (lovense is null || !lovense.IsRunning) return;
+        string cer = lovense.ExportTrustFile();
+        if (string.IsNullOrEmpty(cer))
+        {
+            LovenseStatusText.Text = "证书导出失败，看日志";
+            return;
+        }
+        LovenseTrustBtn.IsEnabled = false;
+        LovenseStatusText.Text = "等 Windows 弹框，点「是」";
+        try
+        {
+            var start = new ProcessStartInfo("certutil.exe", "-addstore -user Root " + "\"" + cer + "\"")
+            {
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
+            using Process? process = Process.Start(start);
+            if (process is not null) await process.WaitForExitAsync();
+        }
+        catch (Exception ex)
+        {
+            LovenseStatusText.Text = "装证书失败：" + ex.Message;
+            LovenseTrustBtn.IsEnabled = true;
+            return;
+        }
+        lovense.RefreshTrustState();
+        LovenseTrustBtn.IsEnabled = true;
+        RefreshLovenseStatus();
+    }
+
+    private void RestartLovenseBridge()
+    {
+        App.Settings.Save();
+        LovenseBridgeService? lovense = App.Lovense;
+        lovense?.Stop();
+        if (!App.Settings.LovenseBridgeEnabled) { RefreshLovenseStatus(); return; }
+        lovense?.Start(App.Settings.LovenseBridgePort, LovenseBridgeService.DefaultHttpPort);
+        RefreshLovenseStatus();
+    }
+
+    private void LovenseEnabled_Changed(object sender, RoutedEventArgs e)
+    {
+        if (LovenseEnabledCheck is null) return;
+        App.Settings.LovenseBridgeEnabled = LovenseEnabledCheck.IsChecked == true;
+        RestartLovenseBridge();
+    }
+
+    private void LovensePort_LostFocus(object sender, RoutedEventArgs e)
+    {
+        if (LovensePortBox is null) return;
+        if (!int.TryParse(LovensePortBox.Text, out int port) || port is < 1024 or > 65535)
+        {
+            LovensePortBox.Text = App.Settings.LovenseBridgePort.ToString();
+            return;
+        }
+        if (port == App.Settings.LovenseBridgePort) return;
+        App.Settings.LovenseBridgePort = port;
+        RestartLovenseBridge();
     }
 
     private void RefreshComfortButtons()

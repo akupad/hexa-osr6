@@ -283,29 +283,6 @@
                     </StackPanel>
                 </Border>
 
-                <!-- Lovense 兼容：让游戏以为本机挂着一只 Lovense 玩具 -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
-                    <StackPanel>
-                        <TextBlock Text="🎮 给游戏当玩具（Lovense 兼容）" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                        <TextBlock Text="有些游戏只认 Lovense，它会在设置里问「Lovense IP 地址 / 端口」。打开这个开关，本机就冒充一只 Lovense 玩具，游戏发来的振动强度会被翻成 OSR6 的抽插动作。"
-                                   Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                            <CheckBox x:Name="LovenseEnabledCheck" Content="开启" FontSize="12"
-                                      VerticalAlignment="Center" Checked="LovenseEnabled_Changed" Unchecked="LovenseEnabled_Changed"/>
-                            <TextBlock Text="SSL 端口" FontSize="12" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="18,0,8,0"/>
-                            <TextBox x:Name="LovensePortBox" Width="88" Height="28" FontSize="12"
-                                     VerticalContentAlignment="Center" LostFocus="LovensePort_LostFocus"/>
-                        </StackPanel>
-                        <TextBlock x:Name="LovenseAddressText" Text="" FontSize="11" Foreground="{StaticResource Muted}"
-                                   Margin="0,0,0,6" TextWrapping="Wrap"/>
-                        <TextBlock x:Name="LovenseStatusText" Text="未开启" FontSize="11"
-                                   Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-                        <TextBlock Text="游戏里怎么填：IP 填上面给出的本机地址，端口填这里这个 SSL 端口，「Lovense 网页」选是；点「链接」后这行会显示游戏已连上。"
-                                   FontSize="10" Foreground="{StaticResource Faint}" Margin="0,8,0,0" TextWrapping="Wrap"/>
-                    </StackPanel>
-                </Border>
-
                 <!-- 固件设置（进阶）：TCodeESP32 的 #setting / $save / #restart 串口命令。
                      默认收起 —— 舵机零点这类改错会让机器反向或顶死，属于"知道自己在干什么再用"；
                      而且只有固件支持这套协议才可用（读不到列表就直说，不假装能改）。 -->
