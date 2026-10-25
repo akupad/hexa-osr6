@@ -29,7 +29,10 @@ public static class LovenseProtocol
         return 0.35 + 1.55 * s;
     }
 
-    /// <summary>"Vibrate:16"、"Vibrate:2,Rotate:3"、"Stop" 都能解析；取第一条认得出来的动作。</summary>
+    /// <summary>
+    /// "Vibrate:16"、"Vibrate:2,Rotate:3"、"Thrust:10"、"Stop" 都能解析；取第一条认得出来的动作。
+    /// Thrust 是抽插机（Solace / Gravity 那类）的动作，最贴近 OSR6 的直线行程。
+    /// </summary>
     public static (string Action, int Strength) ParseAction(string? action)
     {
         if (string.IsNullOrWhiteSpace(action)) return ("", 0);
@@ -41,6 +44,7 @@ public static class LovenseProtocol
             if (name.Equals("Stop", StringComparison.OrdinalIgnoreCase)) return ("Stop", 0);
             if (!name.Equals("Vibrate", StringComparison.OrdinalIgnoreCase)
                 && !name.Equals("Rotate", StringComparison.OrdinalIgnoreCase)
+                && !name.Equals("Thrust", StringComparison.OrdinalIgnoreCase)
                 && !name.Equals("Pump", StringComparison.OrdinalIgnoreCase)) continue;
             if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int strength)) strength = 20;
             int max = name.Equals("Pump", StringComparison.OrdinalIgnoreCase) ? 3 : 20;

@@ -2822,6 +2822,10 @@ try
             && !LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}", "max").Body.Contains("nora", StringComparison.Ordinal));
         Check("Lovense：玩具名只留字母数字，手输的引号进不了报文",
             LovenseProtocol.Sanitize(" \"ma\"x\\ ") == "max" && LovenseProtocol.Sanitize("") == LovenseProtocol.DefaultToyName);
+        Check("Lovense：Thrust 也认（抽插机用的动作，最贴近 OSR6 直线）",
+            LovenseProtocol.ParseAction("Thrust:10") == ("Thrust", 10)
+            && LovenseProtocol.Handle("POST", "/command",
+                "{\"command\":\"Function\",\"action\":\"Thrust:20\"}").Amplitude > 40);
         Check("Lovense：玩具名换成 max 也不影响强度解析",
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:16\"}", "max").Strength == 16);
     }
