@@ -19,19 +19,22 @@ public static class LovenseProtocol
     public const string DefaultToyName = "gravity";
     private const string ToyNickName = "OSR6";
 
-    /// <summary>Lovense 的强度是 0–20 的整数，抽插幅度按它线性映射。</summary>
+    /// <summary>Lovense 的强度是 0–20 的整数，拉满就走整段行程（0–100）。</summary>
     public static double StrokeAmplitude(int strength)
     {
         if (strength <= 0) return 0;
         double s = Math.Clamp(strength, 0, 20) / 20.0;
-        return 6 + 44 * s;
+        return 6 + 94 * s;
     }
 
-    /// <summary>强度同时决定速度：Lovense 只有一根滑杆，只能拿它同时推幅度和频率。</summary>
+    /// <summary>
+    /// 强度同时决定速度。行程翻倍以后频率要收一点：同样的听感只需要一半的来回数，
+    /// 而机器追得上才不会被限速器削掉幅度。
+    /// </summary>
     public static double StrokeHz(int strength)
     {
         double s = Math.Clamp(strength, 0, 20) / 20.0;
-        return 0.35 + 1.55 * s;
+        return 0.3 + 1.1 * s;
     }
 
     /// <summary>转动通道（nora 的 Rotate）单独一根滑杆：扭的幅度比抽插小得多，25% 已经很明显。</summary>

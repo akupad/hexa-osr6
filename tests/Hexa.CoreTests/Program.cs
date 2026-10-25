@@ -2790,13 +2790,13 @@ try
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:0\"}").Action == "Stop");
         LovenseProtocol.Outcome vib = LovenseProtocol.Handle("POST", "/command",
             "{\"command\":\"Function\",\"action\":\"Vibrate:16\",\"timeSec\":20,\"apiVer\":1}");
-        Check("Lovense：Vibrate:16 给 16/20 的强度、幅度不到半程",
-            vib.Ok && vib.Strength == 16 && vib.Amplitude > 35 && vib.Amplitude < 42 &&
+        Check("Lovense：Vibrate:16 给 16/20 的强度、幅度已接近满程",
+            vib.Ok && vib.Strength == 16 && vib.Amplitude > 79 && vib.Amplitude < 84 &&
             Math.Abs(vib.Amplitude - LovenseProtocol.StrokeAmplitude(16)) < 1e-9);
-        Check("Lovense：强度越大越深越快，且幅度不超过 50（半行程）",
+        Check("Lovense：强度越大越深越快，拉满时用整段行程",
             LovenseProtocol.StrokeAmplitude(20) > LovenseProtocol.StrokeAmplitude(5)
             && LovenseProtocol.StrokeHz(20) > LovenseProtocol.StrokeHz(5)
-            && LovenseProtocol.StrokeAmplitude(20) <= 50);
+            && Math.Abs(LovenseProtocol.StrokeAmplitude(20) - 100) < 1e-9);
         Check("Lovense：Preset earthquake 最强、wave 最轻",
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Preset\",\"name\":\"earthquake\"}").Strength
                 > LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Preset\",\"name\":\"wave\"}").Strength);
