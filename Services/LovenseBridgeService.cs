@@ -35,6 +35,9 @@ public sealed class LovenseBridgeService : IDisposable
     private double _amplitude;
     private double _hz;
     private double _phase;
+    private double _rotateAmplitude;
+    private double _rotateHz;
+    private double _rotatePhase;
     private DateTime _lastCommandUtc = DateTime.MinValue;
     /// <summary>这条指令跑到什么时候为止（Lovense 一条 Function 会带 timeSec，游戏不会再发第二遍）。</summary>
     private DateTime _runUntilUtc = DateTime.MinValue;
@@ -106,7 +109,9 @@ public sealed class LovenseBridgeService : IDisposable
             {
                 string seen = _sawClient ? "游戏已连上" : "等游戏连接";
                 if (_action.Length == 0 || _action == "Stop") return seen + " · 待机";
-                return seen + " · " + _action + " " + _amplitude.ToString("0") + "% / " + _hz.ToString("0.0") + "Hz";
+                string text = seen + " · " + _action + " " + _amplitude.ToString("0") + "% / " + _hz.ToString("0.0") + "Hz";
+                if (_rotateAmplitude > 0) text += " + 扭 " + _rotateAmplitude.ToString("0") + "%";
+                return text;
             }
         }
     }
@@ -241,15 +246,19 @@ public sealed class LovenseBridgeService : IDisposable
             _lastCommandUtc = DateTime.UtcNow;
             if (!outcome.Ok) return;
             if (outcome.Action.Length == 0) return;          // GetToys 这类查询不动设备
-            if (outcome.Action == "Stop" || outcome.Amplitude <= 0)
+            if (outcome.Action == "Stop" || (outcome.Amplitude <= 0 && outcome.RotateAmplitude <= 0))
             {
                 _action = "";
+                _amplitude = 0;
+                _rotateAmplitude = 0;
                 _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
                 return;
             }
             _action = outcome.Action;
             _amplitude = outcome.Amplitude;
             _hz = Math.Clamp(outcome.Hz, 0.1, 3.0);
+            _rotateAmplitude = outcome.RotateAmplitude;
+            _rotateHz = Math.Clamp(outcome.RotateHz, 0.1, 2.0);
             // 游戏一条命令只发一次，时长靠 timeSec 说明（缺省 20 秒，和 Lovense 官方默认一致）。
             double seconds = outcome.Seconds > 0 ? Math.Clamp(outcome.Seconds, 0.2, 3600) : 20;
             _runUntilUtc = _lastCommandUtc.AddSeconds(seconds);
@@ -264,13 +273,15 @@ public sealed class LovenseBridgeService : IDisposable
         _lastTickUtc = now;
 
         string action;
-        double amplitude, hz;
+        double amplitude, hz, rotateAmplitude, rotateHz;
         DateTime last, until;
         lock (_gate)
         {
             action = _action;
             amplitude = _amplitude;
             hz = _hz;
+            rotateAmplitude = _rotateAmplitude;
+            rotateHz = _rotateHz;
             last = _lastCommandUtc;
             until = _runUntilUtc;
         }
@@ -284,14 +295,24 @@ public sealed class LovenseBridgeService : IDisposable
             return;
         }
 
+        // 抽插和转动各走各的相位：一条命令里同时有 Vibrate 和 Rotate 时两根轴一起动。
         double half = amplitude / 2.0;
-        _phase += dt * hz;
-        if (_phase >= 1.0) _phase -= Math.Floor(_phase);
-        double main = 50 + half * Math.Sin(2 * Math.PI * _phase);
-        if (action.Equals("Rotate", StringComparison.OrdinalIgnoreCase))
-            _engine.TrySendDirectAxes([50, 50, 50, main, 50, 50], 0.06);
-        else
-            _engine.TrySendDirectAxes([main, 50 + (main - 50) * 0.10, 50 + (main - 50) * 0.08, 50, 50, 50], 0.06);
+        double main = 50;
+        if (amplitude > 0)
+        {
+            _phase += dt * hz;
+            if (_phase >= 1.0) _phase -= Math.Floor(_phase);
+            main = 50 + half * Math.Sin(2 * Math.PI * _phase);
+        }
+        double twist = 50;
+        if (rotateAmplitude > 0)
+        {
+            _rotatePhase += dt * rotateHz;
+            if (_rotatePhase >= 1.0) _rotatePhase -= Math.Floor(_rotatePhase);
+            twist = 50 + rotateAmplitude / 2.0 * Math.Sin(2 * Math.PI * _rotatePhase);
+        }
+        _engine.TrySendDirectAxes(
+            [main, 50 + (main - 50) * 0.10, 50 + (main - 50) * 0.08, twist, 50, 50], 0.06);
     }
 
     /// <summary>证书放这儿：每次启动都重生成的话，游戏那边每次都得重新信任一次，等于永远连不上。</summary>

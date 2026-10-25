@@ -2822,6 +2822,13 @@ try
             && !LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}", "max").Body.Contains("nora", StringComparison.Ordinal));
         Check("Lovense：玩具名只留字母数字，手输的引号进不了报文",
             LovenseProtocol.Sanitize(" \"ma\"x\\ ") == "max" && LovenseProtocol.Sanitize("") == LovenseProtocol.DefaultToyName);
+        LovenseProtocol.Outcome both = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Vibrate:16,Rotate:10\",\"timeSec\":5}");
+        Check("Lovense：一条消息同时带抽插和转动时两路都保留", both.Ok && both.Amplitude > 0 && both.RotateAmplitude > 0);
+        Check("Lovense：两路动作名标成 Vibrate+Rotate", both.Action == "Vibrate+Rotate");
+        LovenseProtocol.Outcome twistOnly = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Rotate:20\"}");
+        Check("Lovense：只发转动时直线不动、扭转动", twistOnly.Amplitude == 0 && twistOnly.RotateAmplitude > 0);
         Check("Lovense：Thrust 也认（抽插机用的动作，最贴近 OSR6 直线）",
             LovenseProtocol.ParseAction("Thrust:10") == ("Thrust", 10)
             && LovenseProtocol.Handle("POST", "/command",

@@ -18,6 +18,7 @@ public static class LovenseProtocol
     /// <summary>Lovense 的强度是 0–20 的整数，抽插幅度按它线性映射。</summary>
     public static double StrokeAmplitude(int strength)
     {
+        if (strength <= 0) return 0;
         double s = Math.Clamp(strength, 0, 20) / 20.0;
         return 6 + 44 * s;
     }
@@ -29,28 +30,52 @@ public static class LovenseProtocol
         return 0.35 + 1.55 * s;
     }
 
-    /// <summary>
-    /// "Vibrate:16"、"Vibrate:2,Rotate:3"、"Thrust:10"、"Stop" 都能解析；取第一条认得出来的动作。
-    /// Thrust 是抽插机（Solace / Gravity 那类）的动作，最贴近 OSR6 的直线行程。
-    /// </summary>
-    public static (string Action, int Strength) ParseAction(string? action)
+    /// <summary>转动通道（nora 的 Rotate）单独一根滑杆：扭的幅度比抽插小得多，25% 已经很明显。</summary>
+    public static double RotateAmplitude(int strength)
     {
-        if (string.IsNullOrWhiteSpace(action)) return ("", 0);
+        if (strength <= 0) return 0;
+        double s = Math.Clamp(strength, 0, 20) / 20.0;
+        return 5 + 20 * s;
+    }
+
+    /// <summary>转动速度跟抽插分开：扭得太快只会变成抖，慢一点才看得出是在转。</summary>
+    public static double RotateHz(int strength)
+    {
+        double s = Math.Clamp(strength, 0, 20) / 20.0;
+        return 0.15 + 0.85 * s;
+    }
+
+    /// <summary>
+    /// 把 "Vibrate:16,Rotate:8" 这类串整个拆开。Thrust 是抽插机（Solace / Gravity）的动作，
+    /// 最贴近 OSR6 的直线行程；Pump 是 max 的气泵，只有 0–3。
+    /// </summary>
+    public static IReadOnlyList<(string Name, int Strength)> ParseActions(string? action)
+    {
+        var found = new List<(string Name, int Strength)>(2);
+        if (string.IsNullOrWhiteSpace(action)) return found;
         foreach (string part in action.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         {
             int colon = part.IndexOf(':');
             string name = (colon < 0 ? part : part[..colon]).Trim();
             string value = colon < 0 ? "" : part[(colon + 1)..].Trim();
-            if (name.Equals("Stop", StringComparison.OrdinalIgnoreCase)) return ("Stop", 0);
-            if (!name.Equals("Vibrate", StringComparison.OrdinalIgnoreCase)
-                && !name.Equals("Rotate", StringComparison.OrdinalIgnoreCase)
-                && !name.Equals("Thrust", StringComparison.OrdinalIgnoreCase)
-                && !name.Equals("Pump", StringComparison.OrdinalIgnoreCase)) continue;
+            if (name.Equals("Stop", StringComparison.OrdinalIgnoreCase)) return [("Stop", 0)];
+            bool known = name.Equals("Vibrate", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Rotate", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Thrust", StringComparison.OrdinalIgnoreCase)
+                || name.Equals("Pump", StringComparison.OrdinalIgnoreCase);
+            if (!known) continue;
             if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int strength)) strength = 20;
             int max = name.Equals("Pump", StringComparison.OrdinalIgnoreCase) ? 3 : 20;
-            return (name, Math.Clamp(strength, 0, max));
+            found.Add((name, Math.Clamp(strength, 0, max)));
         }
-        return ("", 0);
+        return found;
+    }
+
+    /// <summary>只取第一条认得出来的动作（老调用点用）。</summary>
+    public static (string Action, int Strength) ParseAction(string? action)
+    {
+        IReadOnlyList<(string Name, int Strength)> all = ParseActions(action);
+        return all.Count == 0 ? ("", 0) : (all[0].Name, all[0].Strength);
     }
 
     /// <summary>GetToys 里的 toys 字段是一段「被转义的 JSON 字符串」，游戏会再解一次。</summary>
@@ -85,7 +110,9 @@ public static class LovenseProtocol
         + ",\"result\":false,\"type\":\"error\"}";
 
     /// <summary>Seconds 是这条指令要求的时长（Lovense 的 timeSec，缺省 20 秒）：它一次只发一条，靠这个字段说「跑多久」。</summary>
-    public sealed record Outcome(bool Ok, string Body, string Action, int Strength, double Amplitude, double Hz, double Seconds = 0);
+    public sealed record Outcome(
+        bool Ok, string Body, string Action, int Strength, double Amplitude, double Hz, double Seconds = 0,
+        double RotateAmplitude = 0, double RotateHz = 0);
 
     /// <summary>把一条 /command 请求翻成「要做什么动作 + 回什么」。纯函数，端口与设备都不在这儿。</summary>
     public static Outcome Handle(string method, string path, string? body, string toyName = DefaultToyName)
@@ -156,10 +183,29 @@ public static class LovenseProtocol
         if (!command.Equals("Function", StringComparison.OrdinalIgnoreCase))
             return new Outcome(false, ErrorBody(400, "Invalid Command"), "", 0, 0, 0);
 
-        (string action, int strength) = ParseAction(actionText);
-        if (action.Length == 0) return new Outcome(false, ErrorBody(400, "Invalid Command"), "", 0, 0, 0);
-        if (action == "Stop" || strength == 0) return new Outcome(true, OkBody(false), "Stop", 0, 0, 0);
-        return new Outcome(true, OkBody(false), action, strength, StrokeAmplitude(strength), StrokeHz(strength), seconds);
+        // 一条消息里可以同时带抽插和转动（"Vibrate:16,Rotate:8"）：两路都留下来，
+        // OSR6 本来就有直线和扭转两组轴，能同时动。
+        int strokeStrength = 0;
+        int rotateStrength = 0;
+        var labels = new List<string>(2);
+        foreach ((string name, int value) in ParseActions(actionText))
+        {
+            if (name == "Stop") return new Outcome(true, OkBody(false), "Stop", 0, 0, 0);
+            if (name == "Rotate")
+            {
+                rotateStrength = Math.Max(rotateStrength, value);
+                labels.Add("Rotate");
+                continue;
+            }
+            int scaled = name == "Pump" ? (int)Math.Round(value * 20.0 / 3.0) : value;
+            if (scaled > strokeStrength) { strokeStrength = scaled; }
+            if (!labels.Contains(name)) labels.Add(name);
+        }
+        if (strokeStrength <= 0 && rotateStrength <= 0) return new Outcome(true, OkBody(false), "Stop", 0, 0, 0);
+        return new Outcome(
+            true, OkBody(false), string.Join('+', labels), Math.Max(strokeStrength, rotateStrength),
+            StrokeAmplitude(strokeStrength), StrokeHz(strokeStrength), seconds,
+            RotateAmplitude(rotateStrength), RotateHz(rotateStrength));
     }
 
     private static Outcome PresetToOutcome(string name, double seconds)
