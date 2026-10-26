@@ -29,9 +29,26 @@ public static partial class Osr6DeviceProfile
     public static bool IsInstalledAxis(string? axisId) =>
         axisId is not null && InstalledAxisSet.Contains(axisId);
 
+    /// <summary>
+    /// 固件自报工程名的开机横幅：<c>I (241) app_init: Project name:     tcode</c>。
+    /// 2026-11 的新固件完全不回 D1（1.5 秒里只吐 32KB 日志，一条 TCode 都没有），
+    /// 只能靠它自报的工程名认设备；别的 ESP 项目工程名不同，不会误判。
+    /// </summary>
+    public static bool IsTcodeFirmwareBanner(string? response)
+    {
+        if (string.IsNullOrWhiteSpace(response)) return false;
+        foreach (string line in response.Split('\n'))
+        {
+            if (!line.Contains("Project name:", StringComparison.OrdinalIgnoreCase)) continue;
+            if (line.Contains("tcode", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
+    }
+
     public static bool IsCompatibleIdentityResponse(string? response)
     {
         if (string.IsNullOrWhiteSpace(response)) return false;
+        if (IsTcodeFirmwareBanner(response)) return true;
         // 固件把 ESP-IDF 的运行日志和 TCode 回话写在同一个 CDC 口上（实测稳态每秒两行 Stats/CPU，
         // 上电还有整段 banner）。判身份前先剔掉这些日志行 —— banner 里的 SR6Executor: 会让
         // 「回话里含 SR6」变成理所当然，等于把身份闸门弄丢。

@@ -302,7 +302,7 @@ public sealed class WebApiService : IDisposable
         }
 
         // 再查 Auto 快速预设
-        var quickIds = new[] { "gentle", "daily", "crazy", "tease", "wave", "heartbeat", "escalate", "edging", "ambush" };
+        var quickIds = new[] { "gentle", "daily", "crazy", "tease", "heartbeat" };
         if (quickIds.Contains(id))
         {
             if (!_engine.CanRun)
@@ -637,7 +637,7 @@ let token=localStorage.getItem('helixToken')||'';
 document.getElementById('token').value=token;
 document.querySelectorAll('#axes').forEach(()=>{});
 const AXES=['L0','L1','L2','R0','R1','R2'];
-const PRESETS=[['gentle','轻柔'],['daily','日常'],['crazy','疯狂'],['tease','挑逗'],['wave','波浪'],['heartbeat','心跳'],['escalate','阶梯递增'],['edging','欲擒故纵'],['ambush','偷袭一下']];
+const PRESETS=[['gentle','轻柔'],['daily','日常'],['crazy','疯狂'],['tease','挑逗'],['heartbeat','心跳']];
 function saveToken(){token=document.getElementById('token').value.trim();localStorage.setItem('helixToken',token);}
 async function api(path,opts={}){
   const headers=Object.assign({'X-Hexa-Token':token},opts.headers||{});

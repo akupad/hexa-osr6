@@ -20,8 +20,8 @@ public partial class PlaygroundViewModel : ObservableObject
 
     public static (string Id, string Label)[] QuickPresets =>
     [
-        ("gentle","轻柔"),("daily","日常"),("crazy","疯狂"),("tease","挑逗"),("wave","波浪"),
-        ("heartbeat","心跳"),("escalate","阶梯递增"),("edging","欲擒故纵"),("ambush","偷袭一下")
+        ("gentle","轻柔"),("daily","日常"),("crazy","疯狂"),("tease","挑逗"),
+        ("heartbeat","心跳")
     ];
 
     // ── 自动模式：唯一真源 ──

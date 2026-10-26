@@ -32,6 +32,15 @@ public sealed record ComfortProfile(
         "dynamic", "动感", "快速、大行程且保留最终机械运动约束",
         1.75, 620, 5200, 42000, 0.45, 0.52, 0.30, 0.0);
 
+    /// <summary>
+    /// 游戏专用：不设软件包络，只留轴限位与急停。用户明确要求「玩游戏时唯一的限制只有设置页的轴限位」，
+    /// 所以它不在 <see cref="All"/> 里（界面上还是三个档），只由游戏桥在收到指令时临时挂上，
+    /// 游戏一停就摘掉，免得脚本/声音那些路径跟着变成无限制。
+    /// </summary>
+    public static readonly ComfortProfile Game = new(
+        "game", "不限速", "只守轴限位与急停，不再按档位削速度",
+        3.0, 3000, 60000, 600000, 0, 0.34, 0.45, 0.03);
+
     public static IReadOnlyList<ComfortProfile> All { get; } = [Gentle, Immersive, Dynamic];
 
     /// <summary>
@@ -43,6 +52,7 @@ public sealed record ComfortProfile(
     {
         "gentle" => Gentle,
         "dynamic" => Dynamic,
+        "game" => Game,
         _ => Immersive,
     };
 }

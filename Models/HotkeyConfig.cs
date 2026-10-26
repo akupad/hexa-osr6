@@ -9,6 +9,7 @@ public sealed class HotkeyConfig
     public const string Burst = "burst";
     public const string IntensityUp = "intensity_up";
     public const string IntensityDown = "intensity_down";
+    public const string ToggleOverlay = "toggle_overlay";
 
     public Dictionary<string, string> Bindings { get; set; } = CreateDefaults();
 
@@ -21,6 +22,7 @@ public sealed class HotkeyConfig
         (Burst, "爆发动作"),
         (IntensityUp, "强度 +10%"),
         (IntensityDown, "强度 -10%"),
+        (ToggleOverlay, "显示 / 隐藏悬浮窗"),
     ];
 
     public void Normalize()
@@ -53,5 +55,6 @@ public sealed class HotkeyConfig
         [Burst] = "Ctrl+Alt+D",
         [IntensityUp] = "Ctrl+Alt+PageUp",
         [IntensityDown] = "Ctrl+Alt+PageDown",
+        [ToggleOverlay] = "Ctrl+Alt+O",
     };
 }

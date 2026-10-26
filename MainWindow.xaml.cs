@@ -67,13 +67,20 @@ public partial class MainWindow : Window
         SourceInitialized += (_, _) =>
         {
             App.Hotkeys.Attach(this, App.Settings.GlobalHotkeysEnabled, App.Settings.Hotkeys);
-            App.Hotkeys.OnInsert        += () => App.Dispatch(() => App.Engine.TogglePlayback());
+            // 播放/暂停键：跑着（或已暂停）时按 = 暂停/继续，停下来时才等于「开始」
+        App.Hotkeys.OnInsert        += () => App.Dispatch(() =>
+        {
+            if (App.Engine.IsPaused || App.Engine.DeviceIsMoving) App.Engine.TogglePause();
+            else App.Engine.TogglePlayback();
+        });
             App.Hotkeys.OnEnd           += () => App.Dispatch(() => App.Engine.EmergencyStop());
             App.Hotkeys.OnHome          += () => App.Dispatch(() => App.StrokesVm.NextStroke(+1));
             App.Hotkeys.OnUp            += () => App.Dispatch(() => App.StrokesVm.NextStroke(-1));
             App.Hotkeys.OnDelete        += () => _ = App.Engine.ClimaxBurstAsync();
             App.Hotkeys.OnIntensityUp   += () => { App.Engine.AdjustIntensity(+0.1); App.Settings.Save(); };
             App.Hotkeys.OnIntensityDown += () => { App.Engine.AdjustIntensity(-0.1); App.Settings.Save(); };
+            // 全屏游戏里想藏/找悬浮窗，不必切回主窗口
+            App.Hotkeys.OnToggleOverlay += () => App.Dispatch(App.ToggleOverlay);
         };
 
         // 回到上次那个页面（不再每次都跳游玩页）

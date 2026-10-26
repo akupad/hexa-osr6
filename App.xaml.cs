@@ -46,6 +46,8 @@ public partial class App : System.Windows.Application
     private static ToolStripMenuItem? _trayStatusItem;      // 连接状态
     private static ToolStripMenuItem? _trayEStopItem;       // 急停状态
     private static ToolStripMenuItem? _trayOverlayItem;     // 悬浮窗（可勾选）
+    private static ToolStripMenuItem? _trayClickThroughItem; // 悬浮窗点击穿透（可勾选）
+    private static bool _overlayClickThrough;                // 穿透是纯运行期状态，不写盘
     private static ToolStripMenuItem? _trayIntensityMenu;   // 强度子菜单（标题带百分比）
     private static ToolStripMenuItem? _trayIntensityLabel;  // 强度当前值
     private static readonly Dictionary<MotionMode, ToolStripMenuItem> _trayModeItems = new();
@@ -232,6 +234,9 @@ public partial class App : System.Windows.Application
             ToyName = Settings.LovenseToyName,
             StrokeTopPercent = Settings.LovenseStrokeTopPercent,
             StrokeDeepPercent = Settings.LovenseStrokeDeepPercent,
+            Unlimited = Settings.LovenseUnlimited,
+            RotateTopPercent = Settings.LovenseRotateTopPercent,
+            RotateDeepPercent = Settings.LovenseRotateDeepPercent,
         };
         if (Settings.LovenseBridgeEnabled) Lovense.Start(Settings.LovenseBridgePort, LovenseBridgeService.DefaultHttpPort);
         AyvaWeb = new AyvaWebSocketService(Engine);
@@ -315,6 +320,7 @@ public partial class App : System.Windows.Application
         _overlay.ApplySettings();   // 不透明度/显示项按最新设置生效
         _overlay.ShowActivated = false;   // 每次显示都不要抢游戏的前台焦点
         _overlay.Show();
+        if (_overlayClickThrough) _overlay.SetClickThrough(true);   // 穿透状态在运行期一直有效
         Settings.OverlayVisible = true;
         Settings.Save();
         SyncTrayMenu();
@@ -334,6 +340,18 @@ public partial class App : System.Windows.Application
             HideOverlay();
         else
             ShowOverlay();
+    }
+
+    /// <summary>
+    /// 悬浮窗点击穿透开关：开着小窗就完全不接鼠标（点下去落到下面的游戏/窗口）。
+    /// 因为开着的时候点不到小窗本身，撤销入口只有这个托盘菜单项。
+    /// </summary>
+    public static void ToggleOverlayClickThrough()
+    {
+        _overlayClickThrough = !_overlayClickThrough;
+        _overlay?.SetClickThrough(_overlayClickThrough);
+        AppLogger.Info(_overlayClickThrough ? "悬浮窗：点击穿透开" : "悬浮窗：点击穿透关");
+        SyncTrayMenu();
     }
 
     /// <summary>
@@ -476,6 +494,10 @@ public partial class App : System.Windows.Application
         // 悬浮窗改成可勾选：Checked = Settings.OverlayVisible，点击切换显示/隐藏
         _trayOverlayItem = new ToolStripMenuItem("悬浮窗 ⧉", null, (_, _) => ToggleOverlay());
         menu.Items.Add(_trayOverlayItem);
+        // 点击穿透：勾上后小窗完全不挡鼠标（游戏里不用担心点到它）。开起来就点不到小窗本身了，
+        // 撤销只能走这里 —— 所以它必须在托盘菜单里，而不是小窗自己身上。
+        _trayClickThroughItem = new ToolStripMenuItem("悬浮窗点击穿透", null, (_, _) => ToggleOverlayClickThrough());
+        menu.Items.Add(_trayClickThroughItem);
         menu.Items.Add(new ToolStripSeparator());
 
         // ── 连接状态 / 急停状态（只读展示，随状态刷新）───────────────
@@ -633,6 +655,8 @@ public partial class App : System.Windows.Application
         // ── 悬浮窗勾选状态 ──────────────────────────────────────────
         if (_trayOverlayItem != null)
             _trayOverlayItem.Checked = Settings.OverlayVisible;
+        if (_trayClickThroughItem != null)
+            _trayClickThroughItem.Checked = _overlayClickThrough;
 
         // ── 模式勾选（自动 / 行程 / 自定义）──────────────────────────
         foreach (var (mode, item) in _trayModeItems)

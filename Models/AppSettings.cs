@@ -96,6 +96,8 @@ public class AppSettings
     public bool   OverlayShowSpeed      { get; set; } = true;   // 速度
     public bool   OverlayShowIntensity  { get; set; } = true;   // 强度
     public bool   OverlayShowBpm        { get; set; } = true;   // BPM
+    /// <summary>悬浮窗下半截的「快捷调节」面板（行程 / 扭转 / 强度 / 速度 + 快速预设）是否展开。</summary>
+    public bool   OverlayPanelOpen      { get; set; } = false;
 
     // ── 音频响应 ──────────────────────────────────────────────────────
     public bool   AudioReactiveEnabled { get; set; } = false;
@@ -415,6 +417,11 @@ public class AppSettings
     public int    LovenseStrokeTopPercent { get; set; } = Services.LovenseProtocol.DefaultStrokeTopPercent;
     /// <summary>行程条右边的圆点＝「最深」：插到这儿就不再往下。</summary>
     public int    LovenseStrokeDeepPercent { get; set; } = Services.LovenseProtocol.DefaultStrokeDeepPercent;
+    /// <summary>跟游戏时不按档位削速度（只守设置页的轴限位与急停）。默认开。</summary>
+    public bool   LovenseUnlimited { get; set; } = true;
+    /// <summary>扭转条的两个端点（% 行程）：R0 只在这段里来回。</summary>
+    public int    LovenseRotateTopPercent  { get; set; } = Services.LovenseProtocol.DefaultRotateTopPercent;
+    public int    LovenseRotateDeepPercent { get; set; } = Services.LovenseProtocol.DefaultRotateDeepPercent;
 
     /// <summary>上次编辑的动作合成文件路径（打开/保存时更新，供下次继续编辑）。</summary>
     public string LastCompositionPath { get; set; } = "";
@@ -786,6 +793,10 @@ public class AppSettings
             Services.LovenseProtocol.StrokeWindow(LovenseStrokeTopPercent, LovenseStrokeDeepPercent);
         LovenseStrokeTopPercent = (int)Math.Round(strokeTop);
         LovenseStrokeDeepPercent = (int)Math.Round(strokeDeep);
+        (double rotateTop, double rotateDeep) =
+            Services.LovenseProtocol.StrokeWindow(LovenseRotateTopPercent, LovenseRotateDeepPercent);
+        LovenseRotateTopPercent = (int)Math.Round(rotateTop);
+        LovenseRotateDeepPercent = (int)Math.Round(rotateDeep);
         WindowWidth = double.IsFinite(WindowWidth) ? Math.Clamp(WindowWidth, 900, 4096) : 1280;
         WindowHeight = double.IsFinite(WindowHeight) ? Math.Clamp(WindowHeight, 600, 2160) : 800;
         if (!double.IsFinite(WindowLeft) || WindowLeft < -10000) WindowLeft = -1;

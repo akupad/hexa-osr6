@@ -46,10 +46,7 @@ internal static class Sr6RenderProbe
 
         var views = new (string Name, Vector3D Up, Vector3D Direction)[]
         {
-            ("raw-z-up", new Vector3D(0, 0, 1), new Vector3D(0.55, -0.75, 0.35)),
-            ("raw-y-up", new Vector3D(0, 1, 0), new Vector3D(0.55, -0.55, 0.62)),
-            ("raw-z-up-side", new Vector3D(0, 0, 1), new Vector3D(1.0, -0.05, 0.08)),
-            ("raw-y-up-side", new Vector3D(0, 1, 0), new Vector3D(1.0, -0.05, 0.08)),
+            ("user-pose", new Vector3D(0.07, -0.93, 0.35), new Vector3D(-0.8375, -0.1417, -0.5278)),
         };
 
         foreach ((string name, Vector3D up, Vector3D direction) in views)

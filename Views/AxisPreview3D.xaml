@@ -21,7 +21,7 @@
            中键拖动   平移（PanGesture2=MiddleClick）
            Ctrl+右键  拖动缩放（ZoomGesture=Control+RightClick）
            「重置视角」按钮 = 相机回默认机位（设备姿态一直由轴值决定，不会被视角操作改变）
-         姿态参照：地面网格 GridLinesVisual3D（模型坐标 XY 平面）+ 右上角坐标轴。 -->
+         姿态参照：只有右上角坐标轴（地面网格与振幅环已去掉）。 -->
     <Border x:Name="Root"
             Background="{StaticResource Surface}"
             BorderBrush="{StaticResource Border}"
@@ -61,13 +61,6 @@
                         <GradientStop Color="#FF151A1F" Offset="1"/>
                     </RadialGradientBrush>
                 </h:HelixViewport3D.Background>
-                <!-- 地面网格：模型坐标的 XY 平面（Normal=Z），单位毫米 -->
-                <h:GridLinesVisual3D Length="600" Width="600"
-                                     MinorDistance="100" MajorDistance="100"
-                                     Thickness="1.0"
-                                     Center="0,0,0.5"
-                                     Normal="0,0,1" LengthDirection="0,1,0"
-                                     Fill="#FF1D252C"/>
             </h:HelixViewport3D>
 
             <!-- 左上角角标 -->

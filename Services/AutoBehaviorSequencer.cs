@@ -81,7 +81,7 @@ public sealed class AutoBehaviorSequencer
 
     /// <summary>
     /// 内置波形池 —— <b>顺序即界面顺序</b>。
-    /// 「递进爆发」以前只能从「波形」下拉选到（快速预设「偷袭一下」用的就是它），却不在随机池里，
+    /// 「递进爆发」以前只能从「波形」下拉选到，却不在随机池里，
     /// 这正是两处口径不一致的另一半原因；现在它是池子的正式成员，于是下拉与勾选列表同源同内容。
     /// </summary>
     private static readonly (string Id, string Label)[] FreePlayPatterns =

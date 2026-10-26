@@ -45,9 +45,18 @@ public static class LovenseProtocol
     public const int DefaultStrokeTopPercent = 20;
 
     public const int DefaultStrokeDeepPercent = 70;
+    /// <summary>扭转的两个端点（% 行程）：左边＝转到一头就停，右边＝另一头。默认留 20% 余量不撞机械端。</summary>
+    public const int DefaultRotateTopPercent = 20;
+    public const int DefaultRotateDeepPercent = 80;
 
     /// <summary>最高点与最深点至少差这么多，否则电机就在原地抖。</summary>
     public const int MinStrokeSpanPercent = 10;
+
+    /// <summary>
+    /// 深端留量：强度拉满时也不真的顶到用户画的那个最深点，留 8% 行程。
+    /// 顶到底那一下是「疼 / 爽」的分界，靠留余量而不是靠用户手动把最深处往外拖。
+    /// </summary>
+    public const double DefaultEndMarginPercent = 8;
 
     /// <summary>
     /// 把两个圆点收成一个合法区间：各自夹进 0–100，再保证两点差不小于 10。
@@ -79,6 +88,41 @@ public static class LovenseProtocol
     }
 
     /// <summary>
+    /// 条上的百分比 → 真正写给 L0 的轴值。
+    ///
+    /// 真机实测（用户确认）的对应关系：**L0 轴值越大 = 抬得越高，轴值越小 = 插得越深**；
+    /// 而条上是「小 = 最高、大 = 最深」，两者正好相反，所以必须翻一次。不翻的话把「最高」
+    /// 那个圆点拉到 20%，机器反而沉到底。翻完两端和整条曲线仍然单调，抽插形状
+    /// （进快—到底停—退慢）不变，只把整段坐标换个方向。
+    /// </summary>
+    public static double StrokeAxisValue(double barPercent)
+    {
+        double p = double.IsFinite(barPercent) ? Math.Clamp(barPercent, 0, 100) : 0;
+        return 100.0 - p;
+    }
+
+    /// <summary>
+    /// 真实抽插的形状版：<paramref name="wave01"/> 是 0–1 的单向相位（0＝抬到最高点，1＝插到最深点），
+    /// 由 <see cref="MotionVocabulary.ThrustWave"/> 给出（进得快、到底顿一下、退得慢）。
+    /// 和正弦版的区别：正弦两端速度都是 0、中段最快，摸起来像活塞；这个形状冲击集中在前段。
+    /// 深端再留 <paramref name="endMarginPercent"/> 的余量，满强度也不会真的落到最深点。
+    /// </summary>
+    public static double StrokeWavePosition(
+        double topPercent,
+        double deepPercent,
+        double amplitude,
+        double wave01,
+        double endMarginPercent = DefaultEndMarginPercent)
+    {
+        double top = Math.Min(topPercent, deepPercent);
+        double deep = Math.Max(topPercent, deepPercent);
+        double scale = double.IsFinite(amplitude) ? Math.Clamp(amplitude, 0, 100) / 100.0 : 0;
+        double margin = double.IsFinite(endMarginPercent) ? Math.Clamp(endMarginPercent, 0, 40) / 100.0 : 0;
+        double w = double.IsFinite(wave01) ? Math.Clamp(wave01, 0, 1) : 0;
+        return top + (deep - top) * scale * (1.0 - margin) * w;
+    }
+
+    /// <summary>
     /// 游戏基本是「角色抽一下发一条指令」，所以指令间隔就是这个动作的真实周期。
     /// 间隔离谱（断续、卡顿、玩家暂停）时退回强度算出来的频率。
     /// </summary>
@@ -87,6 +131,17 @@ public static class LovenseProtocol
         if (!double.IsFinite(intervalSeconds) || intervalSeconds < 0.15 || intervalSeconds > 3.0)
             return fallbackHz;
         return Math.Clamp(1.0 / intervalSeconds, 0.4, 2.6);
+    }
+
+    /// <summary>
+    /// 旋转也跟指令走：游戏一抽发一条，就让它在这条指令的间隔里刚好拧完一个来回——
+    /// 间隔长就慢慢拧，间隔短就拧得快。间隔离谱（断流、暂停）时退回强度算出来的慢转。
+    /// </summary>
+    public static double TwistHz(double intervalSeconds, double fallbackHz)
+    {
+        if (!double.IsFinite(intervalSeconds) || intervalSeconds < 0.15 || intervalSeconds > 3.0)
+            return fallbackHz;
+        return Math.Clamp(1.0 / intervalSeconds, 0.35, 2.6);
     }
 
     /// <summary>

@@ -77,8 +77,36 @@
                                    TextAlignment="Right" VerticalAlignment="Center" Margin="8,0,0,0"/>
                     </Grid>
 
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="旋转" FontSize="12" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,8,0"/>
+                        <controls:RangeSlider x:Name="LovenseRotateRange" Grid.Column="1" Minimum="0" Maximum="100"
+                                              SmallChange="1" LowerValue="20" UpperValue="80"
+                                              VerticalAlignment="Center"
+                                              LowerValueChanged="LovenseRotate_Changed"
+                                              UpperValueChanged="LovenseRotate_Changed"
+                                              LostMouseCapture="LovenseRotate_LostMouseCapture"
+                                              ToolTip="扭转（R0）从哪儿转到哪儿：两个圆点就是两头，游戏给的强度决定这段里摆多大"/>
+                        <TextBlock x:Name="LovenseRotateText" Grid.Column="2" Text="20% – 80%" FontSize="12"
+                                   FontFamily="Consolas" Foreground="{StaticResource Muted}" MinWidth="150"
+                                   TextAlignment="Right" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </Grid>
+
+                    <CheckBox x:Name="LovenseUnlimitedCheck" Content="跟游戏时不限速（只守轴限位与急停）"
+                              FontSize="11" Margin="0,6,0,0" IsChecked="True"
+                              Checked="LovenseUnlimited_Changed" Unchecked="LovenseUnlimited_Changed"
+                              ToolTip="勾上＝游戏发什么就跑什么，不再按舒缓/沉浸/动感削速度；不勾＝按你选的档位限速"/>
+
+                    <TextBlock x:Name="LovenseLiveText" Text="现在 L0 — · R0 —" FontSize="11" FontFamily="Consolas"
+                               Foreground="{StaticResource Accent}" Margin="0,6,0,0"/>
+
                     <TextBlock x:Name="LovenseAddressText" Text="" FontSize="11" Foreground="{StaticResource Muted}"
-                               Margin="0,6,0,0" TextWrapping="Wrap" LineHeight="17"/>
+                               Margin="0,4,0,0" TextWrapping="Wrap" LineHeight="17"/>
                 </StackPanel>
             </Border>
 

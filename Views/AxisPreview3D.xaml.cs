@@ -17,7 +17,7 @@ namespace Hexa.Views;
 /// 六轴各自驱动真实机构（伺服角算法照搬 SR6 固件），因此“看到的姿态”就是设备真实的姿态。
 ///
 /// 视口是 <see cref="HelixViewport3D"/>，相机与鼠标交互全部交给它内置的 CameraController；
-/// 机位在首次布局完成时按模型包围盒自动取景（模型是 Z 轴向上，所以 UpDirection=(0,0,1)）。
+/// 机位在首次布局完成时按模型包围盒自动取景；默认机位是用户亲手拖出来的角度（带滚转，UpDirection 不是 +Z）。
 /// 每帧只更新各部件的 MatrixTransform3D.Matrix（结构体赋值，无分配），几何跨控件共享且已冻结。
 ///
 /// 对外契约（改签名会连带改调用方）：
@@ -35,9 +35,8 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
     // ── 场景根节点（挂到 HelixViewport3D.Children 下）──────────────
     private readonly ModelVisual3D _sceneRoot = new();
 
-    // ── SR6 模型 + 振幅指示环 ────────────────────────────────────
+    // ── SR6 模型 ────────────────────────────────────────────────
     private readonly Sr6Rig _rig;
-    private readonly ScaleTransform3D _ampRingScale = new(1, 1, 1);
 
     // ── 视角：左键拖动 = 以你的视角绕设备自由旋转（360°，没有上下限位）──
     // 用四元数累积旋转，不夹取角度、也不固定“上方向”，所以可以一路转到正上方、
@@ -47,7 +46,7 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
     private System.Numerics.Quaternion _orbitRotation = System.Numerics.Quaternion.Identity;
     private Point3D _orbitTarget;          // 旋转中心 = 设备包围盒中心
     private Vector3D _orbitBaseOffset;     // 默认机位下“相机 − 中心”的向量
-    private Vector3D _orbitBaseUp = new(0, 0, 1);
+    private Vector3D _orbitBaseUp = new(0.088, -0.968, 0.239);
     private Point _lastDragPoint;
     private bool _dragging;
     private bool _autoRefresh = true;
@@ -90,7 +89,6 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
 
         var scene = new Model3DGroup();
         scene.Children.Add(_rig.Root);
-        scene.Children.Add(BuildAmplitudeRing());
         _sceneRoot.Content = scene;
 
         // 模型挂到 HelixViewport3D 的 Children（其第 0 项是 HelixToolkit 自带的灯光视觉节点）
@@ -153,23 +151,14 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
     }
 
     /// <summary>
-    /// 刷新六轴振幅（0~100），驱动地面上振幅指示环的缩放。
-    /// 只使用最大振幅，避免与 UpdateAxes 的模型姿态互相覆盖。
+    /// 刷新六轴振幅（0~100）。振幅只记录备用，不再画任何视觉元素
+    /// （原来驱动地面上的绿色振幅环，用户要求去掉；调用点保留以免破坏宿主契约）。
     /// </summary>
     public void UpdateAmp(double[] amps)
     {
-        if (amps != null)
-        {
-            for (int i = 0; i < 6 && i < amps.Length; i++)
-                _amp[i] = double.IsFinite(amps[i]) ? Math.Clamp(amps[i], 0, 100) : 0;
-        }
-
-        double maxAmp = 0;
-        for (int i = 0; i < 6; i++)
-            if (_amp[i] > maxAmp) maxAmp = _amp[i];
-
-        double scale = 0.72 + maxAmp / 100.0 * 0.55;
-        _ampRingScale.ScaleX = _ampRingScale.ScaleY = _ampRingScale.ScaleZ = scale;
+        if (amps == null) return;
+        for (int i = 0; i < 6 && i < amps.Length; i++)
+            _amp[i] = double.IsFinite(amps[i]) ? Math.Clamp(amps[i], 0, 100) : 0;
     }
 
     /// <summary>
@@ -251,11 +240,14 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
         double radius = 0.5 * Math.Sqrt(
             bounds.SizeX * bounds.SizeX + bounds.SizeY * bounds.SizeY + bounds.SizeZ * bounds.SizeZ);
 
-        // 从右前上方看（模型坐标：+X 右、+Y 后、+Z 上；套筒朝 -Y 即“前方”）。
-        // 注意 LookDirection 是相机看出去的方向，相机位于 center - direction*distance，
-        // 所以想让相机在“上方”，direction 的 Z 分量必须为负。
-        var direction = new Vector3D(0.56, 0.56, -0.61);
+        // 默认机位＝用户亲手拖出来的那一版（不是猜的）：相机在 +X/+Y/+Z 一侧俯视，
+        // 上方向带滚转（几乎指向 -Y），于是画面里套筒朝上、底座朝下，整台机器像立起来，
+        // 套筒口对着观众偏下。
+        // （模型坐标：+X 右、+Y 后、+Z 上；相机在 center - direction*distance。）
+        var direction = new Vector3D(-0.8375, -0.1417, -0.5278);
         direction.Normalize();
+        var upDirection = new Vector3D(0.07, -0.93, 0.35);
+        upDirection.Normalize();
 
         const double fieldOfViewX = 45;                 // WPF 的 FieldOfView 是水平视角
         double aspect = width / height;
@@ -263,7 +255,7 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
 
         // 取景用「把包围盒 8 个角投到相机基向量上」算，而不是用外接球半径：
         // 外接球在竖直方向明显偏大/偏小，最大化之后机器会被裁掉一截或者缩成一小团。
-        var rightAxis = Vector3D.CrossProduct(direction, new Vector3D(0, 0, 1));
+        var rightAxis = Vector3D.CrossProduct(direction, upDirection);
         if (rightAxis.LengthSquared < 1e-9) rightAxis = new Vector3D(1, 0, 0);
         rightAxis.Normalize();
         Vector3D upAxis = Vector3D.CrossProduct(rightAxis, direction);
@@ -297,7 +289,7 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
             // 若这里写单位向量，隐式目标会落在相机自己附近，绕它转机器会直接甩出画面；
             // 写成 direction * distance 后 Position + LookDirection 恒等于设备中心。
             LookDirection = direction * distance,
-            UpDirection = new Vector3D(0, 0, 1),
+            UpDirection = upDirection,
             FieldOfView = fieldOfViewX,
             NearPlaneDistance = 20,
             FarPlaneDistance = Math.Max(4000, distance + radius * 6),
@@ -324,65 +316,16 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
     /// <summary>灯光挂在 HelixViewport3D 自带的 Lights（Model3DGroup）上，其视觉节点已由控件放在 Children 里。</summary>
     private void BuildLights()
     {
-        // 主光大致从相机方向打过来（相机在 +X/-Y/+Z 一侧，故光线朝 -X/+Y/-Z 走），
+        // 主光大致从相机方向打过来（相机在 +X/+Y/+Z 一侧，故光线朝 -X/-Y/-Z 走），
         // 保证朝向观众的面有亮部；补光从另一侧压出体积感，背光勾轮廓。
         Model3DGroup lights = View3D.Lights;
         // 只用「环境光 + 主光 + 补光」三盏：灯越多、环境光越亮，明暗关系越平，
         // 整台机器就会像蒙了一层光膜。这里压低环境光、让主光主导，拉开明暗对比。
         lights.Children.Add(new AmbientLight(Color.FromRgb(0x44, 0x4E, 0x5A)));
         lights.Children.Add(new DirectionalLight(
-            Color.FromRgb(0xF0, 0xF6, 0xFF), new Vector3D(-0.55, 0.58, -0.60)));
+            Color.FromRgb(0xF0, 0xF6, 0xFF), new Vector3D(-0.80, -0.16, -0.58)));
         lights.Children.Add(new DirectionalLight(
-            Color.FromRgb(0x3C, 0x48, 0x56), new Vector3D(0.75, 0.20, -0.35)));
-    }
-
-    /// <summary>
-    /// 地面上的振幅指示环（半径随最大振幅缩放）：一个扁平的圆环网格，
-    /// 贴在 z≈0.5mm 的地面网格上，给静止的机器一个“工作范围”参照。
-    /// </summary>
-    private Model3DGroup BuildAmplitudeRing()
-    {
-        const int segments = 72;
-        const double inner = 104;
-        const double outer = 114;
-        const double z = 0.6;
-
-        var positions = new Point3DCollection(segments * 2);
-        var normals = new Vector3DCollection(segments * 2);
-        var indices = new Int32Collection(segments * 6);
-        for (int i = 0; i < segments; i++)
-        {
-            double angle = i * 2 * Math.PI / segments;
-            double cos = Math.Cos(angle), sin = Math.Sin(angle);
-            positions.Add(new Point3D(inner * cos, inner * sin, z));
-            positions.Add(new Point3D(outer * cos, outer * sin, z));
-            normals.Add(new Vector3D(0, 0, 1));
-            normals.Add(new Vector3D(0, 0, 1));
-        }
-        for (int i = 0; i < segments; i++)
-        {
-            int next = (i + 1) % segments;
-            int a = i * 2, b = i * 2 + 1, c = next * 2, d = next * 2 + 1;
-            indices.Add(a); indices.Add(b); indices.Add(d);
-            indices.Add(a); indices.Add(d); indices.Add(c);
-        }
-
-        var mesh = new MeshGeometry3D
-        {
-            Positions = positions,
-            Normals = normals,
-            TriangleIndices = indices,
-        };
-        mesh.Freeze();
-
-        var material = new MaterialGroup();
-        material.Children.Add(new DiffuseMaterial(new SolidColorBrush(Color.FromArgb(0x66, 0x17, 0xB8, 0x90))));
-        material.Children.Add(new EmissiveMaterial(new SolidColorBrush(Color.FromArgb(0x28, 0x0F, 0x7A, 0x5F))));
-        material.Freeze();
-
-        var model = new GeometryModel3D(mesh, material) { BackMaterial = material };
-        model.Transform = new Transform3DGroup { Children = { _ampRingScale } };
-        return new Model3DGroup { Children = { model } };
+            Color.FromRgb(0x3C, 0x48, 0x56), new Vector3D(0.60, -0.35, -0.70)));
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -457,6 +400,21 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
         if (!_dragging) return;
         _dragging = false;
         View3D.ReleaseMouseCapture();
+        LogCamera("拖动结束");
+    }
+
+    /// <summary>
+    /// 把当前机位写进 app.log（只写一行，方便照着手动转出来的角度写成默认机位）。
+    /// </summary>
+    private void LogCamera(string reason)
+    {
+        if (View3D.Camera is not PerspectiveCamera camera) return;
+        System.Numerics.Quaternion q = _orbitRotation;
+        AppLogger.Info(
+            $"3D 机位[{reason}] pos=({camera.Position.X:F0},{camera.Position.Y:F0},{camera.Position.Z:F0}) " +
+            $"look=({camera.LookDirection.X:F0},{camera.LookDirection.Y:F0},{camera.LookDirection.Z:F0}) " +
+            $"up=({camera.UpDirection.X:F2},{camera.UpDirection.Y:F2},{camera.UpDirection.Z:F2}) " +
+            $"quat=({q.X:F4},{q.Y:F4},{q.Z:F4},{q.W:F4})");
     }
 
     /// <summary>

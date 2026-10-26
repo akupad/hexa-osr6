@@ -457,6 +457,12 @@ try
     Check("firmware boot log alone is not an identity response",
         !Osr6DeviceProfile.IsCompatibleIdentityResponse(
             "I (998) SR6Executor: Starting SR6 executor\r\nI (1002) app_main: OSR6 boot done\r\n"));
+    Check("新固件的开机横幅也算身份（它不回 D1）",
+        Osr6DeviceProfile.IsCompatibleIdentityResponse(
+            "I (241) app_init: Project name:     tcode\r\nI (242) app_init: App version:      v1.0.3-209-g0a9ea27"));
+    Check("别的 ESP 项目的横幅不算",
+        !Osr6DeviceProfile.IsCompatibleIdentityResponse(
+            "I (241) app_init: Project name:     esp32-cam\r\nI (242) app_init: App version: x"));
     Check("identity response is recognized past firmware log lines",
         Osr6DeviceProfile.IsCompatibleIdentityResponse(
             "I (529688) uart: UART echoed 4 bytes\r\nTCode v0.3\r\n"));
@@ -642,8 +648,10 @@ try
             == 9148 - SerialService.MaxStepPerFrame);
     Check("a small move passes through untouched",
         TCodeFrameFormatter.LimitStep(5000, 5123, SerialService.MaxStepPerFrame) == 5123);
-    Check("the safe step stays well under the measured crash threshold",
-        SerialService.MaxStepPerFrame <= 500);
+    // 新固件（2026-11）实测 800 / 1200 / 2000 各跑 40 秒零 panic，上限放到 2000；
+    // 它换来的速度是 50ms 走 20% 行程（≈400%/秒），够游戏按节拍跑满。
+    Check("单帧位移上限与新固件实测一致（400%/秒 量级）",
+        SerialService.MaxStepPerFrame is > 500 and <= 2000);
 
     double[] coordinated = Osr6MotionComposer.Compose(
         "game_flow", 0.37, [35, 13, 11, 14, 10, 8], 1, 30, ComfortProfile.Immersive);
@@ -739,6 +747,27 @@ try
     Check("raw axis token is normalized to safe bounds",
         normalizedTokens[0] == "L09999I9999" && normalizedTokens.Length == 6);
     Check("calibration returns to center before playback", engine.TryMoveCalibrationAxis("L0", 5000));
+
+    // ── 暂停 / 继续：停住不动、不回中、不锁输出，继续时接着走 ──────────
+    Check("pause refuses when nothing is running", !engine.Pause() && !engine.IsPaused);
+    Check("auto starts for the pause test", engine.StartAuto());
+    Thread.Sleep(120);
+    Check("pause accepted while playing", engine.Pause() && engine.IsPaused);
+    Thread.Sleep(250);
+    int pausedFrameCount = serial.SimulationCommands.Count;
+    Thread.Sleep(250);
+    Check("paused engine stops emitting motion frames",
+        serial.SimulationCommands.Count == pausedFrameCount);
+    Check("pause neither locks output nor trips the latch",
+        engine.IsArmed && engine.CanRun && !engine.EmergencyStopped);
+    Thread.Sleep(200);   // 撑过看门狗的 750ms 判据余量：暂停不该被误判成卡死
+    Check("pause survives past the watchdog window", engine.IsPaused && !engine.EmergencyStopped);
+    Check("resume accepted", engine.Resume() && !engine.IsPaused);
+    Thread.Sleep(350);
+    Check("resumed engine emits motion frames again",
+        serial.SimulationCommands.Count > pausedFrameCount);
+    engine.StopAll();
+    Check("stop clears the paused flag", !engine.IsPaused);
 
     engine.EditWaves["L0"].Clear();
     engine.EditWaves["L0"].AddRange([(0, WaveScriptCodec.CanvasHeight), (WaveScriptCodec.CanvasWidth, 0)]);
@@ -2875,12 +2904,49 @@ try
             && Math.Abs(LovenseProtocol.StrokePosition(20, 70, 50, 1) - 57.5) < 1e-9
             && Math.Abs(LovenseProtocol.StrokePosition(20, 70, 0, 1) - 45) < 1e-9
             && Math.Abs(LovenseProtocol.StrokePosition(20, 70, 500, 5) - 70) < 1e-9);
+        Check("Lovense：抽插走「进快—到底停—退慢」，不再是纯正弦",
+            Math.Abs(MotionVocabulary.ThrustWave(0.0, 0.45, 0.03)) < 1e-9
+            && Math.Abs(MotionVocabulary.ThrustWave(0.46, 0.45, 0.03) - 1.0) < 1e-9
+            && Math.Abs(MotionVocabulary.ThrustWave(0.99, 0.45, 0.03)) < 0.01
+            // 推进段的中点比回程段的中点更靠深端：说明「进得快」
+            && Math.Abs(MotionVocabulary.ThrustWave(0.225, 0.45, 0.03) - 0.75) < 0.01
+            && MotionVocabulary.ThrustWave(0.8, 0.45, 0.03) > 0.05);
+        Check("Lovense：条的百分比要翻成轴值（条上小=抬得高，轴值小=往下）",
+            Math.Abs(LovenseProtocol.StrokeAxisValue(20) - 80) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokeAxisValue(70) - 30) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokeAxisValue(0) - 100) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokeAxisValue(100) - 0) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokeAxisValue(500) - 0) < 1e-9);
+        Check("Lovense：深端留量让满强度也不顶到用户画的最深点",
+            Math.Abs(LovenseProtocol.StrokeWavePosition(20, 70, 100, 0.0, 8) - 20) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokeWavePosition(20, 70, 100, 1.0, 8) - (20 + 50 * 0.92)) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokeWavePosition(20, 70, 100, 1.0, 0) - 70) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokeWavePosition(20, 70, 50, 1.0, 0) - 45) < 1e-9
+            && LovenseProtocol.StrokeWavePosition(20, 70, 100, 5.0, 8) <= 66.0000001);
         Check("Lovense：快慢跟指令间隔走，间隔离谱时退回强度频率",
             Math.Abs(LovenseProtocol.TempoHz(0.5, 1.0) - 2.0) < 1e-9
             && Math.Abs(LovenseProtocol.TempoHz(0.2, 1.0) - 2.6) < 1e-9
             && Math.Abs(LovenseProtocol.TempoHz(0.05, 1.0) - 1.0) < 1e-9
             && Math.Abs(LovenseProtocol.TempoHz(9.0, 1.0) - 1.0) < 1e-9
             && Math.Abs(LovenseProtocol.TempoHz(double.NaN, 1.3) - 1.3) < 1e-9);
+        Check("Lovense：旋转也跟着指令间隔走，一条指令拧一个来回",
+            Math.Abs(LovenseProtocol.TwistHz(0.5, 1.0) - 2.0) < 1e-9
+            && Math.Abs(LovenseProtocol.TwistHz(0.2, 1.0) - 2.6) < 1e-9
+            && Math.Abs(LovenseProtocol.TwistHz(2.9, 1.0) - 0.35) < 1e-9
+            && Math.Abs(LovenseProtocol.TwistHz(0.05, 0.6) - 0.6) < 1e-9
+            && Math.Abs(LovenseProtocol.TwistHz(9.0, 0.6) - 0.6) < 1e-9);
+        Check("Lovense：扭转条与行程条同一套区间规则（拖反了自动换、跨度至少 10）",
+            LovenseProtocol.StrokeWindow(LovenseProtocol.DefaultRotateTopPercent, LovenseProtocol.DefaultRotateDeepPercent)
+                == (LovenseProtocol.DefaultRotateTopPercent, LovenseProtocol.DefaultRotateDeepPercent)
+            && LovenseProtocol.StrokeWindow(80, 20) == (20, 80)
+            && LovenseProtocol.StrokePosition(20, 80, 25, 1) == 20 + (80 - 20) / 2.0 + (80 - 20) / 2.0 * 0.25);
+        Check("游戏不限速档：只守轴限位，比动感档宽得多且不进界面三档",
+            ComfortProfile.All.Count == 3
+            && !ComfortProfile.All.Any(p => p.Id == "game")
+            && ComfortProfile.Resolve("game").Id == "game"
+            && ComfortProfile.Resolve("game").MaxAxisSpeedPerSecond > ComfortProfile.Dynamic.MaxAxisSpeedPerSecond
+            && ComfortProfile.Resolve("game").MaxIntensity >= 3.0
+            && ComfortProfile.Resolve("game").SoftStartSeconds <= 0.01);
         Check("Lovense：行程与快慢相冲时压低频率，避免被限速器削平",
             // 170%/s 的舒适档，走满 100% 行程最多 π×100 的速度 ⇒ 频率约 0.54Hz
             Math.Abs(LovenseProtocol.FitHz(2.0, 100, 170) - 170 / (Math.PI * 100)) < 1e-9

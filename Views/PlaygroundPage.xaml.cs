@@ -100,7 +100,13 @@ public partial class PlaygroundPage : Page
         {
             Interval = TimeSpan.FromMilliseconds(250),
         };
-        _statusTimer.Tick += (_, _) => { UpdateLiveBehavior(); RefreshBridgeSectionSummary(); RefreshLovenseStatus(); };
+        _statusTimer.Tick += (_, _) =>
+        {
+            UpdateLiveBehavior();
+            RefreshBridgeSectionSummary();
+            RefreshLovenseStatus();
+            UpdateLovenseLive();
+        };
         _statusTimer.Start();
 
         // 被挡下时闪一下原因条：不弹窗打断，但一定看得见"为什么没动"。
@@ -274,6 +280,15 @@ public partial class PlaygroundPage : Page
         LovensePortBox.Text = App.Settings.LovenseBridgePort.ToString();
         LovenseRange.LowerValue = App.Settings.LovenseStrokeTopPercent;
         LovenseRange.UpperValue = App.Settings.LovenseStrokeDeepPercent;
+        LovenseUnlimitedCheck.IsChecked = App.Settings.LovenseUnlimited;
+        LovenseRotateRange.LowerValue = App.Settings.LovenseRotateTopPercent;
+        LovenseRotateRange.UpperValue = App.Settings.LovenseRotateDeepPercent;
+        ApplyLovenseRotate();
+        // 拖条时让机器立刻走到那个位置（手感预览）。订阅放在初值赋值之后，免得打开页面就把设备拽走。
+        LovenseRange.LowerValueChanged += (_, _) => PreviewLovenseAxis(0, LovenseRange.LowerValue);
+        LovenseRange.UpperValueChanged += (_, _) => PreviewLovenseAxis(0, LovenseRange.UpperValue);
+        LovenseRotateRange.LowerValueChanged += (_, _) => PreviewLovenseAxis(3, LovenseRotateRange.LowerValue);
+        LovenseRotateRange.UpperValueChanged += (_, _) => PreviewLovenseAxis(3, LovenseRotateRange.UpperValue);
         UpdateLovenseAddressText();
         RefreshLovenseStatus();
     }
@@ -381,6 +396,77 @@ public partial class PlaygroundPage : Page
         }
         App.Settings.LovenseStrokeTopPercent = topPercent;
         App.Settings.LovenseStrokeDeepPercent = deepPercent;
+    }
+
+    private void LovenseUnlimited_Changed(object sender, RoutedEventArgs e)
+    {
+        if (LovenseUnlimitedCheck is null) return;
+        bool unlimited = LovenseUnlimitedCheck.IsChecked == true;
+        App.Settings.LovenseUnlimited = unlimited;
+        if (App.Lovense is not null)
+        {
+            App.Lovense.Unlimited = unlimited;
+            // 立刻生效：关掉时把已经顶上来的「不限速」档摘掉，勾上时等游戏下一条指令自己挂上去。
+            if (!unlimited && App.Engine.ComfortOverride is not null) App.Engine.ComfortOverride = null;
+        }
+        App.Settings.Save();
+    }
+
+    private void LovenseRotate_Changed(object sender, EventArgs e) => ApplyLovenseRotate();
+
+    /// <summary>扭转条：两个圆点就是 R0 的两头，游戏强度只决定这段里摆多大。</summary>
+    private void ApplyLovenseRotate()
+    {
+        if (LovenseRotateRange is null || LovenseRotateText is null) return;
+        (double top, double deep) = LovenseProtocol.StrokeWindow(
+            (int)Math.Round(LovenseRotateRange.LowerValue), (int)Math.Round(LovenseRotateRange.UpperValue));
+        int topPercent = (int)Math.Round(top);
+        int deepPercent = (int)Math.Round(deep);
+        LovenseRotateText.Text = topPercent + "% – " + deepPercent + "%";
+        if (App.Lovense is not null)
+        {
+            App.Lovense.RotateTopPercent = topPercent;
+            App.Lovense.RotateDeepPercent = deepPercent;
+        }
+        App.Settings.LovenseRotateTopPercent = topPercent;
+        App.Settings.LovenseRotateDeepPercent = deepPercent;
+    }
+
+    private DateTime _lovensePreviewUtc = DateTime.MinValue;
+
+    /// <summary>
+    /// 「看着机器走到我拉的那一格」：拖动行程条/扭转条时，立刻把对应那根轴送到该百分比。
+    /// 只动那一根轴，其余保持 50（中位）；不改区间设置，也不影响游戏真要动作时的算法。
+    /// 30ms 一把：拖动时事件非常密，逐帧发会把串口写满。
+    /// </summary>
+    private void PreviewLovenseAxis(int axis, double percent)
+    {
+        if (App.Engine is null || axis is < 0 or > 5) return;
+        DateTime now = DateTime.UtcNow;
+        if ((now - _lovensePreviewUtc).TotalMilliseconds < 30) return;
+        _lovensePreviewUtc = now;
+        double[] values = [50, 50, 50, 50, 50, 50];
+        // 行程轴（L0）要翻一次：条上小的那端才抬得高，而轴值小了反而往下。
+        values[axis] = axis == 0
+            ? LovenseProtocol.StrokeAxisValue(percent)
+            : Math.Clamp(percent, 0, 100);
+        // 0.3 秒插值：拖得再快也不会一帧甩过去，看起来是「跟着手走」而不是弹过去。
+        App.Engine.TrySendDirectAxes(values, 0.3);
+    }
+
+    private void LovenseRotate_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        ApplyLovenseRotate();
+        App.Settings.Save();
+    }
+
+    /// <summary>实时读数：直接读引擎最后一批输出（过完限速器、真正发给机器的位置），不是我们想发什么。</summary>
+    private void UpdateLovenseLive()
+    {
+        if (LovenseLiveText is null) return;
+        double[] output = App.Engine.GetLastOutputSnapshot();
+        LovenseLiveText.Text = "现在 L0 " + (int)Math.Round(output[0]) + "% · R0 "
+            + (int)Math.Round(output[3]) + "%";
     }
 
     private void LovenseRange_LostMouseCapture(object sender, MouseEventArgs e)

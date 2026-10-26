@@ -1251,8 +1251,8 @@ public sealed class AiAssistantService
         ["idle"] = "__home__",
         ["mild"] = "gentle",
         ["excited"] = "daily",
-        ["climax"] = "ambush",
-        ["riding"] = "wave",
+        ["climax"] = "crazy",
+        ["riding"] = "daily",
         ["sitting_twist"] = "tease",
         ["fisting"] = "heartbeat",
     };

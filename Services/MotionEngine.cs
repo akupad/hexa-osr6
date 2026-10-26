@@ -155,6 +155,12 @@ public sealed class MotionEngine : IDisposable
     public bool IsRunning => AutoRunning || StrokeRunning || CustomRunning || TelemetryRunning || _burstRunning || TeasingMode;
 
     /// <summary>
+    /// 暂停：各模式的节拍整体停跑，设备停在最后一帧的位置（不回中、不抖、不漂），
+    /// 点继续从原相位接着走。语义上仍然是「正在播放」，只是不动。
+    /// </summary>
+    public bool IsPaused { get; private set; }
+
+    /// <summary>
     /// 脚本（funscript）正在驱动设备。
     ///
     /// <b>为什么需要这个单独的属性</b>：脚本走的是 <see cref="TrySendDirectAxes"/> 这条"直接下发"路径，
@@ -284,7 +290,10 @@ public sealed class MotionEngine : IDisposable
         _directInputOwner = null;
         NotifyStateChanged();
     }
-    public ComfortProfile ActiveComfortProfile => ComfortProfile.Resolve(_cfg.ComfortProfile);
+    /// <summary>临时顶掉的档位（游戏桥在跑的时候挂 <see cref="ComfortProfile.Game"/>），收工置空。</summary>
+    public ComfortProfile? ComfortOverride { get; set; }
+
+    public ComfortProfile ActiveComfortProfile => ComfortOverride ?? ComfortProfile.Resolve(_cfg.ComfortProfile);
 
     public string SafetyStatus
     {
@@ -425,17 +434,17 @@ public sealed class MotionEngine : IDisposable
         Enumerable.Range(0, 6).Select(_ => new List<(double X, double Y)>()).ToArray();
     private readonly object _waveLock = new();
 
+    // 只留「按下去立刻能听出不同」的五个：以前是九个按钮，但好几组参数几乎是同一条曲线
+    // （波浪≈日常、偷袭一下≈疯狂、心跳≈阶梯递增、欲擒故纵≈轻柔加大点抖动），用户按一圈感觉都一样。
+    // 现在五个各占一头：轻柔＝又慢又浅的抚摸，日常＝中速常态，疯狂＝又快又深，
+    // 挑逗＝慢而绕（形状不对称，一直在磨），心跳＝一下一下顿。
     private static readonly Dictionary<string, (int Speed, string Pattern, double L0, double L1, double L2)> QuickPresets = new()
     {
         ["gentle"]    = (40, "gentle_wave",    25,  7,  7),
         ["daily"]     = (55, "organic_flow",   38, 16, 15),
         ["crazy"]     = (90, "intense_thrust", 48, 25, 24),
         ["tease"]     = (48, "spiral_tease",   30, 10, 10),
-        ["wave"]      = (62, "game_flow",      40, 20, 20),
         ["heartbeat"] = (70, "deep_pulse",     38, 12, 12),
-        ["escalate"]  = (68, "edge_swirl",     35, 14, 14),
-        ["edging"]    = (55, "random_micro",   26,  8,  8),
-        ["ambush"]    = (85, "climax_burst",   46, 20, 20),
     };
 
     public MotionEngine(ICommandTransport transport, AppSettings cfg, BlackBoxRecorder? blackBox = null)
@@ -1435,6 +1444,7 @@ public sealed class MotionEngine : IDisposable
     {
         _generation++;
         Volatile.Write(ref _blendInPending, 0);     // 没有模式在跑，也就没有「进入模式的第一帧」
+        IsPaused = false;            // 停了就不该还挂着「已暂停」：下次开新动作要能直接动
         InterruptEase();             // 停掉一切时也打断没跑完的缓降 / 混合（急停走的正是这条路）
         AutoRunning = false;
         StrokeRunning = false;
@@ -1477,6 +1487,46 @@ public sealed class MotionEngine : IDisposable
                 if (TelemetryRunning) StopTelemetrySync();
                 break;
         }
+    }
+
+    /// <summary>
+    /// 暂停 / 继续。暂停时所有自动动作原地停住不动，继续时从那一点接着走
+    /// （不是重启，不重置节拍、不改相位）。停/急停/归中会顺手清掉暂停。
+    /// </summary>
+    public bool TogglePause()
+    {
+        if (IsPaused) return Resume();
+        return Pause();
+    }
+
+    public bool Pause()
+    {
+        if (IsPaused) return true;
+        if (!CanRun || !IsRunning) return false;   // 本来就没在动，没什么可暂停
+        IsPaused = true;
+        Volatile.Write(ref _lastSchedulerTickAt, Stopwatch.GetTimestamp());
+        AppLogger.Info("已暂停：设备停在原地，点「继续」接着走");
+        NotifyStateChanged();
+        return true;
+    }
+
+    public bool Resume()
+    {
+        if (!IsPaused) return true;
+        IsPaused = false;
+        // 继续的那一拍把时间戳重置，否则 dt 会把整段暂停时长算进去（虽然已被夹到 0.1s，
+        // 但夹到 0.1s 等于一帧走 100ms 的位移，会看到一次小跳）。
+        Volatile.Write(ref _lastSchedulerTickAt, Stopwatch.GetTimestamp());
+        // 各模式的 dt 时间戳也要清掉：不清的话第一拍会把整段暂停时长当 dt（虽被夹到 0.1s，
+        // 0.1s 的位移在暂停之后会看到一次小跳）。清成 0 就走 fallback（一帧的正常 dt）。
+        Volatile.Write(ref _autoLastTick, 0);
+        Volatile.Write(ref _strokeLastTick, 0);
+        Volatile.Write(ref _customLastTick, 0);
+        Volatile.Write(ref _teaseLastTick, 0);
+        Volatile.Write(ref _telemetryLastTick, 0);
+        AppLogger.Info("继续：从暂停的位置接着走");
+        NotifyStateChanged();
+        return true;
     }
 
     public async Task ClimaxBurstAsync()
@@ -2094,6 +2144,10 @@ public sealed class MotionEngine : IDisposable
     private void RunTick(long generation, Action<long> tick)
     {
         if (generation != Interlocked.Read(ref _generation) || !CanRun) return;
+        // 暂停就整个不推进：相位、包络、限速器全都冻在那一刻，继续时接着走。
+        // 这里刻意不拦直发通道（手动轴 / 滑杆预览 / Home）：暂停只针对"自动动作"，
+        // 否则暂停后拖滑杆设备不动，会让人以为坏了。
+        if (IsPaused) return;
         if (Interlocked.Exchange(ref _tickBusy, 1) != 0) return;
         try
         {
@@ -2126,6 +2180,14 @@ public sealed class MotionEngine : IDisposable
 
     private void WatchdogTick()
     {
+        // 暂停时调度当然不刷新，这不是卡死；顺手把时间戳续上，免得继续时那一拍被误判。
+        if (IsPaused)
+        {
+            _watchdogSawRunning = false;
+            Volatile.Write(ref _lastSchedulerTickAt, Stopwatch.GetTimestamp());
+            return;
+        }
+
         if (!IsRunning || !CanRun)
         {
             _watchdogSawRunning = false;

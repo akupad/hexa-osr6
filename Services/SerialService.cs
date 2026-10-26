@@ -80,8 +80,13 @@ public sealed class SerialService : ICommandTransport, IDisposable
     private readonly int[] _lastWrittenRaw = new int[6];
     private bool _hasWrittenFrame;
 
-    /// <summary>单帧允许的最大位移（TCode 单位）。真机实测：每帧 500 连跑 90 秒没事，1000 七秒就崩。</summary>
-    public const int MaxStepPerFrame = 400;
+    /// <summary>
+    /// 单帧允许的最大位移（TCode 单位）。旧固件（c90bc29）每帧 500 连跑 90 秒没事、1000 七秒就崩，所以当初卡 400；
+    /// 2026-11 的新固件上重测：800 / 1200 / 2000 各跑 40 秒、549 帧全部零 panic，于是放到 2000
+    /// （＝50ms 内走 20% 行程，合 400%/秒），刚好够游戏按节拍跑满而不被削平。
+    /// 它只是「别把固件写崩」的保底，不是舒适度限制。
+    /// </summary>
+    public const int MaxStepPerFrame = 2000;
     private readonly int[] _lastSentInterval = new int[6];
     private long _lastComposeLogMs;
     /// <summary>固件卡死（看门狗刷屏、心跳停）第一次被发现的时刻；0 = 没卡。</summary>
@@ -146,6 +151,15 @@ public sealed class SerialService : ICommandTransport, IDisposable
                 _outputEnabled = enabled;
             }
         }
+    }
+
+    /// <summary>
+    /// 输出被锁期间丢掉的指令条数。悬浮窗「为什么不动」直接读它：
+    /// 锁着的时候发什么都没用，得说清「丢了几条、怎么解锁」。
+    /// </summary>
+    public int DroppedWhileLocked
+    {
+        get { lock (_lock) return _droppedWhileLocked; }
     }
 
     /// <summary>串口卡死时给用户的处置建议（详见 ICommandTransport.UserAdvice 的说明）。</summary>
@@ -439,6 +453,18 @@ public sealed class SerialService : ICommandTransport, IDisposable
         return message;
     }
 
+    /// <summary>常见的 USB 转串口芯片：乐鑫原生 USB、CH340、CP210x、FTDI。蓝牙口一律不算。</summary>
+    private static readonly string[] KnownUsbBridgeVendors = ["VID_303A", "VID_1A86", "VID_10C4", "VID_0403"];
+
+    /// <summary>这个口是真 USB 线插着的（而不是虚拟口/蓝牙口）。换固件后没身份信息时，只对这类口硬连。</summary>
+    private static bool IsKnownUsbBridgeHardware(string? hardwareId)
+    {
+        if (string.IsNullOrWhiteSpace(hardwareId)) return false;
+        foreach (string vendor in KnownUsbBridgeVendors)
+            if (hardwareId.Contains(vendor, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
     private async Task<(bool ok, string? error)> OpenCandidatesAsync(long generation)
     {
         string primary;
@@ -462,8 +488,13 @@ public sealed class SerialService : ICommandTransport, IDisposable
             candidates.AddRange(discovered.Select(option => option.PortName));
         }
 
+        var ordered = candidates.Where(p => p.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+
+        async Task<(bool Ok, string? Error)> AttemptAsync(List<string> names, bool requireIdentity)
+        {
         string? lastError = null;
-        foreach (string candidate in candidates.Where(p => p.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase))
+        foreach (string candidate in names)
         {
             lock (_lock)
             {
@@ -473,7 +504,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
                     return (true, null);
             }
 
-            var (opened, error) = await TryOpenPortAsync(candidate, generation).ConfigureAwait(false);
+            var (opened, error) = await TryOpenPortAsync(candidate, generation, requireIdentity).ConfigureAwait(false);
             if (opened == null)
             {
                 lastError = $"{candidate}: {error}";
@@ -509,9 +540,31 @@ public sealed class SerialService : ICommandTransport, IDisposable
         }
 
         return (false, lastError ?? "没有可用端口");
+        }
+
+        var firstPass = await AttemptAsync(ordered, requireIdentity: true).ConfigureAwait(false);
+        if (firstPass.Ok) return firstPass;
+
+        // 第二遍：只对「已知 USB 转串口」（CH340 / ESP32 原生 USB CDC）放宽身份要求。
+        // 换固件后 D1 可能完全不回话，硬连总比连不上强；蓝牙口不放进来——它没配对也能打开，
+        // 会白白占住 5 秒（真机实测过）。
+        Dictionary<string, PortMetadata> metadata = ReadPortMetadata();
+        var wiredOnly = ordered.Where(name =>
+            metadata.TryGetValue(name, out PortMetadata info)
+            && IsKnownUsbBridgeHardware(info.HardwareId)).ToList();
+        if (wiredOnly.Count > 0 && wiredOnly.Count != ordered.Count)
+        {
+            var secondPass = await AttemptAsync(wiredOnly, requireIdentity: false).ConfigureAwait(false);
+            if (secondPass.Ok)
+            {
+                AppLogger.Warn("这一版固件没回身份信息，已按已知 USB 设备硬连上。");
+                return secondPass;
+            }
+        }
+        return firstPass;
     }
 
-    private async Task<(SerialPort? port, string? error)> TryOpenPortAsync(string name, long generation)
+    private async Task<(SerialPort? port, string? error)> TryOpenPortAsync(string name, long generation, bool requireIdentity = true)
     {
         Task<SerialPort?>? pending;
         lock (_lock)
@@ -523,7 +576,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         }
 
         using var cts = new CancellationTokenSource(OpenTimeout);
-        var openTask = Task.Run(() => OpenPort(name, cts.Token), CancellationToken.None);
+        var openTask = Task.Run(() => OpenPort(name, cts.Token, requireIdentity), CancellationToken.None);
         lock (_lock) _pendingOpenTask = openTask;
 
         try
@@ -572,7 +625,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         }
     }
 
-    private static SerialPort? OpenPort(string name, CancellationToken cancellationToken)
+    private static SerialPort? OpenPort(string name, CancellationToken cancellationToken, bool requireIdentity = true)
     {
         var port = new SerialPort(name, 115200)
         {
@@ -587,9 +640,21 @@ public sealed class SerialService : ICommandTransport, IDisposable
         {
             port.Open();
             if (!cancellationToken.IsCancellationRequested && ProbeTCodeIdentity(port, cancellationToken)) return port;
+            if (cancellationToken.IsCancellationRequested)
+            {
+                port.Close();
+                port.Dispose();
+                return null;
+            }
+            // 换了固件以后 D1 可能一句都不回（2026-11 那版就是：1.5 秒只有日志）。
+            // 已知的 USB 转串口设备仍然放行，按 TCode 硬连——连不上再让用户自己换口。
+            if (!requireIdentity)
+            {
+                AppLogger.Warn($"{name}: 没回 TCode 身份，按已知 USB 设备硬连。");
+                return port;
+            }
             port.Close();
             port.Dispose();
-            if (cancellationToken.IsCancellationRequested) return null;
             throw new IOException("端口没有返回 SR6 / TCode 身份信息");
         }
         catch
@@ -671,9 +736,10 @@ public sealed class SerialService : ICommandTransport, IDisposable
             {
                 port.DiscardInBuffer();
                 // 逐条发、每条单独收：D0 与 D1 同批到达时固件会吞掉 D1 的回话（真机实测），
-                // 所以 D1 先发，D0/D2 各隔一段再发，回话按 D1→D0→D2 顺序拼回。
+                // 所以 D1 先发，D0 隔一段再发，回话按 D1→D0 顺序拼回。
+                // D2 不再发：2026-11 那版固件收到 D2 当场 panic（MCAUSE 0x2 / Illegal instruction → Rebooting）。
                 var response = new System.Text.StringBuilder();
-                foreach (string command in new[] { "D1\n", "D0\n", "D2\n" })
+                foreach (string command in new[] { "D1\n", "D0\n" })
                 {
                     if (!TryWriteGated(port, command, 1000)) AppLogger.Warn("串口写闸门被占，设备自检命令没发出去。");
                     long sliceStart = Stopwatch.GetTimestamp();
@@ -1390,11 +1456,13 @@ public sealed class SerialService : ICommandTransport, IDisposable
             {
                 await Task.Delay(RebootReattachDelayMs).ConfigureAwait(false);
 
+                bool wasUnlocked;
                 lock (_lock)
                 {
                     if (_disposed || _simulationEnabled) return;
                     if (_port?.IsOpen != true) return;            // 已经断了，交给常规重连循环
                     if (_pendingOpenTask is { IsCompleted: false }) return;
+                    wasUnlocked = _outputEnabled;
                     ClosePortLocked();
                     _outputEnabled = false;
                     _consecutiveFailures = 0;
@@ -1402,7 +1470,14 @@ public sealed class SerialService : ICommandTransport, IDisposable
                 }
 
                 AppLogger.Info("链路：重启后重新接手串口，尽快恢复输出。");
-                await TryConnectCoreAsync(notify: false).ConfigureAwait(false);
+                if (!await TryConnectCoreAsync(notify: false).ConfigureAwait(false)) return;
+                // 板子重启后必须自己把输出解锁回来：手机会连着崩好几次，每次都要人去点「全部归中」才动，
+                // 等于一整局都废了。只在崩之前本来就是解锁状态（用户自己点开过）时才恢复。
+                if (wasUnlocked && IsOpen)
+                {
+                    OutputEnabled = true;
+                    AppLogger.Info("链路：板子起来了，输出已自动恢复。");
+                }
             }
             catch (Exception ex)
             {

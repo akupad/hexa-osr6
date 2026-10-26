@@ -38,6 +38,8 @@ public sealed class LovenseBridgeService : IDisposable
     private double _rotateAmplitude;
     private double _rotateHz;
     private double _rotatePhase;
+    private double _rotatePhaseOffset;
+    private bool _rotateLockPending;
     private DateTime _lastCommandUtc = DateTime.MinValue;
     /// <summary>这条指令跑到什么时候为止（Lovense 一条 Function 会带 timeSec，游戏不会再发第二遍）。</summary>
     private DateTime _runUntilUtc = DateTime.MinValue;
@@ -57,6 +59,9 @@ public sealed class LovenseBridgeService : IDisposable
     private DateTime _blockedSinceUtc = DateTime.MinValue;
     private volatile int _strokeDeepPercent = LovenseProtocol.DefaultStrokeDeepPercent;
     private volatile int _strokeTopPercent = LovenseProtocol.DefaultStrokeTopPercent;
+    private volatile int _endMarginPercent = (int)LovenseProtocol.DefaultEndMarginPercent;
+    private volatile int _rotateDeepPercent = LovenseProtocol.DefaultRotateDeepPercent;
+    private volatile int _rotateTopPercent = LovenseProtocol.DefaultRotateTopPercent;
     private volatile bool _sawClient;
     private volatile string _toyName = LovenseProtocol.DefaultToyName;
 
@@ -76,12 +81,36 @@ public sealed class LovenseBridgeService : IDisposable
         set => _strokeTopPercent = Math.Clamp(value, 0, 100);
     }
 
+    /// <summary>深端留量（0–40%）：强度拉满时也留这么一段不走，顶到底那一下不会硬撞。</summary>
+    public int EndMarginPercent
+    {
+        get => _endMarginPercent;
+        set => _endMarginPercent = Math.Clamp(value, 0, 40);
+    }
+
     /// <summary>最深点（%）：行程条右边的圆点，插到这儿就不下去。</summary>
     public int StrokeDeepPercent
     {
         get => _strokeDeepPercent;
         set => _strokeDeepPercent = Math.Clamp(value, 0, 100);
     }
+
+    /// <summary>扭转端点 A（%）：R0 摆到这一头就回转。</summary>
+    public int RotateTopPercent
+    {
+        get => _rotateTopPercent;
+        set => _rotateTopPercent = Math.Clamp(value, 0, 100);
+    }
+
+    /// <summary>扭转端点 B（%）：另一头。</summary>
+    public int RotateDeepPercent
+    {
+        get => _rotateDeepPercent;
+        set => _rotateDeepPercent = Math.Clamp(value, 0, 100);
+    }
+
+    /// <summary>true 时游戏一有动作就把档位顶成「不限速」（只守轴限位），游戏停了再摘掉。</summary>
+    public bool Unlimited { get; set; } = true;
 
     public bool IsRunning { get; private set; }
     public int HttpsPort { get; private set; }
@@ -195,6 +224,7 @@ public sealed class LovenseBridgeService : IDisposable
         _certificate?.Dispose();
         _certificate = null;
         IsRunning = false;
+        ReleaseComfortOverride();
         lock (_gate)
         {
             _action = "";
@@ -203,6 +233,12 @@ public sealed class LovenseBridgeService : IDisposable
     }
 
     public void Dispose() => Stop();
+
+    /// <summary>把临时顶上去的「不限速」档摘掉，恢复成用户选的档位。</summary>
+    private void ReleaseComfortOverride()
+    {
+        if (_engine.ComfortOverride is not null) _engine.ComfortOverride = null;
+    }
 
     private async Task AcceptLoopAsync(TcpListener listener, bool tls, CancellationToken token)
     {
@@ -300,9 +336,13 @@ public sealed class LovenseBridgeService : IDisposable
                 _action = "";
                 _amplitude = 0;
                 _rotateAmplitude = 0;
+                ReleaseComfortOverride();
                 _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
                 return;
             }
+            // 用户定的规矩：玩游戏时唯一的限制是设置页的轴限位，所以收到动作就把档位换成「不限速」，
+            // 游戏一停（Stop / 超时收尾）再摘下来，不影响脚本、声音那些路径。
+            if (Unlimited) _engine.ComfortOverride = Hexa.Models.ComfortProfile.Game;
             // 游戏基本是一抽发一条指令，间隔就是这个动作的真实周期；断流、卡顿时退回强度算出来的频率。
             DateTime arrival = DateTime.UtcNow;
             if (_lastArrivalUtc != DateTime.MinValue)
@@ -324,7 +364,9 @@ public sealed class LovenseBridgeService : IDisposable
             _finishStartedUtc = DateTime.MinValue;
             _hz = LovenseProtocol.TempoHz(_intervalSeconds, Math.Clamp(outcome.Hz, 0.1, 3.0));
             _rotateAmplitude = outcome.RotateAmplitude;
-            _rotateHz = Math.Clamp(outcome.RotateHz, 0.1, 2.0);
+            // 旋转也按指令节奏走：一条指令正好拧一个来回，发得越密拧得越快。
+            _rotateLockPending = true;
+            _rotateHz = LovenseProtocol.TwistHz(_intervalSeconds, Math.Clamp(outcome.RotateHz, 0.1, 2.0));
             // 游戏一条命令只发一次，时长靠 timeSec 说明（缺省 20 秒，和 Lovense 官方默认一致）。
             double seconds = outcome.Seconds > 0 ? Math.Clamp(outcome.Seconds, 0.2, 3600) : 20;
             _runUntilUtc = _lastCommandUtc.AddSeconds(seconds);
@@ -340,7 +382,7 @@ public sealed class LovenseBridgeService : IDisposable
 
         string action;
         double amplitude, hz, rotateAmplitude, rotateHz;
-        int strokeTop, strokeDeep;
+        int strokeTop, strokeDeep, rotateTop, rotateDeep;
         DateTime last, until;
         lock (_gate)
         {
@@ -351,10 +393,14 @@ public sealed class LovenseBridgeService : IDisposable
             rotateHz = _rotateHz;
             strokeTop = _strokeTopPercent;
             strokeDeep = _strokeDeepPercent;
+            rotateTop = _rotateTopPercent;
+            rotateDeep = _rotateDeepPercent;
             last = _lastCommandUtc;
             until = _runUntilUtc;
         }
         if (action.Length == 0) return;
+
+        int endMargin = _endMarginPercent;
 
         // timeSec 用完（游戏关了、暂停了也一样）：先把这一抽走完再回中位，中途掐断会明显一顿。
         if (now > until && !_finishing)
@@ -368,7 +414,8 @@ public sealed class LovenseBridgeService : IDisposable
         // 舒适档的速度上限决定能跑多快，两者打架时压频率，否则限速器会把整段波形削圆。
         (double windowTop, double windowDeep) = LovenseProtocol.StrokeWindow(strokeTop, strokeDeep);
         double windowSpan = windowDeep - windowTop;
-        double speedLimit = _engine.ActiveComfortProfile.MaxAxisSpeedPerSecond;
+        var profile = _engine.ActiveComfortProfile;
+        double speedLimit = profile.MaxAxisSpeedPerSecond;
         // 游戏强度是一档一档跳的（13→19）：直接跟会让行程一步甩出去，这里用 120ms 平滑过去。
         double blend = Math.Clamp(dt / 0.12, 0, 1);
         _smoothedAmplitude = _smoothedAmplitude < 0 ? amplitude : _smoothedAmplitude + (amplitude - _smoothedAmplitude) * blend;
@@ -376,16 +423,28 @@ public sealed class LovenseBridgeService : IDisposable
         amplitude = _smoothedAmplitude;
         rotateAmplitude = _smoothedRotateAmplitude;
         // 限速器管的是真实走过的路：区间越窄，同样强度下实际行程越短，也就能跑得更快。
-        double travelled = amplitude * windowSpan / 100.0;
+        // 扭转也有一根条子：两个端点定死「转到哪儿」，强度决定在这个区间里摆多大。
+        (double rotateWindowTop, double rotateWindowDeep) = LovenseProtocol.StrokeWindow(rotateTop, rotateDeep);
+        double rotateSpan = rotateWindowDeep - rotateWindowTop;
+        double travelled = amplitude * windowSpan / 100.0 * (1.0 - endMargin / 100.0);
         double commandedHz = hz;
+        double commandedRotateHz = rotateHz;
         hz = LovenseProtocol.FitHz(hz, travelled, speedLimit);
-        rotateHz = LovenseProtocol.FitHz(rotateHz, rotateAmplitude, speedLimit);
+        rotateHz = LovenseProtocol.FitHz(rotateHz, rotateAmplitude * rotateSpan / 100.0, speedLimit);
         if (_phaseLockPending)
         {
             _phaseLockPending = false;
             // 只有真能按游戏的节拍跑时才对齐；被物理限速压慢时对齐没有意义（它根本追不上）。
             if (hz >= commandedHz * 0.95)
                 _phaseOffset = Math.Clamp(-LovenseProtocol.PhaseError(_phase), -0.25, 0.25);
+        }
+        if (_rotateLockPending)
+        {
+            _rotateLockPending = false;
+            // 旋转同样对齐到这条指令：每条指令都从「转回原位」开始拧一个新来回，
+            // 这样一抽一拧是对上的，而不是两条波形各转各的漂在一起。
+            if (rotateHz >= commandedRotateHz * 0.95)
+                _rotatePhaseOffset = Math.Clamp(-LovenseProtocol.PhaseError(_rotatePhase), -0.25, 0.25);
         }
 
         // 抽插和转动各走各的相位：一条命令里同时有 Vibrate 和 Rotate 时两根轴一起动。
@@ -397,14 +456,21 @@ public sealed class LovenseBridgeService : IDisposable
             // 用「相位 + 修正量」出波形：修正量在 150ms 内衰减到 0，看起来只是这一抽略快或略慢，不会跳。
             double shown = LovenseProtocol.Frac(_phase + _phaseOffset);
             _phaseOffset *= Math.Exp(-dt / 0.15);
-            main = LovenseProtocol.StrokePosition(windowTop, windowDeep, amplitude, Math.Sin(2 * Math.PI * shown));
+            // 非正弦：进得快、到底顿一下、退得慢（长短由当前舒适档的 ThrustRatio/DwellRatio 决定）。
+            // 正弦两端速度为 0、中段最快，摸起来像活塞；这个形状冲击集中在前段，才像人在动。
+            double punch = MotionVocabulary.ThrustWave(shown, profile.ThrustRatio, profile.DwellRatio);
+            main = LovenseProtocol.StrokeAxisValue(
+                LovenseProtocol.StrokeWavePosition(windowTop, windowDeep, amplitude, punch, endMargin));
         }
         double twist = 50;
         if (rotateAmplitude > 0)
         {
             _rotatePhase += dt * rotateHz;
             if (_rotatePhase >= 1.0) _rotatePhase -= Math.Floor(_rotatePhase);
-            twist = 50 + rotateAmplitude / 2.0 * Math.Sin(2 * Math.PI * _rotatePhase);
+            double shownRotate = LovenseProtocol.Frac(_rotatePhase + _rotatePhaseOffset);
+            _rotatePhaseOffset *= Math.Exp(-dt / 0.15);
+            twist = LovenseProtocol.StrokePosition(
+                rotateWindowTop, rotateWindowDeep, rotateAmplitude, Math.Sin(2 * Math.PI * shownRotate));
         }
         // 收尾：这一抽绕回起点（或等满 1.5 秒）就停在中位。
         if (_finishing)
@@ -419,10 +485,12 @@ public sealed class LovenseBridgeService : IDisposable
                     _finishing = false;
                     _finishStartedUtc = DateTime.MinValue;
                 }
+                ReleaseComfortOverride();
                 // 停在这一段的区间中间，而不是一路弹回全局中位：少做一次没必要的位移。
-                double rest = (windowTop + windowDeep) / 2.0;
+                double rest = LovenseProtocol.StrokeAxisValue((windowTop + windowDeep) / 2.0);
+                double restRotate = (rotateWindowTop + rotateWindowDeep) / 2.0;
                 _engine.TrySendDirectAxes(
-                    [rest, 50 + (rest - 50) * 0.10, 50 + (rest - 50) * 0.08, 50, 50, 50], 0.45);
+                    [rest, 50 + (rest - 50) * 0.10, 50 + (rest - 50) * 0.08, restRotate, 50, 50], 0.45);
                 return;
             }
         }
