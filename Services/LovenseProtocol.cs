@@ -37,17 +37,45 @@ public static class LovenseProtocol
         return 0.3 + 1.1 * s;
     }
 
-    /// <summary>游玩页那根深度滑杆的默认值：拉满。</summary>
-    public const int DefaultDepthPercent = 100;
+    /// <summary>
+    /// 游玩页行程条是「一根条子两个圆点」：左边那个点＝抬到最高的位置，右边那个点＝插到最深的位置。
+    /// 数值小的一头就是抬得高的那头，所以左把手拿到的数（LowerValue）天然就是「最高」。
+    /// 100 = 整段行程的尽头。
+    /// </summary>
+    public const int DefaultStrokeTopPercent = 20;
 
-    public const int MinDepthPercent = 10;
+    public const int DefaultStrokeDeepPercent = 70;
 
-    /// <summary>滑杆给的是深度上限：强度算出来的行程再乘用户设的百分比。</summary>
-    public static double ScaleAmplitude(double amplitude, int depthPercent)
+    /// <summary>最高点与最深点至少差这么多，否则电机就在原地抖。</summary>
+    public const int MinStrokeSpanPercent = 10;
+
+    /// <summary>
+    /// 把两个圆点收成一个合法区间：各自夹进 0–100，再保证两点差不小于 10。
+    /// 两个圆点被拖成交叉的也直接换回来（左点永远是较小的数＝抬得更高的那头），绝不让区间变成负的。
+    /// </summary>
+    public static (double Top, double Deep) StrokeWindow(int topPercent, int deepPercent)
     {
-        if (amplitude <= 0) return 0;
-        double depth = Math.Clamp(depthPercent, 0, 100) / 100.0;
-        return amplitude * depth;
+        double top = Math.Clamp(topPercent, 0, 100);
+        double deep = Math.Clamp(deepPercent, 0, 100);
+        if (top > deep) (top, deep) = (deep, top);
+        if (deep - top >= MinStrokeSpanPercent) return (top, deep);
+        // 区间太窄：先把「最深」往后撑，撑不下再把「最高」往前压。
+        deep = Math.Min(100, top + MinStrokeSpanPercent);
+        top = Math.Max(0, deep - MinStrokeSpanPercent);
+        return (top, deep);
+    }
+
+    /// <summary>
+    /// 一次抽插落在 0–100 的哪个位置：只在「最高点…最深点」这段里摆，碰不到两端之外 —— 这就是「抬太高掉出来」的物理保证。
+    /// amplitude 是强度换算出的行程占比（0–100），wave 是 -1..1 的正弦；强度小就在区间中间小幅动，拉满才走完整个区间。
+    /// </summary>
+    public static double StrokePosition(double topPercent, double deepPercent, double amplitude, double wave)
+    {
+        double mid = (topPercent + deepPercent) / 2.0;
+        double half = (deepPercent - topPercent) / 2.0;
+        double scale = double.IsFinite(amplitude) ? Math.Clamp(amplitude, 0, 100) / 100.0 : 0;
+        double w = double.IsFinite(wave) ? Math.Clamp(wave, -1, 1) : 0;
+        return mid + half * scale * w;
     }
 
     /// <summary>

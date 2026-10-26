@@ -63,15 +63,17 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
-                        <TextBlock Text="深度" FontSize="12" Foreground="{StaticResource Muted}"
+                        <TextBlock Text="行程" FontSize="12" Foreground="{StaticResource Muted}"
                                    VerticalAlignment="Center" Margin="0,0,8,0"/>
-                        <Slider x:Name="LovenseDepthSlider" Grid.Column="1" Minimum="10" Maximum="100"
-                                SmallChange="5" LargeChange="10" TickFrequency="5" IsSnapToTickEnabled="True"
-                                VerticalAlignment="Center" ValueChanged="LovenseDepth_Changed"
-                                LostMouseCapture="LovenseDepth_LostMouseCapture"
-                                ToolTip="手动设行程：越深幅度越大；机器追不上时它自己会放慢节奏"/>
-                        <TextBlock x:Name="LovenseDepthText" Grid.Column="2" Text="100%" FontSize="12"
-                                   FontFamily="Consolas" Foreground="{StaticResource Muted}" MinWidth="42"
+                        <controls:RangeSlider x:Name="LovenseRange" Grid.Column="1" Minimum="0" Maximum="100"
+                                              SmallChange="1" LowerValue="20" UpperValue="70"
+                                              VerticalAlignment="Center"
+                                              LowerValueChanged="LovenseRange_Changed"
+                                              UpperValueChanged="LovenseRange_Changed"
+                                              LostMouseCapture="LovenseRange_LostMouseCapture"
+                                              ToolTip="一根条子上两个圆点：左边＝最高（抬到这儿就停），右边＝最深（插到这儿就停）。怕顶出去被压就把左边那个往右拉"/>
+                        <TextBlock x:Name="LovenseRangeText" Grid.Column="2" Text="最高 20%　最深 70%" FontSize="12"
+                                   FontFamily="Consolas" Foreground="{StaticResource Muted}" MinWidth="150"
                                    TextAlignment="Right" VerticalAlignment="Center" Margin="8,0,0,0"/>
                     </Grid>
 

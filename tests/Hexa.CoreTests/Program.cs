@@ -2862,12 +2862,19 @@ try
             LovenseProtocol.StrokeAmplitude(20) > LovenseProtocol.StrokeAmplitude(5)
             && LovenseProtocol.StrokeHz(20) > LovenseProtocol.StrokeHz(5)
             && Math.Abs(LovenseProtocol.StrokeAmplitude(20) - 100) < 1e-9);
-        Check("Lovense：深度滑杆按百分比缩行程、越界会夹住",
-            Math.Abs(LovenseProtocol.ScaleAmplitude(100, 100) - 100) < 1e-9
-            && Math.Abs(LovenseProtocol.ScaleAmplitude(100, 50) - 50) < 1e-9
-            && Math.Abs(LovenseProtocol.ScaleAmplitude(100, 0)) < 1e-9
-            && LovenseProtocol.ScaleAmplitude(0, 100) == 0
-            && Math.Abs(LovenseProtocol.ScaleAmplitude(80, 999) - 80) < 1e-9);
+        Check("Lovense：行程区间被夹住、倒着的两端自动换回来、太窄的往上撑到 10%",
+            LovenseProtocol.StrokeWindow(20, 70) == (20.0, 70.0)
+            && LovenseProtocol.StrokeWindow(70, 20) == (20.0, 70.0)
+            && LovenseProtocol.StrokeWindow(-30, 999) == (0.0, 100.0)
+            && LovenseProtocol.StrokeWindow(50, 52) == (50.0, 60.0)
+            && LovenseProtocol.StrokeWindow(95, 100) == (90.0, 100.0));
+        Check("Lovense：强度再大也走不出设的最高/最低点",
+            Math.Abs(LovenseProtocol.StrokePosition(20, 70, 100, 1) - 70) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokePosition(20, 70, 100, -1) - 20) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokePosition(20, 70, 100, 0) - 45) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokePosition(20, 70, 50, 1) - 57.5) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokePosition(20, 70, 0, 1) - 45) < 1e-9
+            && Math.Abs(LovenseProtocol.StrokePosition(20, 70, 500, 5) - 70) < 1e-9);
         Check("Lovense：快慢跟指令间隔走，间隔离谱时退回强度频率",
             Math.Abs(LovenseProtocol.TempoHz(0.5, 1.0) - 2.0) < 1e-9
             && Math.Abs(LovenseProtocol.TempoHz(0.2, 1.0) - 2.6) < 1e-9

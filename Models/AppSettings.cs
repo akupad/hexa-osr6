@@ -411,8 +411,10 @@ public class AppSettings
     public int    LovenseBridgePort    { get; set; } = 30010;
     /// <summary>报给游戏的那台玩具名。游戏按名字决定能发哪些动作：nora = 振动+转动，max = 振动+抽送。</summary>
     public string LovenseToyName       { get; set; } = "gravity";
-    /// <summary>游玩页那根深度滑杆：抽插行程按这个百分比缩（10–100），游戏发来的强度乘它。</summary>
-    public int    LovenseDepthPercent  { get; set; } = Services.LovenseProtocol.DefaultDepthPercent;
+    /// <summary>行程条左边的圆点＝「最高」：抬到这儿就到顶，防止顶出去以后被机器压住。</summary>
+    public int    LovenseStrokeTopPercent { get; set; } = Services.LovenseProtocol.DefaultStrokeTopPercent;
+    /// <summary>行程条右边的圆点＝「最深」：插到这儿就不再往下。</summary>
+    public int    LovenseStrokeDeepPercent { get; set; } = Services.LovenseProtocol.DefaultStrokeDeepPercent;
 
     /// <summary>上次编辑的动作合成文件路径（打开/保存时更新，供下次继续编辑）。</summary>
     public string LastCompositionPath { get; set; } = "";
@@ -780,7 +782,10 @@ public class AppSettings
         GameBridgePort = GameBridgePort is >= 1024 and <= 65535 ? GameBridgePort : 12345;
         LovenseBridgePort = LovenseBridgePort is >= 1024 and <= 65535 ? LovenseBridgePort : 30010;
         LovenseToyName = Services.LovenseProtocol.Sanitize(LovenseToyName);
-        LovenseDepthPercent = Math.Clamp(LovenseDepthPercent, Services.LovenseProtocol.MinDepthPercent, 100);
+        (double strokeTop, double strokeDeep) =
+            Services.LovenseProtocol.StrokeWindow(LovenseStrokeTopPercent, LovenseStrokeDeepPercent);
+        LovenseStrokeTopPercent = (int)Math.Round(strokeTop);
+        LovenseStrokeDeepPercent = (int)Math.Round(strokeDeep);
         WindowWidth = double.IsFinite(WindowWidth) ? Math.Clamp(WindowWidth, 900, 4096) : 1280;
         WindowHeight = double.IsFinite(WindowHeight) ? Math.Clamp(WindowHeight, 600, 2160) : 800;
         if (!double.IsFinite(WindowLeft) || WindowLeft < -10000) WindowLeft = -1;

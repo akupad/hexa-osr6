@@ -230,7 +230,8 @@ public partial class App : System.Windows.Application
         Lovense = new LovenseBridgeService(Engine)
         {
             ToyName = Settings.LovenseToyName,
-            DepthPercent = Settings.LovenseDepthPercent,
+            StrokeTopPercent = Settings.LovenseStrokeTopPercent,
+            StrokeDeepPercent = Settings.LovenseStrokeDeepPercent,
         };
         if (Settings.LovenseBridgeEnabled) Lovense.Start(Settings.LovenseBridgePort, LovenseBridgeService.DefaultHttpPort);
         AyvaWeb = new AyvaWebSocketService(Engine);

@@ -55,7 +55,8 @@ public sealed class LovenseBridgeService : IDisposable
     private double _lastPhaseSeen;
     private DateTime _finishStartedUtc = DateTime.MinValue;
     private DateTime _blockedSinceUtc = DateTime.MinValue;
-    private volatile int _depthPercent = LovenseProtocol.DefaultDepthPercent;
+    private volatile int _strokeDeepPercent = LovenseProtocol.DefaultStrokeDeepPercent;
+    private volatile int _strokeTopPercent = LovenseProtocol.DefaultStrokeTopPercent;
     private volatile bool _sawClient;
     private volatile string _toyName = LovenseProtocol.DefaultToyName;
 
@@ -68,11 +69,18 @@ public sealed class LovenseBridgeService : IDisposable
         set => _toyName = LovenseProtocol.Sanitize(value);
     }
 
-    /// <summary>深度滑杆：抽插行程按这个百分比缩（10–100），改了立刻生效，不用等游戏再发指令。</summary>
-    public int DepthPercent
+    /// <summary>最高点（%）：行程条左边的圆点，抬到这儿就到顶，再高就是「掉出来被压」那种高度。改了立刻生效。</summary>
+    public int StrokeTopPercent
     {
-        get => _depthPercent;
-        set => _depthPercent = Math.Clamp(value, LovenseProtocol.MinDepthPercent, 100);
+        get => _strokeTopPercent;
+        set => _strokeTopPercent = Math.Clamp(value, 0, 100);
+    }
+
+    /// <summary>最深点（%）：行程条右边的圆点，插到这儿就不下去。</summary>
+    public int StrokeDeepPercent
+    {
+        get => _strokeDeepPercent;
+        set => _strokeDeepPercent = Math.Clamp(value, 0, 100);
     }
 
     public bool IsRunning { get; private set; }
@@ -332,7 +340,7 @@ public sealed class LovenseBridgeService : IDisposable
 
         string action;
         double amplitude, hz, rotateAmplitude, rotateHz;
-        int depth;
+        int strokeTop, strokeDeep;
         DateTime last, until;
         lock (_gate)
         {
@@ -341,7 +349,8 @@ public sealed class LovenseBridgeService : IDisposable
             hz = _hz;
             rotateAmplitude = _rotateAmplitude;
             rotateHz = _rotateHz;
-            depth = _depthPercent;
+            strokeTop = _strokeTopPercent;
+            strokeDeep = _strokeDeepPercent;
             last = _lastCommandUtc;
             until = _runUntilUtc;
         }
@@ -355,19 +364,21 @@ public sealed class LovenseBridgeService : IDisposable
             _lastPhaseSeen = _phase;
         }
 
-        // 深度滑杆决定走多长，舒适档的速度上限决定能跑多快；两者打架时压频率，
-        // 否则限速器会把整段波形削圆（行程到不了、还滞后几十上百毫秒）。
+        // 两根滑杆定死「抬到哪儿、插到哪儿」：行程只在这个区间里，再大的强度也出不去。
+        // 舒适档的速度上限决定能跑多快，两者打架时压频率，否则限速器会把整段波形削圆。
+        (double windowTop, double windowDeep) = LovenseProtocol.StrokeWindow(strokeTop, strokeDeep);
+        double windowSpan = windowDeep - windowTop;
         double speedLimit = _engine.ActiveComfortProfile.MaxAxisSpeedPerSecond;
-        amplitude = LovenseProtocol.ScaleAmplitude(amplitude, depth);
-        rotateAmplitude = LovenseProtocol.ScaleAmplitude(rotateAmplitude, depth);
         // 游戏强度是一档一档跳的（13→19）：直接跟会让行程一步甩出去，这里用 120ms 平滑过去。
         double blend = Math.Clamp(dt / 0.12, 0, 1);
         _smoothedAmplitude = _smoothedAmplitude < 0 ? amplitude : _smoothedAmplitude + (amplitude - _smoothedAmplitude) * blend;
         _smoothedRotateAmplitude = _smoothedRotateAmplitude < 0 ? rotateAmplitude : _smoothedRotateAmplitude + (rotateAmplitude - _smoothedRotateAmplitude) * blend;
         amplitude = _smoothedAmplitude;
         rotateAmplitude = _smoothedRotateAmplitude;
+        // 限速器管的是真实走过的路：区间越窄，同样强度下实际行程越短，也就能跑得更快。
+        double travelled = amplitude * windowSpan / 100.0;
         double commandedHz = hz;
-        hz = LovenseProtocol.FitHz(hz, amplitude, speedLimit);
+        hz = LovenseProtocol.FitHz(hz, travelled, speedLimit);
         rotateHz = LovenseProtocol.FitHz(rotateHz, rotateAmplitude, speedLimit);
         if (_phaseLockPending)
         {
@@ -378,15 +389,15 @@ public sealed class LovenseBridgeService : IDisposable
         }
 
         // 抽插和转动各走各的相位：一条命令里同时有 Vibrate 和 Rotate 时两根轴一起动。
-        double half = amplitude / 2.0;
-        double main = 50;
+        double windowMid = (windowTop + windowDeep) / 2.0;
+        double main = windowMid;
         if (amplitude > 0)
         {
             _phase = LovenseProtocol.Frac(_phase + dt * hz);
             // 用「相位 + 修正量」出波形：修正量在 150ms 内衰减到 0，看起来只是这一抽略快或略慢，不会跳。
             double shown = LovenseProtocol.Frac(_phase + _phaseOffset);
             _phaseOffset *= Math.Exp(-dt / 0.15);
-            main = 50 + half * Math.Sin(2 * Math.PI * shown);
+            main = LovenseProtocol.StrokePosition(windowTop, windowDeep, amplitude, Math.Sin(2 * Math.PI * shown));
         }
         double twist = 50;
         if (rotateAmplitude > 0)
@@ -408,7 +419,10 @@ public sealed class LovenseBridgeService : IDisposable
                     _finishing = false;
                     _finishStartedUtc = DateTime.MinValue;
                 }
-                _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
+                // 停在这一段的区间中间，而不是一路弹回全局中位：少做一次没必要的位移。
+                double rest = (windowTop + windowDeep) / 2.0;
+                _engine.TrySendDirectAxes(
+                    [rest, 50 + (rest - 50) * 0.10, 50 + (rest - 50) * 0.08, 50, 50, 50], 0.45);
                 return;
             }
         }

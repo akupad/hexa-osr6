@@ -272,7 +272,8 @@ public partial class PlaygroundPage : Page
         if (LovenseEnabledCheck is null) return;
         LovenseEnabledCheck.IsChecked = App.Settings.LovenseBridgeEnabled;
         LovensePortBox.Text = App.Settings.LovenseBridgePort.ToString();
-        LovenseDepthSlider.Value = App.Settings.LovenseDepthPercent;
+        LovenseRange.LowerValue = App.Settings.LovenseStrokeTopPercent;
+        LovenseRange.UpperValue = App.Settings.LovenseStrokeDeepPercent;
         UpdateLovenseAddressText();
         RefreshLovenseStatus();
     }
@@ -360,20 +361,31 @@ public partial class PlaygroundPage : Page
     }
 
     /// <summary>
-    /// 深度滑杆：拖动时立刻改行程（不用等游戏再发指令），松手才落盘 —— 拖一下写一次配置没必要。
+    /// 一根条子两个圆点：左边那个是「最高」（抬到这儿就停），右边那个是「最深」（插到这儿就停）。
+    /// 拖动时立刻改区间（不用等游戏再发指令），松手才落盘。
     /// </summary>
-    private void LovenseDepth_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    private void LovenseRange_Changed(object sender, EventArgs e) => ApplyLovenseStroke();
+
+    private void ApplyLovenseStroke()
     {
-        if (LovenseDepthSlider is null || LovenseDepthText is null) return;
-        int depth = (int)Math.Round(LovenseDepthSlider.Value);
-        LovenseDepthText.Text = depth + "%";
-        if (App.Lovense is not null) App.Lovense.DepthPercent = depth;
-        App.Settings.LovenseDepthPercent = depth;
+        if (LovenseRange is null || LovenseRangeText is null) return;
+        (double top, double deep) = LovenseProtocol.StrokeWindow(
+            (int)Math.Round(LovenseRange.LowerValue), (int)Math.Round(LovenseRange.UpperValue));
+        int topPercent = (int)Math.Round(top);
+        int deepPercent = (int)Math.Round(deep);
+        LovenseRangeText.Text = "最高 " + topPercent + "%　最深 " + deepPercent + "%";
+        if (App.Lovense is not null)
+        {
+            App.Lovense.StrokeTopPercent = topPercent;
+            App.Lovense.StrokeDeepPercent = deepPercent;
+        }
+        App.Settings.LovenseStrokeTopPercent = topPercent;
+        App.Settings.LovenseStrokeDeepPercent = deepPercent;
     }
 
-    private void LovenseDepth_LostMouseCapture(object sender, MouseEventArgs e)
+    private void LovenseRange_LostMouseCapture(object sender, MouseEventArgs e)
     {
-        App.Settings.LovenseDepthPercent = (int)Math.Round(LovenseDepthSlider.Value);
+        ApplyLovenseStroke();
         App.Settings.Save();
     }
 
