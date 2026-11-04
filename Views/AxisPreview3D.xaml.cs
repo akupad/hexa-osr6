@@ -66,13 +66,6 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
     private bool _userAdjustedCamera; // 用户手动转过/缩放过视角后，不再自动重新取景
     private long _lastRefreshTicks;   // 外部驱动与内置定时器去重（见 TimerTick）
 
-    // ── 当前轴高亮（只换材质引用，几何与变换不动）──────────────────
-    private static readonly Material HighlightMaterial = MakeHighlightMaterial();
-    private readonly Dictionary<GeometryModel3D, Material> _baseMaterials = new();
-    private readonly Dictionary<GeometryModel3D, Material> _baseBackMaterials = new();
-    private readonly List<GeometryModel3D> _highlighted = new();
-    private string _highlightAxis = string.Empty;
-
     /// <summary>构造六轴 3D 预览控件。</summary>
     public AxisPreview3D()
     {
@@ -80,11 +73,6 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
 
         long started = Stopwatch.GetTimestamp();
         _rig = new Sr6Rig();                      // 原生坐标：Z 轴向上
-        foreach ((GeometryModel3D mesh, Material material) in _rig.BaseMaterials)
-        {
-            _baseMaterials[mesh] = material;
-            _baseBackMaterials[mesh] = mesh.BackMaterial ?? material;
-        }
         AppLogger.Info($"3D 预览模型就绪：{Stopwatch.GetElapsedTime(started).TotalMilliseconds:F0} ms");
 
         var scene = new Model3DGroup();
@@ -160,38 +148,6 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
         for (int i = 0; i < 6 && i < amps.Length; i++)
             _amp[i] = double.IsFinite(amps[i]) ? Math.Clamp(amps[i], 0, 100) : 0;
     }
-
-    /// <summary>
-    /// 高亮指定轴对应的机构：axisId 取 "L0".."R2"，传空串或 null 清除高亮。
-    /// 只替换材质引用（几何、变换都不动），因此可在 120ms 实时刷新期间安全调用；
-    /// 部件映射见 <see cref="Sr6Rig.MeshesForAxis"/>：
-    /// L0 接收器 / L1 四根主臂 / L2 四根连杆 / R0 机头外壳 / R1 左右俯仰臂 / R2 俯仰连杆+前轴承。
-    /// </summary>
-    public void HighlightAxis(string? axisId)
-    {
-        string key = NormalizeAxisId(axisId);
-        if (key == _highlightAxis) return;   // 重复设置同一轴：不必反复改写材质
-
-        // 先还原上一次高亮的部件
-        foreach (GeometryModel3D model in _highlighted)
-        {
-            if (_baseMaterials.TryGetValue(model, out Material? original)) model.Material = original;
-            if (_baseBackMaterials.TryGetValue(model, out Material? back)) model.BackMaterial = back;
-        }
-        _highlighted.Clear();
-        _highlightAxis = key;
-
-        if (key.Length == 0) return;
-        foreach (GeometryModel3D model in _rig.MeshesForAxis(key))
-        {
-            model.Material = HighlightMaterial;
-            model.BackMaterial = HighlightMaterial;
-            _highlighted.Add(model);
-        }
-    }
-
-    /// <summary>当前高亮的轴（无高亮时为空串）。</summary>
-    public string HighlightedAxis => _highlightAxis;
 
     /// <summary>
     /// 复位到默认机位（与中键双击同效）。按**当前**视口重新取景，
@@ -507,35 +463,6 @@ public partial class AxisPreview3D : System.Windows.Controls.UserControl
                 StopPreview();
             }
         }
-    }
-
-    /// <summary>轴名归一化：容错大小写与空白，非法轴名按“清除高亮”处理。</summary>
-    private static string NormalizeAxisId(string? axisId)
-    {
-        if (string.IsNullOrWhiteSpace(axisId)) return string.Empty;
-        string key = axisId.Trim().ToUpperInvariant();
-        foreach (string name in AxisNames)
-            if (name == key) return key;
-        return string.Empty;
-    }
-
-    /// <summary>
-    /// 高亮材质：#2BFFB8 漫反射 + 同色系自发光（WPF 没有 emissive 属性，用
-    /// EmissiveMaterial 模拟自发光辉光，压暗到 ~40% 以免整块过曝成白色）+ 冷色高光。
-    /// </summary>
-    private static Material MakeHighlightMaterial()
-    {
-        var group = new MaterialGroup
-        {
-            Children =
-            {
-                new DiffuseMaterial(new SolidColorBrush(Color.FromRgb(0x2B, 0xFF, 0xB8))),
-                new EmissiveMaterial(new SolidColorBrush(Color.FromRgb(0x12, 0x66, 0x4A))),
-                new SpecularMaterial(new SolidColorBrush(Color.FromRgb(0x9F, 0xFF, 0xE2)), 45.0),
-            },
-        };
-        group.Freeze();   // 共享材质：冻结后多处引用无额外开销
-        return group;
     }
 
     // ══════════════════════════════════════════════════════════════

@@ -257,8 +257,7 @@ public partial class App : System.Windows.Application
         AiAssistantVm = new AiAssistantViewModel(AiAssistant);
 
         WebApi = new WebApiService(Engine, Settings, StrokesVm, FunscriptPlayer);
-        // 待开发：本地控制接口当前停用（WebApiService.FeatureEnabled = false）
-        if (Settings.WebApiEnabled && WebApiService.FeatureEnabled) WebApi.Start();
+        if (Settings.WebApiEnabled) WebApi.Start();
 
         if (Settings.SimulationMode)
             Serial.SetSimulationMode(true);
@@ -704,7 +703,7 @@ public partial class App : System.Windows.Application
         }
         catch (Exception ex) { AppLogger.Warn($"波形草稿保存失败：{ex.Message}"); }
 
-        WebApi?.Stop();
+        WebApi?.Dispose();
         RuleEngine?.Dispose();
         GameTelemetry?.Dispose();
         AyvaWeb?.Dispose();

@@ -1741,9 +1741,6 @@ public sealed class SerialService : ICommandTransport, IDisposable
         }
     }
 
-    public static string[] GetAvailablePorts() =>
-        GetAvailablePortOptions().Select(option => option.PortName).ToArray();
-
     private static string NormalizePort(string? name) => (name ?? "").Trim().ToUpperInvariant();
 
     public void Dispose()

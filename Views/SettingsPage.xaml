@@ -603,22 +603,53 @@
                     </StackPanel>
                 </Border>
 
-                <!-- 本地控制接口：功能被强制关闭（WebApiEnabled 恒为 false），
-                     这块只是"还没开放"的说明文字、白占一屏高度 ⇒ 先收起，等接口真放出来再显示。 -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0" Visibility="Collapsed">
+                <!-- 外部程序控制接口（默认关闭；给脚本/别的软件用的 HTTP 插座） -->
+                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
                     <StackPanel>
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="🌐 本地控制接口" FontSize="14" FontWeight="SemiBold"
-                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
-                            <Border Background="{StaticResource WarningSoft}" CornerRadius="4"
-                                    Padding="6,1" VerticalAlignment="Center">
-                                <TextBlock Text="还没开放" FontSize="10" FontWeight="SemiBold"
-                                           Foreground="{StaticResource Warning}"/>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="🔌 外部程序控制接口" FontSize="14" FontWeight="SemiBold"
+                                       VerticalAlignment="Center"/>
+                            <Border x:Name="WebApiBadge" Grid.Column="1" Background="{StaticResource WarningSoft}"
+                                    CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                <TextBlock x:Name="WebApiBadgeText" Text="已关闭" FontSize="10"
+                                           FontWeight="SemiBold" Foreground="{StaticResource Warning}"/>
                             </Border>
-                        </StackPanel>
-                        <TextBlock Text="别的软件现在还控制不了 Hexa。这个接口能把外部程序接进来直接控制机器（写轴、急停、归中、切模式），但还缺外部调用的身份校验、操作记录和急停联动验证，补齐后再放出来；现在不会占用 8580 端口。"
+                        </Grid>
+                        <TextBlock Text="给别的程序用的插座：脚本、快捷键工具、别的软件发一条 HTTP 请求就能让机器动（写轴、急停、归中、切模式、切预设、放脚本）。默认关闭；打开后只有本机能调，请求必须带对令牌，急停锁着时什么写操作都进不来。"
                                    Foreground="{StaticResource Muted}" FontSize="11"
                                    Margin="0,6,0,0" TextWrapping="Wrap"/>
+
+                        <CheckBox x:Name="WebApiEnabledCheck" Content="打开接口（http://localhost:8580）"
+                                  FontSize="12" Margin="0,10,0,0" HorizontalAlignment="Left"/>
+                        <CheckBox x:Name="WebApiLanCheck" Content="允许局域网里的设备调用（手机 / 平板 / 别的电脑）"
+                                  FontSize="12" Margin="0,6,0,0" HorizontalAlignment="Left"
+                                  ToolTip="打开后按本机每块网卡的 IP 逐个尝试绑定；普通权限下绑不上会写进日志，需要管理员执行一次 netsh http add urlacl 授权"/>
+
+                        <Grid Margin="0,10,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="96"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="令牌" FontSize="11" Foreground="{StaticResource Muted}"
+                                       VerticalAlignment="Center"/>
+                            <TextBox x:Name="WebApiTokenBox" Grid.Column="1" IsReadOnly="True" FontFamily="Consolas"
+                                     FontSize="11" VerticalContentAlignment="Center"
+                                     ToolTip="请求头 X-Hexa-Token 的值：复制给你要调用它的那个程序"/>
+                            <Button Grid.Column="2" Content="复制" Width="60" Height="28" FontSize="11"
+                                    Margin="8,0,0,0" Click="WebApiCopyToken_Click"/>
+                            <Button Grid.Column="3" Content="换一个" Width="68" Height="28" FontSize="11"
+                                    Margin="8,0,0,0" Click="WebApiResetToken_Click"
+                                    ToolTip="生成新令牌，旧的立刻失效；正在用的外部程序要跟着改"/>
+                        </Grid>
+
+                        <TextBlock x:Name="WebApiStatusText" FontSize="10" Foreground="{StaticResource Muted}"
+                                   Margin="0,8,0,0" TextWrapping="Wrap" Text="已关闭，不监听任何端口。"/>
                     </StackPanel>
                 </Border>
 

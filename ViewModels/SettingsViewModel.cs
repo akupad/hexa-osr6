@@ -37,6 +37,8 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _audioLowPassEnabled;
     [ObservableProperty] private bool _ruleEngineEnabled;
     [ObservableProperty] private bool _webApiEnabled;
+    [ObservableProperty] private bool _webApiAllowLan;
+    [ObservableProperty] private string _webApiToken = "";
 
     public SettingsViewModel(SerialService serial, MotionEngine engine, AppSettings cfg)
     {
@@ -54,6 +56,8 @@ public partial class SettingsViewModel : ObservableObject
         AudioLowPassEnabled = cfg.AudioLowPassEnabled;
         RuleEngineEnabled = cfg.RuleEngineEnabled;
         WebApiEnabled = cfg.WebApiEnabled;
+        WebApiAllowLan = cfg.WebApiAllowLan;
+        WebApiToken = cfg.ApiToken;
 
         LoadAxisLimits();
         RefreshPorts();
@@ -271,13 +275,44 @@ public partial class SettingsViewModel : ObservableObject
         App.RuleEngine.Refresh();
     }
 
+    // ── 外部程序控制接口（8580）───────────────────────────────────────
     partial void OnWebApiEnabledChanged(bool value)
     {
         if (_initializing) return;
         _cfg.WebApiEnabled = value;
+        if (!value) { WebApiAllowLan = false; _cfg.WebApiAllowLan = false; }
         _cfg.Save();
-        // 待开发：本地控制接口已停用，不随设置启停（见 WebApiService.FeatureEnabled）
-        if (!WebApiService.FeatureEnabled) return;
         if (value) App.WebApi.Start(); else App.WebApi.Stop();
+        WebApiStatus = value
+            ? (App.WebApi.IsRunning ? "已开启，本机程序可以调用" : "开启失败，看日志里的 [WebApi] 行")
+            : "已关闭，不监听任何端口";
+    }
+
+    partial void OnWebApiAllowLanChanged(bool value)
+    {
+        if (_initializing) return;
+        _cfg.WebApiAllowLan = value;
+        _cfg.Save();
+        if (_cfg.WebApiEnabled) { App.WebApi.Stop(); App.WebApi.Start(); }   // 重新绑网卡
+        WebApiStatus = value
+            ? "已允许局域网：手机/别的机器也能调（需要网卡绑定成功）"
+            : "只允许本机";
+    }
+
+    partial void OnWebApiTokenChanged(string value)
+    {
+        if (_initializing) return;
+        if (string.IsNullOrWhiteSpace(value) || value.Length < 24) return;   // 太短的 token 不接受
+        _cfg.ApiToken = value;
+        _cfg.Save();
+    }
+
+    /// <summary>设置页上的状态提示（开关/局域网变化时更新）。</summary>
+    [ObservableProperty] private string _webApiStatus = "";
+
+    /// <summary>换一个新令牌：老 token 立即失效，正在用的外部程序要跟着改。</summary>
+    public void ResetWebApiToken()
+    {
+        WebApiToken = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
     }
 }

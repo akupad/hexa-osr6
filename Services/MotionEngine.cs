@@ -942,13 +942,6 @@ public sealed class MotionEngine : IDisposable
     }
 
     /// <summary>
-    /// 立即打断正在进行的优雅停止 / 姿态混合（界面上的「立即停止」）：
-    /// 不再发后续的缓降帧、复位 <see cref="IsEasing"/>，设备停在当前位置。
-    /// 这不是急停路径：要让设备硬停请用 <see cref="StopAll"/> / <see cref="EmergencyStop"/>。
-    /// </summary>
-    public void CancelEase() => InterruptEase();
-
-    /// <summary>
     /// 过渡的执行体（BlendTo 的目标姿态 / EaseDown 的缓降到中位共用）：
     /// 在 <paramref name="seconds"/> 内把六轴从 <paramref name="fromPose"/> 沿平滑曲线送到
     /// <paramref name="toPose"/>。每步 20ms 一帧：dt 用步长、设备插值时间用「比步长略长」的值，
@@ -1164,51 +1157,6 @@ public sealed class MotionEngine : IDisposable
         NotifyStateChanged();
     }
 
-    public bool StartTelemetrySync()
-    {
-        if (!RuleEngineActive || !CanRun) return false;
-        lock (_stateLock)
-        {
-            if (!RuleEngineActive || !CanRun) return false;
-            StopAllLocked();
-            lock (_telemetryLock)
-            {
-                Array.Copy(GetLastOutput(), _telemetryStart, 6);
-                Array.Copy(_telemetryStart, _telemetryTarget, 6);
-                _telemetryTargetStartedAt = Stopwatch.GetTimestamp();
-                _telemetryTransitionMs = 20;
-                _telemetrySessionId = "manual";
-                _telemetrySequence = 0;
-                _telemetrySourceIntensity = 1.0;
-                TelemetrySource = "";
-            }
-            // 遥测刻意不置 _blendInPending：它的「起始姿态」按定义就是当前姿态
-            // （上面刚把 GetLastOutput 抄进 _telemetryStart），条件天然不成立；
-            // 而且游戏桥自带 transitionMs 与延迟补偿，这里再拉长插值只会让画面与设备错开。
-            ActiveMode = MotionMode.Telemetry;
-            TelemetryRunning = true;
-            _telemetryLastTick = Stopwatch.GetTimestamp();
-            Volatile.Write(ref _telemetryReceivedAt, _telemetryLastTick);
-            ResetComfortEnvelope();
-            long generation = ++_generation;
-            _telemetryTimer = MakeTimer(20, generation, TelemetryTick);
-        }
-        NotifyStateChanged();
-        return true;
-    }
-
-    public bool SetTelemetryTarget(IReadOnlyList<double> values, string source, int transitionMs = 20)
-    {
-        string sessionId;
-        long sequence;
-        lock (_telemetryLock)
-        {
-            sessionId = string.IsNullOrWhiteSpace(_telemetrySessionId) ? "manual" : _telemetrySessionId;
-            sequence = _telemetrySequence + 1;
-        }
-        return ApplyTelemetryFrame(sessionId, sequence, values, source, transitionMs, 1.0);
-    }
-
     /// <summary>
     /// Atomically starts or updates one game telemetry session. The caller must
     /// provide a strictly increasing sequence for each session.
@@ -1401,21 +1349,6 @@ public sealed class MotionEngine : IDisposable
         }
         NotifyStateChanged();
         return true;
-    }
-
-    public void StopTease()
-    {
-        lock (_dispatchLock)
-        {
-            lock (_stateLock)
-            {
-                _generation++;
-                TeasingMode = false;
-                DisposeTimer(ref _teaseTimer);
-            }
-            _transport.StopMotion();
-        }
-        NotifyStateChanged();
     }
 
     /// <summary>挑逗循环单拍：处于「动」窗口时按挑逗参数振荡；「停/歇」窗口保持不动（不倒发，心跳由 RunTick 维持）。</summary>

@@ -769,6 +769,13 @@ try
     engine.StopAll();
     Check("stop clears the paused flag", !engine.IsPaused);
 
+    // 外部控制接口鉴权：token 定长比较，错一位／前缀／空值都不许过
+    Check("external api token accepts the exact value", WebApiService.TokenEquals("0123456789abcdef", "0123456789abcdef"));
+    Check("external api token rejects wrong value", !WebApiService.TokenEquals("0123456789abcdee", "0123456789abcdef"));
+    Check("external api token rejects a prefix", !WebApiService.TokenEquals("0123456789abcde", "0123456789abcdef"));
+    Check("external api token rejects empty on either side",
+        !WebApiService.TokenEquals("", "0123456789abcdef") && !WebApiService.TokenEquals("0123456789abcdef", ""));
+
     engine.EditWaves["L0"].Clear();
     engine.EditWaves["L0"].AddRange([(0, WaveScriptCodec.CanvasHeight), (WaveScriptCodec.CanvasWidth, 0)]);
     engine.WfAxisEnabled[0] = true;

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -8,25 +9,21 @@ using Hexa.ViewModels;
 namespace Hexa.Services;
 
 /// <summary>
-/// 无头 Web API — HttpListener on http://localhost:8580/
+/// 外部程序控制接口 — HttpListener，默认 http://localhost:8580/（只绑回环）。
 /// 零外部依赖，仅用 System.Net.HttpListener + System.Text.Json。
-/// 启动时自动开始监听，退出时调用 Stop()/Dispose() 关闭。
 ///
-/// ⚠ 待开发（WIP）：当前<b>停用</b>，见 <see cref="FeatureEnabled"/>。
+/// 开关与安全姿势（2026-11 重做）：
+///   · 默认<b>关闭</b>，在设置页手动打开；关闭时不监听、不占端口。
+///   · 默认只绑回环（本机程序可调）；要局域网（手机/别的机器）必须另开一次开关，
+///     打开时按本机每块网卡的 IPv4 逐个加前缀，加不上会写日志说明原因。
+///   · 所有接口（除根页面 HTML）都要 <c>X-Hexa-Token</c>，token 在设置页显示/重置，
+///     比较用固定时间比较，避免按字符猜。
+///   · 写操作还要过两道：跨站来源检查（浏览器里别的网页不能偷偷发 POST）与限流；
+///     急停锁存期间除「解除急停 / 急停 / 只读状态」以外的写请求一律 409。
+///   · 每一次外部调用都写一行 <c>[外部控制]</c> 日志（来源地址 + 方法 + 路径 + 结果）。
 /// </summary>
 public sealed class WebApiService : IDisposable
 {
-    /// <summary>
-    /// ⚠ 待开发（WIP）：本地控制接口是否对外开放。当前为 <c>false</c> —— 服务不会监听，
-    /// 设置页也只显示「待开发」提示，<see cref="AppSettings.WebApiEnabled"/> 会被强制关掉。
-    ///
-    /// 为什么还没开放：这个接口能直接控制设备（写轴、急停、归中、切模式），
-    /// 但还缺三样东西 —— ①调用方鉴权（目前只靠「仅监听 127.0.0.1」这一层）；
-    /// ②访问审计与限流；③与急停/规则引擎状态的完整联动验证。
-    /// 做完这三样再改成 true，并恢复设置页的开关（Views/SettingsPage.xaml）。
-    /// </summary>
-    public static readonly bool FeatureEnabled = false;
-
     private readonly MotionEngine     _engine;
     private readonly AppSettings      _cfg;
     private readonly StrokesViewModel _strokesVm;
@@ -35,6 +32,13 @@ public sealed class WebApiService : IDisposable
     private HttpListener?            _listener;
     private CancellationTokenSource? _cts;
     private Task?                    _loopTask;
+
+    // 限流：每秒最多 RateLimitPerSecond 个请求，超出直接 429（防脚本死循环把 UI 线程压垮）
+    private const int RateLimitPerSecond = 20;
+    private readonly object _rateLock = new();
+    private long _rateWindowStart;
+    private int  _rateCount;
+
 
     public const int Port = 8580;
     public bool IsRunning => _listener?.IsListening == true;
@@ -68,19 +72,69 @@ public sealed class WebApiService : IDisposable
         Stop();
         _cts      = new CancellationTokenSource();
         _listener = new HttpListener();
-        // 只绑定回环地址，避免暴露到局域网
-        _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+        // 回环始终绑定：本机程序（脚本、快捷键工具、别的软件）走这个就够。
+        // localhost 与 127.0.0.1 两个 Host 头都注册上，避免用户写 127.0.0.1 被 http.sys 判 400。
+        _listener.Prefixes.Add($"http://localhost:{Port}/");
+        try { _listener.Prefixes.Add($"http://127.0.0.1:{Port}/"); }
+        catch (Exception ex) { AppLogger.Warn($"[WebApi] 127.0.0.1 前缀加不上（不影响 localhost）：{ex.Message}"); }
+
+        // 局域网：只有明确打开才加。HttpListener 绑具体 IP 在普通权限下可能被系统拒绝
+        // （需要 urlacl 授权），所以逐个尝试、失败只记日志、不影响回环那条。
+        bool lanOk = false;
+        if (_cfg.WebApiAllowLan)
+        {
+            foreach (string ip in LocalAddresses())
+            {
+                string prefix = $"http://{ip}:{Port}/";
+                if (_listener.Prefixes.Contains(prefix)) continue;
+                try
+                {
+                    _listener.Prefixes.Add(prefix);
+                    lanOk = true;
+                }
+                catch (Exception ex)
+                {
+                    AppLogger.Warn($"[WebApi] 局域网前缀 {prefix} 加不上：{ex.Message}");
+                }
+            }
+        }
 
         try
         {
             _listener.Start();
-            AppLogger.Info($"[WebApi] 已启动，监听 http://127.0.0.1:{Port}/");
+            AppLogger.Info(lanOk
+                ? $"[WebApi] 已启动，监听 http://localhost:{Port}/ + 局域网（{string.Join(", ", LocalAddresses())}）"
+                : $"[WebApi] 已启动，监听 http://localhost:{Port}/（仅本机）");
+            if (_cfg.WebApiAllowLan && !lanOk)
+                AppLogger.Warn("[WebApi] 已打开局域网但没有任何网卡绑定成功：需要以管理员运行一次 netsh http add urlacl 授权");
             _loopTask = Task.Run(() => LoopAsync(_cts.Token));
         }
         catch (Exception ex)
         {
             AppLogger.Error("[WebApi] 启动监听器失败", ex);
         }
+    }
+
+    /// <summary>本机所有可用 IPv4（不含回环），用于局域网绑定与提示。</summary>
+    private static List<string> LocalAddresses()
+    {
+        var list = new List<string>();
+        try
+        {
+            foreach (var nic in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+            {
+                if (nic.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                if (nic.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Loopback) continue;
+                foreach (var ua in nic.GetIPProperties().UnicastAddresses)
+                {
+                    if (ua.Address.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) continue;
+                    string ip = ua.Address.ToString();
+                    if (!list.Contains(ip)) list.Add(ip);
+                }
+            }
+        }
+        catch { /* 取不到网卡时只留回环，不影响启动 */ }
+        return list;
     }
 
     public void Stop()
@@ -136,7 +190,11 @@ public sealed class WebApiService : IDisposable
             return;
         }
 
-        var path = req.Url?.AbsolutePath.TrimEnd('/') ?? "/";
+        // 注意："/" 不能 TrimEnd 成空串，否则下面那个「控制面板页面」分支永远匹配不上
+        string path = req.Url?.AbsolutePath ?? "/";
+        if (path.Length > 1) path = path.TrimEnd('/');
+        if (path.Length == 0) path = "/";
+        string peer = req.RemoteEndPoint?.Address.ToString() ?? "?";
 
         // 控制面板页面（无敏感数据，允许匿名访问；token 由页面内输入后用于 API 调用）
         if (req.HttpMethod == "GET" && path == "/")
@@ -145,18 +203,48 @@ public sealed class WebApiService : IDisposable
             return;
         }
 
-        // 简单鉴权：只允许本机回环 + token 校验
+        if (RateLimited())
+        {
+            AppLogger.Warn($"[外部控制] {peer} 请求过快，已拒绝：{req.HttpMethod} {path}");
+            resp.StatusCode = 429;
+            await WriteJsonAsync(resp, new { error = "too many requests" });
+            return;
+        }
+
+        // 鉴权：来源（回环 / 允许时的局域网）+ token（定长比较）
         if (!IsAuthorized(req))
         {
-            AppLogger.Warn($"[WebApi] 拒绝未授权请求: {req.RemoteEndPoint} {req.HttpMethod} {req.Url?.AbsolutePath}");
+            AppLogger.Warn($"[外部控制] {peer} 拒绝未授权：{req.HttpMethod} {path}");
             resp.StatusCode = 403;
             await WriteJsonAsync(resp, new { error = "forbidden" });
             return;
         }
 
+        // 浏览器里别的网页不能借用户的浏览器偷偷发请求（CSRF）：
+        // 有 Origin/Referer 且不是本机/局域网来源的一律拒。
+        if (!OriginAllowed(req))
+        {
+            AppLogger.Warn($"[外部控制] {peer} 拒绝跨站来源：{req.Headers["Origin"]} → {req.HttpMethod} {path}");
+            resp.StatusCode = 403;
+            await WriteJsonAsync(resp, new { error = "cross-origin request blocked" });
+            return;
+        }
+
+        // 急停优先：锁存期间只放行「急停 / 解除急停 / 只读查询」，其余写操作一律 409。
+        // 外部调用永远抢不过本地急停，这是硬规矩。
+        // /safety/home 放行是必须的：它是唯一的「解除急停」路径（MotionEngine.Home() 里会清 EmergencyStopped）
+        bool safetyPath = path is "/safety/estop" or "/safety/disarm" or "/safety/home";
+        if (req.HttpMethod != "GET" && !safetyPath && _engine.EmergencyStopped)
+        {
+            AppLogger.Warn($"[外部控制] {peer} 急停锁存期间拒绝写操作：{path}");
+            resp.StatusCode = 409;
+            await WriteJsonAsync(resp, new { error = "emergency stop is latched", safety = _engine.SafetyStatus });
+            return;
+        }
+
         try
         {
-            AppLogger.Info($"[WebApi] {req.HttpMethod} {path}");
+            AppLogger.Info($"[外部控制] {peer} {req.HttpMethod} {path}");
 
             if (req.HttpMethod == "GET" && path == "/status")
                 await WriteJsonAsync(resp, BuildStatus());
@@ -223,23 +311,74 @@ public sealed class WebApiService : IDisposable
         }
         catch (Exception ex)
         {
-            AppLogger.Error("[WebApi] 处理请求失败", ex);
+            AppLogger.Error("[外部控制] 处理请求失败", ex);
             resp.StatusCode = 500;
             try { await WriteJsonAsync(resp, new { error = ex.Message }); } catch { }
         }
+        finally
+        {
+            AppLogger.Info($"[外部控制] {peer} {req.HttpMethod} {path} → {resp.StatusCode}");
+        }
     }
 
-    /// <summary>校验请求来源为本机回环地址，且携带正确 token。</summary>
+    /// <summary>固定 1 秒窗口的简单限流：外部脚本死循环时保护主线程。</summary>
+    private bool RateLimited()
+    {
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        lock (_rateLock)
+        {
+            if (_rateWindowStart == 0
+                || System.Diagnostics.Stopwatch.GetElapsedTime(_rateWindowStart, now) >= TimeSpan.FromSeconds(1))
+            {
+                _rateWindowStart = now;
+                _rateCount = 0;
+            }
+            return ++_rateCount > RateLimitPerSecond;
+        }
+    }
+
+    /// <summary>
+    /// 令牌比较：定长比较，避免按字符逐位猜（普通 == 会在第一个不同字符处提前返回）。
+    /// 空 token 一律不通过 —— 没设 token 就等于没设防。
+    /// </summary>
+    internal static bool TokenEquals(string? provided, string? expected)
+    {
+        if (string.IsNullOrEmpty(provided) || string.IsNullOrEmpty(expected)) return false;
+        byte[] a = Encoding.UTF8.GetBytes(provided);
+        byte[] b = Encoding.UTF8.GetBytes(expected);
+        return CryptographicOperations.FixedTimeEquals(a, b);
+    }
+
+    /// <summary>
+    /// 来源检查：不带 Origin/Referer 的（curl、脚本、本机程序）放行；
+    /// 带的必须是本机或（打开局域网时）本机网卡地址，挡住浏览器跨站伪造。
+    /// </summary>
+    private bool OriginAllowed(HttpListenerRequest req)
+    {
+        string? check = req.Headers["Origin"] ?? req.Headers["Referer"];
+        if (string.IsNullOrEmpty(check)) return true;
+        if (check == "null") return false;                       // 沙箱/文件源：一律不接受
+        if (!Uri.TryCreate(check, UriKind.Absolute, out Uri? uri)) return false;
+        if (uri.Host is "localhost" or "127.0.0.1" or "::1") return true;
+        return _cfg.WebApiAllowLan && LocalAddresses().Contains(uri.Host);
+    }
+
+    /// <summary>
+    /// 鉴权：来源必须是回环；打开了局域网开关时，本机网卡地址也接受。
+    /// token 必须匹配（定长比较）。两者任一不满足都拒。
+    /// </summary>
     private bool IsAuthorized(HttpListenerRequest req)
     {
         string host = req.Url?.Host ?? "";
         string addr = req.UserHostAddress ?? "";
         bool loopback = host is "127.0.0.1" or "localhost" or "::1"
-                     || addr is "127.0.0.1" or "::1";
-        if (!loopback) return false;
+                     || addr is "127.0.0.1" or "::1"
+                     || addr is "::1";
+        bool local = loopback
+                     || (_cfg.WebApiAllowLan && (LocalAddresses().Contains(addr) || LocalAddresses().Contains(host)));
+        if (!local) return false;
 
-        var token = req.Headers["X-Hexa-Token"];
-        return token == _cfg.ApiToken;
+        return TokenEquals(req.Headers["X-Hexa-Token"], _cfg.ApiToken);
     }
 
     // ── Handlers ──────────────────────────────────────────────────────────

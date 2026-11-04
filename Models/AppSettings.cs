@@ -71,11 +71,17 @@ public class AppSettings
     /// </summary>
     public List<string> EnabledAutoPatterns { get; set; } = new();
 
-    /// <summary>本地控制接口开关。⚠ 待开发：服务当前停用，Normalize 会强制置 false。</summary>
+    /// <summary>外部程序控制接口（http://localhost:8580）开关。默认关闭；关闭时完全不监听。</summary>
     public bool WebApiEnabled { get; set; } = false;
+
+    /// <summary>是否允许局域网里的其它设备（手机/平板/别的机器）调用同一个接口。默认只本机。</summary>
+    public bool WebApiAllowLan { get; set; } = false;
+
+    /// <summary>外部程序控制接口的访问令牌（请求头 X-Hexa-Token）。首次运行自动生成，可在设置页重置。</summary>
+    public string ApiToken { get; set; } = "";
+
     public bool GlobalHotkeysEnabled { get; set; } = true;
     public HotkeyConfig Hotkeys { get; set; } = new();
-    public string ApiToken    { get; set; } = "";
     public Dictionary<string, int> AxisMin { get; set; } = new()
         { ["L0"]=0,["L1"]=0,["L2"]=0,["R0"]=0,["R1"]=0,["R2"]=0 };
     public Dictionary<string, int> AxisMax { get; set; } = new()
@@ -662,9 +668,6 @@ public class AppSettings
         FallbackPort = NormalizePort(FallbackPort);
         if (string.Equals(Port, FallbackPort, StringComparison.OrdinalIgnoreCase)) FallbackPort = "";
 
-        if (string.IsNullOrWhiteSpace(ApiToken) || ApiToken == "helix-local")
-            ApiToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
-
         // 音频灵敏度夹在 [0,2]（0–200%）
         if (double.IsNaN(AudioSensitivity) || double.IsInfinity(AudioSensitivity))
             AudioSensitivity = 1.0;
@@ -825,11 +828,14 @@ public class AppSettings
         };
         GameBridgeLatencyMs = Math.Clamp(GameBridgeLatencyMs, 0, 500);
 
-        // 待开发：本地控制接口（WebApiService）暂未开放，无论配置里写了什么都强制关闭
-        WebApiEnabled = false;
-
         CompositionFolder = NormalizeFolder(CompositionFolder);
         ScriptFolder = NormalizeFolder(ScriptFolder);
+
+        // 外部控制接口：关着的时候不记「允许局域网」，避免下次一开就意外暴露
+        if (!WebApiEnabled) WebApiAllowLan = false;
+        ApiToken = (ApiToken ?? "").Trim();
+        if (ApiToken.Length is < 24 or > 128 || ApiToken == "helix-local")
+            ApiToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
 
         GameTelemetryPort = Math.Clamp(GameTelemetryPort, 1024, 65535);
         GameTelemetryToken = (GameTelemetryToken ?? "").Trim();

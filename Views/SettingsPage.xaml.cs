@@ -100,6 +100,15 @@ public partial class SettingsPage : Page
         PreferWiredCheck.Unchecked += (_, _) => _vm.PreferWired = false;
         GlobalHotkeysCheck.Checked += (_, _) => SetGlobalHotkeysEnabled(true);
         GlobalHotkeysCheck.Unchecked += (_, _) => SetGlobalHotkeysEnabled(false);
+
+        // 外部程序控制接口（8580）：开关 / 局域网 / 令牌
+        WebApiEnabledCheck.IsChecked = _vm.WebApiEnabled;
+        WebApiLanCheck.IsChecked    = _vm.WebApiAllowLan;
+        WebApiEnabledCheck.Checked   += (_, _) => { _vm.WebApiEnabled = true;  UpdateWebApiUi(); };
+        WebApiEnabledCheck.Unchecked += (_, _) => { _vm.WebApiEnabled = false; UpdateWebApiUi(); };
+        WebApiLanCheck.Checked       += (_, _) => { _vm.WebApiAllowLan = true;  UpdateWebApiUi(); };
+        WebApiLanCheck.Unchecked     += (_, _) => { _vm.WebApiAllowLan = false; UpdateWebApiUi(); };
+        UpdateWebApiUi();
         UpdatePortState();
         InitLanguageSetting();
         Focusable = true;
@@ -1437,6 +1446,58 @@ public partial class SettingsPage : Page
         };
         if (dialog.ShowDialog() != true) return;
         ApplyStorageFolder(dialog.FolderName, scriptFolder: true);
+    }
+
+    /// <summary>刷新「外部程序控制接口」那张卡：徽章、令牌、状态说明。</summary>
+    private void UpdateWebApiUi()
+    {
+        bool on      = _vm.WebApiEnabled;
+        bool running = App.WebApi?.IsRunning == true;
+        WebApiLanCheck.IsEnabled = on;
+        WebApiTokenBox.Text = App.Settings.ApiToken;
+
+        if (!on)
+        {
+            WebApiBadge.Background = (Brush)FindResource("WarningSoft");
+            WebApiBadgeText.Foreground = (Brush)FindResource("Warning");
+            WebApiBadgeText.Text = "已关闭";
+            WebApiStatusText.Text = "已关闭，不监听任何端口。要用时勾上左边那个开关。";
+            return;
+        }
+
+        if (running)
+        {
+            WebApiBadge.Background = (Brush)FindResource("WarningSoft");
+            WebApiBadgeText.Foreground = (Brush)FindResource("Success");
+            WebApiBadgeText.Text = _vm.WebApiAllowLan ? "已开启 · 局域网" : "已开启 · 仅本机";
+            WebApiStatusText.Text = _vm.WebApiAllowLan
+                ? "正在监听：http://localhost:8580/，以及本机网卡的 IP（手机/别的电脑要填那串 IP）。请求头带 X-Hexa-Token。"
+                : "正在监听：http://localhost:8580/（只有本机能访问）。请求头带 X-Hexa-Token。";
+        }
+        else
+        {
+            WebApiBadge.Background = (Brush)FindResource("WarningSoft");
+            WebApiBadgeText.Foreground = (Brush)FindResource("Warning");
+            WebApiBadgeText.Text = "开启失败";
+            WebApiStatusText.Text = "没能监听：8580 端口可能被别的程序占了。看日志里的 [WebApi] 行。";
+        }
+    }
+
+    private void WebApiCopyToken_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            System.Windows.Clipboard.SetText(App.Settings.ApiToken);
+            WebApiStatusText.Text = "令牌已复制。外部程序请在请求头加：X-Hexa-Token: " + App.Settings.ApiToken;
+        }
+        catch (Exception ex) { WebApiStatusText.Text = "复制失败：" + ex.Message; }
+    }
+
+    private void WebApiResetToken_Click(object sender, RoutedEventArgs e)
+    {
+        _vm.ResetWebApiToken();
+        UpdateWebApiUi();
+        WebApiStatusText.Text = "已换新令牌，旧的立刻失效 —— 正在用的外部程序要跟着改，否则会被拒绝（403）。";
     }
 
     private void ScriptFolderReset_Click(object sender, RoutedEventArgs e) =>

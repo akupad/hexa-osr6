@@ -307,11 +307,6 @@ public sealed class FunscriptPlayerService : IDisposable
         RaiseStatusChanged();
     }
 
-    public void Toggle()
-    {
-        if (_playing) Pause(); else Play();
-    }
-
     /// <summary>
     /// 停止：暂停时钟 + 停掉引擎输出 + 播放位置归零。
     /// 归零不渲染（不调 RenderFrame），避免「停止」这个动作本身把设备推到脚本开头姿态。
