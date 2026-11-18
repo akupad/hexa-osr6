@@ -80,15 +80,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
     private readonly int[] _lastWrittenRaw = new int[6];
     private bool _hasWrittenFrame;
 
-    /// <summary>
-    /// 单帧允许的最大位移（TCode 单位）。旧固件（c90bc29）每帧 500 连跑 90 秒没事、1000 七秒就崩，所以当初卡 400；
-    /// 2026-11 的新固件上重测：800 / 1200 / 2000 各跑 40 秒、549 帧全部零 panic，于是放到 2000
-    /// （＝50ms 内走 20% 行程，合 400%/秒），刚好够游戏按节拍跑满而不被削平。
-    /// 它只是「别把固件写崩」的保底，不是舒适度限制。
-    /// </summary>
-    public const int MaxStepPerFrame = 2000;
     private readonly int[] _lastSentInterval = new int[6];
-    private long _lastComposeLogMs;
     /// <summary>固件卡死（看门狗刷屏、心跳停）第一次被发现的时刻；0 = 没卡。</summary>
     private long _wedgedSinceMs;
     private long _nextHardResetMs;
@@ -763,7 +755,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
     // 这是第二条串口通道，所以白名单是硬约束：只放行「列设置 / 改设置 / 保存 / 重启」。
     // 会动设备的命令一律不放 —— #device-home（回原点）、#motion-enable/disable/toggle（固件自己跑动作）、
     // #pause/#resume（会顶掉 Hexa 自己的控制权）、#channel-ranges-*（改限位行为）全在名单外。
-    // 运动只能走引擎那条被 MotionSafetyLimiter 与急停管着的路（TryDispatchAxes）。
+    // 运动只能走引擎那条被急停管着的路（TryDispatchAxes）。
     private static readonly string[] AllowedFirmwareCommands = ["#list-settings", "#help", "$save", "#restart"];
     private static readonly Regex FirmwareSettingNameRegex = new("^[A-Za-z0-9_.-]{1,40}$", RegexOptions.Compiled);
 
@@ -890,17 +882,6 @@ public sealed class SerialService : ICommandTransport, IDisposable
                                    "解锁请点侧栏「全部归中」。");
                 return;
             }
-            // 游戏桥与校准只发一根轴的 TCode 行（"L08222I60"），原样写下去就是残帧；
-            // 真机固件收到缺轴帧会在 20 秒内 panic 重启（灌流量实验复现），所以先并进帧状态、
-            // 补成完整六轴帧再写。非轴指令（DSTOP / $save / V0xx…）照原样走。
-            if (TryComposeAxisLineLocked(safeCommand, out string composed))
-            {
-                payload = composed;
-                if (ReserveRecordSlot(ref _lastComposeLogMs, 5000))
-                    AppLogger.Info($"残帧补齐：{safeCommand} → {payload}");
-                // 位置已经并进帧状态，什么时候真写由节拍器决定（见 PaceFrame）。
-                if (!_simulationEnabled) return;
-            }
 
             if (_simulationEnabled)
             {
@@ -977,33 +958,6 @@ public sealed class SerialService : ICommandTransport, IDisposable
         Interlocked.Exchange(ref _quietUntilMs, Environment.TickCount64 + 3000);
         lock (_lock) ResetSentAxesLocked();
         return true;
-    }
-
-    /// <summary>
-    /// 只含 TCode 轴标记的一行（游戏桥/校准命令）→ 补成完整帧；不是这种行就返回 false 原样发送。
-    /// </summary>
-    private bool TryComposeAxisLineLocked(string command, out string frame)
-    {
-        frame = "";
-        var updates = new List<(int Index, int Raw, int IntervalMs)>(6);
-        foreach (string token in command.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-        {
-            if (token.Length < 6) return false;
-            int index = Array.IndexOf(Osr6DeviceProfile.InstalledAxes, token[..2].ToUpperInvariant());
-            if (index < 0) return false;
-            if (!int.TryParse(token.AsSpan(2, 4), out int raw)) return false;
-            int interpolation = 0;
-            if (token.Length > 6)
-            {
-                if (token.Length < 8) return false;
-                if (token[6] is not ('I' or 'S' or 'G')) return false;
-                if (!int.TryParse(token.AsSpan(7), out interpolation)) return false;
-            }
-            updates.Add((index, raw, interpolation));
-        }
-        if (updates.Count == 0) return false;
-        frame = TCodeFrameFormatter.FormatRaw(updates, _lastSentRaw, _lastSentValid, _lastSentInterval);
-        return frame.Length > 0;
     }
 
     public void SendAxes(
@@ -1117,8 +1071,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             bool known = false;
             for (int i = 0; i < _lastSentValid.Length; i++) known |= _lastSentValid[i];
             if (!known) return;
-            // 大跳跃必须削平：目标可能一帧从 1735 跳到 9148（实测抓到的真实帧），
-            // 固件处理这种位移会写坏堆并 panic，所以这里限速，剩下的位移交给后面几帧慢慢走。
+            // 不再削平单帧位移（新固件已不会因大跳 panic）：目标原样写出。
             if (!_hasWrittenFrame)
             {
                 Array.Copy(_lastSentRaw, _lastWrittenRaw, _lastWrittenRaw.Length);
@@ -1127,7 +1080,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             for (int i = 0; i < _lastSentRaw.Length; i++)
             {
                 if (!_lastSentValid[i]) continue;
-                _lastWrittenRaw[i] = TCodeFrameFormatter.LimitStep(_lastWrittenRaw[i], _lastSentRaw[i], MaxStepPerFrame);
+                _lastWrittenRaw[i] = _lastSentRaw[i];
             }
             frame = TCodeFrameFormatter.FormatState(_lastWrittenRaw, _lastSentValid, FrameIntervalMs);
             if (frame.Length == 0) return;

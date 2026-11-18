@@ -143,7 +143,6 @@ public sealed class AudioReactiveService : IDisposable
             return owner switch
             {
                 "bridge" => "游戏桥正在控制设备（游戏里在动，声音响应先让位）",
-                "ayva" => "网页遥控器正在控制设备（网页上在动，声音响应先让位）",
                 ScriptInputOwner => ScriptPlayingReason,
                 _ => $"「{owner}」正在控制设备",
             };

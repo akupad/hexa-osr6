@@ -86,11 +86,11 @@ public partial class CalibrationWindow : Window
 
         EStopBtn.Content = locked ? "⛔  已急停（点此解锁）" : "⛔  锁定急停";
         EStopBtn.ToolTip = locked
-            ? "设备现在停着、输出锁着。点这里解除：会先问你一次，确认后六个轴回到中间位置，然后才能继续校准。"
+            ? "设备现在停着、输出锁着。点这里解除：六个轴回到中间位置，然后就能继续校准。"
             : "立刻停住所有动作并锁住输出。这个按钮任何时候都能点。";
         EStopHint.Text = locked
             ? "急停锁定中：移动 / 记录 / 归中都已停用，先点左边的按钮解除"
-            : "停住后设备不会再动，要再动它得先解除急停（会先问你一次）";
+            : "停住后设备不会再动，要再动它得先解除急停";
     }
 
     /// <summary>
@@ -125,7 +125,7 @@ public partial class CalibrationWindow : Window
         else if (estop)
             SetStatus("Danger", "急停锁定中", hint ??
                 "设备已经停住、输出锁着，所以「移动 / 记录 / 归中」都停用了。要接着校准，"
-                + "点右下角的「⛔ 已急停（点此解锁）」并确认：设备会先回到中间。");
+                + "点右下角的「⛔ 已急停（点此解锁）」：设备会先回到中间。");
         else if (homing)
             SetStatus("Warning", "正在归中", hint ?? "设备正在回中间，等它停稳再操作。");
         else if (!App.Engine.CanRun)
@@ -270,10 +270,6 @@ public partial class CalibrationWindow : Window
             SetStatus("Warning", "设备没连接", "连上设备之后才能让它回中间。");
             return;
         }
-        // 归中会解除急停并重新使能输出：急停锁定状态下先确认，避免校准窗口误触直接解锁。
-        if (App.Engine.EmergencyStopped && System.Windows.MessageBox.Show(
-                "设备处于急停锁定，归中会解除急停并重新使能输出，是否继续？",
-                "解除急停", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
         App.Engine.Home();
         _lastSentValue = null;
         ShowMoving("正在回中间…",

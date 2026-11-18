@@ -90,7 +90,7 @@
         <KeyBinding Key="O" Modifiers="Ctrl" Command="ApplicationCommands.Open"/>
     </Page.InputBindings>
 
-    <Grid Margin="24,16,24,24">
+    <Grid Margin="24,16,24,24" MaxWidth="1440" HorizontalAlignment="Stretch">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>  <!-- 0 页头 -->
             <RowDefinition Height="*"/>     <!-- 1 标签页 -->
@@ -127,8 +127,9 @@
                         <RowDefinition Height="2*" MinHeight="132"/>   <!-- 2 时间轴（整条，随窗口按比例伸缩） -->
                     </Grid.RowDefinitions>
 
-                    <!-- 工具栏 -->
-                    <WrapPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,8">
+                    <!-- 工具栏：按钮组单独 WrapPanel（窄了整组换行），信息组固定第二行不散架 -->
+                    <StackPanel Grid.Row="0" Orientation="Vertical" Margin="0,0,0,8">
+                        <WrapPanel Orientation="Horizontal">
                         <Button Content="新建" Width="62" Height="28" FontSize="12" Margin="0,0,6,6"
                                 Style="{StaticResource BtnSecondary}" Click="ComposeNew_Click"
                                 ToolTip="清空当前合成，开始新的编排"/>
@@ -158,6 +159,8 @@
                                 Margin="0,0,12,6" Style="{StaticResource BtnDanger}" Click="ComposeStop_Click"
                                 IsEnabled="False"
                                 ToolTip="停止编排试听（没在播放时不可点）。停止后就本页不再向设备发指令。"/>
+                        </WrapPanel>
+                        <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                         <TextBlock x:Name="ComposeNameLabel" Text="合成：未命名" FontSize="12"
                                    Foreground="{StaticResource Text}" VerticalAlignment="Center"
                                    Margin="0,0,14,0"/>
@@ -171,9 +174,10 @@
                                 VerticalAlignment="Center"
                                 ToolTip="Tempest 循环速度：60 = 每秒 1 圈（只改快慢，不改总时长）"/>
                         <TextBlock x:Name="ComposeBpmLabel" Text="60" FontSize="12"
-                                   Foreground="{StaticResource Muted}" Width="30" Margin="6,0,0,6"
+                                   Foreground="{StaticResource Muted}" Width="30" Margin="6,0,0,0"
                                    VerticalAlignment="Center"/>
-                    </WrapPanel>
+                        </StackPanel>
+                    </StackPanel>
 
                     <!-- 库 | 时间轴 | 段参数 -->
                     <Grid Grid.Row="1">

@@ -11,12 +11,6 @@
             <Setter Property="Foreground" Value="{StaticResource Muted}"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
-        <!-- 说明小字（一律折行，避免被卡片边缘切掉） -->
-        <Style x:Key="Hint" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-            <Setter Property="FontSize" Value="10"/>
-            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
-            <Setter Property="TextWrapping" Value="Wrap"/>
-        </Style>
         <!-- 长得像一句话的勾选项：把说明做成会折行的 TextBlock。
              注意：CheckBox 的模板用横向 StackPanel，量宽度时给孩子的是「无限宽」，
              光写 TextWrapping 不会折行、文字会被卡片边缘切掉，所以必须显式给一个上限。 -->
@@ -24,21 +18,37 @@
             <Setter Property="TextWrapping" Value="Wrap"/>
             <Setter Property="MaxWidth" Value="420"/>
         </Style>
+        <!-- 功能选择按钮：未选中也给卡片底（浅色卡片+描边），选中项描边加粗高亮，不用大块实心绿 -->
+        <Style x:Key="FeatureBtnBase" TargetType="Button" BasedOn="{StaticResource BtnBase}">
+            <Setter Property="Background" Value="{StaticResource SurfaceRaised}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource Border}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        </Style>
+        <Style x:Key="FeatureBtnOn" TargetType="Button" BasedOn="{StaticResource FeatureBtnBase}">
+            <Setter Property="BorderBrush" Value="{StaticResource Primary}"/>
+            <Setter Property="BorderThickness" Value="2"/>
+        </Style>
+        <Style x:Key="FeatureBtnOff" TargetType="Button" BasedOn="{StaticResource FeatureBtnBase}"/>
     </Page.Resources>
 
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <!-- MaxWidth 900：一次只显示一块卡片，不用再为两栏留宽度；限窄一点免得卡片横跨整屏 -->
-        <StackPanel Margin="24,16,24,24" MaxWidth="900" HorizontalAlignment="Stretch">
+        <StackPanel Margin="24,16,24,24" MaxWidth="1440" HorizontalAlignment="Stretch">
             <TextBlock Text="🧪 测试台" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,3"/>
             <TextBlock Text="试功能的地方：在这儿把参数试出手感，满意了再放进正式游玩流程。"
                        Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,8" TextWrapping="Wrap"/>
 
-            <!-- 功能选择：第一排两个、第二排一个（桥搬走后只剩 3 个功能）。
+            <!-- 功能选择：两排两列（④ 设备模拟器搬到「设置」页的连接卡后只剩 4 个功能）。
                  用户原话「我要的是两排、方便我选功能，我不想一直往下滑」——
                  所以点哪个就只显示那一块，其它卡片 Collapsed；选中的按钮走 BtnPrimary 高亮，
                  一眼看得出现在在看哪个。按钮上直接写「功能名 + 一句白话」，不用先读卡片再决定点哪个。
-                 用 Grid 而不是 UniformGrid：六块各占半排，宽度由列定义决定，加按钮也不会把谁挤出可视区。 -->
-            <TextBlock Text="这一页有六个用法，点哪个就只显示哪一块（不用往下滑）：" Style="{StaticResource Hint}" Margin="0,0,0,6"/>
+                 用 Grid 而不是 UniformGrid：每块各占半排，宽度由列定义决定，加按钮也不会把谁挤出可视区。 -->
+            <TextBlock Text="这一页有四个用法，点哪个就只显示哪一块（不用往下滑）：" Style="{StaticResource Hint}" Margin="0,0,0,6"/>
             <Grid x:Name="FeatureSwitchGrid" Margin="0,0,0,16">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="*"/>
@@ -47,11 +57,10 @@
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Button x:Name="FeatureAudioBtn" Tag="AudioCard" Click="FeatureSwitch_Click"
                         Grid.Row="0" Grid.Column="0"
-                        Style="{StaticResource BtnPrimary}" Margin="0,0,6,6"
+                        Style="{StaticResource FeatureBtnOn}" Margin="0,0,6,6"
                         HorizontalContentAlignment="Left" Padding="12,8"
                         ToolTip="设备跟着电脑正在放的声音动（最常用）">
                     <StackPanel>
@@ -62,7 +71,7 @@
                 </Button>
                 <Button x:Name="FeatureCompanionBtn" Tag="CompanionCard" Click="FeatureSwitch_Click"
                         Grid.Row="0" Grid.Column="1"
-                        Style="{StaticResource BtnGhost}" Margin="6,0,0,6"
+                        Style="{StaticResource FeatureBtnOff}" Margin="6,0,0,6"
                         HorizontalContentAlignment="Left" Padding="12,8"
                         ToolTip="绑定的游戏在前台时，由 Hexa 自动给动作">
                     <StackPanel>
@@ -73,44 +82,22 @@
                 </Button>
                 <Button x:Name="FeatureScreenBtn" Tag="ScreenCard" Click="FeatureSwitch_Click"
                         Grid.Row="1" Grid.Column="0"
-                        Style="{StaticResource BtnGhost}" Margin="0,6,0,0"
+                        Style="{StaticResource FeatureBtnOff}" Margin="0,6,0,0"
                         HorizontalContentAlignment="Left" Padding="12,8"
                         ToolTip="看一个窗口的画面；在「游戏伴随」里把来源选成「画面内容」后，设备就会跟着画面里的动作走">
                     <StackPanel>
-                        <TextBlock Text="③ 画面信号" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Text="③ 画面同步" FontSize="13" FontWeight="SemiBold"/>
                         <TextBlock Text="看窗口画面，可只看也可跟随" FontSize="10" Opacity="0.75"
                                    TextWrapping="Wrap" Margin="0,2,0,0"/>
                     </StackPanel>
                 </Button>
-                <Button x:Name="FeatureSimBtn" Tag="SimulatorCard" Click="FeatureSwitch_Click"
-                        Grid.Row="1" Grid.Column="1"
-                        Style="{StaticResource BtnGhost}" Margin="6,6,0,0"
-                        HorizontalContentAlignment="Left" Padding="12,8"
-                        ToolTip="没有真设备也能把整条链路走通：Hexa 假装连着一台设备，把每一条发给设备的指令记下来给你看">
-                    <StackPanel>
-                        <TextBlock Text="④ 设备模拟器" FontSize="13" FontWeight="SemiBold"/>
-                        <TextBlock Text="设备没插也能试所有玩法" FontSize="10" Opacity="0.75"
-                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
-                    </StackPanel>
-                </Button>
-                <Button x:Name="FeatureAyvaBtn" Tag="AyvaCard" Click="FeatureSwitch_Click"
-                        Grid.Row="2" Grid.Column="0"
-                        Style="{StaticResource BtnGhost}" Margin="0,6,6,0"
-                        HorizontalContentAlignment="Left" Padding="12,8"
-                        ToolTip="让 Ayva 系的网页（随机抽插器 / 远程控制）直接把动作发给 Hexa">
-                    <StackPanel>
-                        <TextBlock Text="⑤ 网页入口（Ayva）" FontSize="13" FontWeight="SemiBold"/>
-                        <TextBlock Text="网页遥控器直接指挥设备" FontSize="10" Opacity="0.75"
-                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
-                    </StackPanel>
-                </Button>
                 <Button x:Name="FeatureFanoutBtn" Tag="FanoutCard" Click="FeatureSwitch_Click"
-                        Grid.Row="2" Grid.Column="1"
-                        Style="{StaticResource BtnGhost}" Margin="6,6,0,0"
+                        Grid.Row="1" Grid.Column="1"
+                        Style="{StaticResource FeatureBtnOff}" Margin="6,6,0,0"
                         HorizontalContentAlignment="Left" Padding="12,8"
                         ToolTip="设备收到什么，同时转发给别的目标（第二台设备 / VAM 里的角色 / 别的软件）">
                     <StackPanel>
-                        <TextBlock Text="⑥ 多输出" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Text="④ 多输出" FontSize="13" FontWeight="SemiBold"/>
                         <TextBlock Text="同一条指令同时发给别的目标" FontSize="10" Opacity="0.75"
                                    TextWrapping="Wrap" Margin="0,2,0,0"/>
                     </StackPanel>
@@ -138,7 +125,7 @@
                                     Width="130" Height="32" Click="AudioToggle_Click"/>
                             <Button x:Name="AudioStopBtn" Content="■ 停止" Width="68" Height="32"
                                     Margin="8,0,0,0" Style="{StaticResource BtnDanger}"
-                                    ToolTip="立刻停住设备，并关掉声音响应 / 游戏伴随 / 画面观察 / 游戏桥 / 氛围微动（和页面底部那个红色按钮完全一样）"
+                                    ToolTip="立刻停住设备，并关掉声音响应 / 游戏伴随 / 画面同步 / 游戏桥 / 氛围微动（和页面底部那个红色按钮完全一样）"
                                     Click="AudioStopBtn_Click"/>
                         </StackPanel>
                     </Grid>
@@ -169,7 +156,7 @@
                     <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <TextBlock Text="声音来源" Style="{StaticResource FieldLabel}"/>
-                        <ComboBox x:Name="AudioDeviceCombo" Grid.Column="1" SelectionChanged="AudioDevice_Changed">
+                        <ComboBox x:Name="AudioDeviceCombo" Grid.Column="1" MaxWidth="480" HorizontalAlignment="Left" SelectionChanged="AudioDevice_Changed">
                             <ComboBox.ItemTemplate>
                                 <DataTemplate>
                                     <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/>
@@ -191,7 +178,7 @@
                     <Grid Margin="0,0,0,6">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <TextBlock Text="响应对象" Style="{StaticResource FieldLabel}"/>
-                        <ComboBox x:Name="AudioTargetCombo" Grid.Column="1" SelectionChanged="AudioTarget_Changed">
+                        <ComboBox x:Name="AudioTargetCombo" Grid.Column="1" MaxWidth="480" HorizontalAlignment="Left" SelectionChanged="AudioTarget_Changed">
                             <ComboBoxItem Content="角色声音 · 呻吟 / 喘息 / 说话" Tag="voice"/>
                             <ComboBoxItem Content="音乐律动 · 跟着鼓点和低音" Tag="music"/>
                         </ComboBox>
@@ -203,7 +190,7 @@
                         <Grid>
                             <Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                             <TextBlock Text="律动方式" Style="{StaticResource FieldLabel}"/>
-                            <ComboBox x:Name="AudioModeCombo" Grid.Column="1" SelectionChanged="AudioMode_Changed">
+                            <ComboBox x:Name="AudioModeCombo" Grid.Column="1" MaxWidth="480" HorizontalAlignment="Left" SelectionChanged="AudioMode_Changed">
                                 <ComboBoxItem Content="自然起伏 · 跟着整段音乐走" Tag="energy"/>
                                 <ComboBoxItem Content="低音节奏 · 只听鼓和低音" Tag="bass"/>
                                 <ComboBoxItem Content="鼓点脉冲 · 一下一下地顶" Tag="beat"/>
@@ -215,7 +202,7 @@
                     <Grid Margin="0,0,0,8">
                         <Grid.ColumnDefinitions><ColumnDefinition Width="92"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                         <TextBlock Text="灵敏度" Style="{StaticResource FieldLabel}"/>
-                        <ComboBox x:Name="AudioSensitivityCombo" Grid.Column="1" SelectionChanged="AudioSensitivity_Changed">
+                        <ComboBox x:Name="AudioSensitivityCombo" Grid.Column="1" MaxWidth="480" HorizontalAlignment="Left" SelectionChanged="AudioSensitivity_Changed">
                             <ComboBoxItem Content="低 · 只响应明显的声音" Tag="low"/>
                             <ComboBoxItem Content="标准 · 推荐" Tag="standard"/>
                             <ComboBoxItem Content="高 · 小声也响应（呻吟偏小时选它）" Tag="high"/>
@@ -228,7 +215,7 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <TextBlock Text="行程" Style="{StaticResource FieldLabel}"/>
-                        <Slider x:Name="AudioRangeSlider" Grid.Column="1" Minimum="10" Maximum="100"
+                        <Slider x:Name="AudioRangeSlider" Grid.Column="1" MaxWidth="480" HorizontalAlignment="Left" Minimum="10" Maximum="100"
                                 SmallChange="5" LargeChange="10" TickFrequency="5" IsSnapToTickEnabled="True"
                                 VerticalAlignment="Center" Margin="0,0,6,0"
                                 ToolTip="声音最大时来回的幅度，按「占全程的百分之几」算：100% = 从最低走到最高，50% = 只在半程里来回。小一点更含蓄，大一点更明显。"
@@ -474,7 +461,7 @@
                 </StackPanel>
             </Border>
 
-            <!-- ══ ③ 画面信号：属于「游戏伴随」那条路，可以只观察，也可以真的驱动设备 ══ -->
+            <!-- ══ ③ 画面同步：属于「游戏伴随」那条路，可以只观察，也可以真的驱动设备 ══ -->
             <!-- 为什么不放在「声音响应」卡旁边：这条信号是伴随的「动作来源」之一
                  （选项：画面内容 / 自动 / 只用声音 / 只用遥测），不是声音那一路的附属。
                  默认它只算数字给用户看；只有把「动作来源」选成「画面内容」、绑定的程序在前台、
@@ -487,15 +474,30 @@
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <StackPanel Margin="0,0,10,0">
-                            <TextBlock Text="🖥 画面信号（能跟着画面里的动作走）" FontSize="13" FontWeight="SemiBold"/>
+                            <TextBlock Text="🖥 画面同步（能跟着画面里的动作走）" FontSize="13" FontWeight="SemiBold"/>
                             <TextBlock Text="盯着一个窗口，看画面里在发生什么：先确认信号准不准；准了就到「游戏伴随」里把动作来源选成「画面内容」，设备才会跟着它动。"
                                        Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
                         </StackPanel>
-                        <Button x:Name="ScreenWatchToggleBtn" Grid.Column="1" Content="开启观察"
+                        <Button x:Name="ScreenWatchToggleBtn" Grid.Column="1" Content="开启同步"
                                 Width="104" Height="32" VerticalAlignment="Center"
                                 Style="{StaticResource BtnSecondary}" Click="ScreenWatchToggle_Click"
                                 ToolTip="开启后 Hexa 每秒看这个窗口 12–15 次，把下面几个数算出来显示。要在设备上真正生效，还要把「游戏伴随」的「动作来源」选成「画面内容」。"/>
                     </Grid>
+
+                    <CheckBox x:Name="AutoFollowScreenCheck" FontSize="12" Margin="0,10,0,0"
+                              ToolTip="勾上后按一次就够：Hexa 自己找当前正在用的那个窗口（游戏 / 播放器 / 浏览器都行），把观察目标和「游戏伴随」的绑定程序一起对过去，而且会把动作来源切成「画面内容」、开好规则引擎。&#10;换窗口自动跟着换。关掉只是停这个模式，其它开关保持你原来的值。">
+                        <TextBlock Style="{StaticResource WrapText}"
+                                   Text="跟着当前窗口自动动（换游戏 / 换片源自动切，不用再手挑窗口）"/>
+                    </CheckBox>
+
+                    <CheckBox x:Name="ScreenSyncInvertCheck" FontSize="12" Margin="0,8,0,0"
+                              Checked="ScreenSyncInvert_Changed" Unchecked="ScreenSyncInvert_Changed"
+                              Content="方向反转（设备方向和画面相反时勾上）"
+                              ToolTip="画面里哪个方向算「插入」无法自动判断，默认不反转；设备方向和你感觉相反时勾上。"/>
+                    <CheckBox x:Name="ScreenSyncTiltCheck" FontSize="12" Margin="0,8,0,0"
+                              Checked="ScreenSyncTilt_Changed" Unchecked="ScreenSyncTilt_Changed"
+                              Content="倾斜同步（近似，默认关）"
+                              ToolTip="2D 画面只能近似：左右较准，前后靠画面上下分量推测。幅度不超过倾斜轴行程的 ±30%，且只在多轴模式下生效。"/>
 
                     <!-- 状态放最上面：未开启 / 正在看什么 / 抓不到画面（原因），三种情况一眼分得清 -->
                     <Border Background="{StaticResource Surface}" CornerRadius="6" Padding="9,6"
@@ -790,6 +792,11 @@
                                                Foreground="{StaticResource Text}"/>
                                     <TextBlock x:Name="ScreenPoseStatusText" Text="没下载（13MB）" FontSize="11"
                                                Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                    <CheckBox x:Name="ScreenPoseEnableCheck" FontSize="12" Margin="0,8,0,0"
+                                              ToolTip="开启：每次看画面都先用姿态模型找出「人在哪一块」，运动和节奏只在这一块里算，镜头晃、背景里树叶动都不会被算进去。&#10;没下载模型时这一项不生效（自动按整幅画面算）。默认关闭。">
+                                        <TextBlock Style="{StaticResource WrapText}"
+                                                   Text="用姿态定位运动主体（YOLO，需先下载模型）"/>
+                                    </CheckBox>
                                     <Border x:Name="ScreenPoseProgressTrack" Height="6" Background="#0F0F14" CornerRadius="3"
                                             Margin="0,6,0,0" Visibility="Collapsed"/>
                                     <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
@@ -840,96 +847,7 @@
                 </StackPanel>
             </Border>
 
-            <!-- ══ ④ 设备模拟器 ══════════════════════════════════════ -->
-            <Border x:Name="SimulatorCard" Style="{StaticResource Card}" Visibility="Collapsed">
-                <StackPanel>
-                    <Grid Margin="0,0,0,7">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Margin="0,0,10,0">
-                            <TextBlock Text="🧪 设备模拟器" FontSize="14" FontWeight="SemiBold"/>
-                            <TextBlock Text="设备没插也能用：Hexa 假装连着一台真设备，整条链路照跑 —— 声音响应、游戏桥、VAM 发来的 TCode 都会正常处理，只是不会真的动机器，而是把每一条指令记下来给你看。用它确认「游戏到底有没有把动作发到 Hexa」。"
-                                       Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
-                        </StackPanel>
-                        <Button x:Name="SimToggleBtn" Grid.Column="1" Content="进入模拟设备"
-                                Style="{StaticResource BtnSecondary}" Width="140" Height="32"
-                                VerticalAlignment="Center" Click="SimToggle_Click"/>
-                    </Grid>
-
-                    <Border Background="{StaticResource Surface}" CornerRadius="6" Padding="9,6"
-                            BorderBrush="{StaticResource Border}" BorderThickness="1" Margin="0,0,0,8">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="3"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <Border x:Name="SimStatusBar" Grid.Column="0" Background="{StaticResource Muted}" CornerRadius="2"/>
-                            <StackPanel Grid.Column="1" Margin="9,0,0,0">
-                                <TextBlock x:Name="SimStatusText" Text="没在模拟：走的是真实串口" FontSize="11"
-                                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-                                <TextBlock x:Name="SimCountText" Text="还没记录到指令" Style="{StaticResource Hint}" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-
-                    <TextBlock Text="最近发给设备的指令（真实使用时每 20~50 毫秒一条，这里只看最后几条）：" Style="{StaticResource Hint}" Margin="0,0,0,4"/>
-                    <Border Background="#0F0F14" CornerRadius="6" Padding="9,6" Height="150">
-                        <ScrollViewer VerticalScrollBarVisibility="Auto">
-                            <TextBlock x:Name="SimLogText" Text="（还没收到指令）" FontFamily="Consolas"
-                                       FontSize="11" Foreground="{StaticResource Accent}" TextWrapping="Wrap"/>
-                        </ScrollViewer>
-                    </Border>
-                    <TextBlock Style="{StaticResource Hint}" Margin="0,8,0,0"
-                               Text="提示：模拟设备下 VAM 那条链路也能验证 —— 先到「游玩」页的游戏桥卡片上勾「接收原始 TCode」（默认是关的，不勾的话一条都收不到），再在 VAM 插件里填 127.0.0.1:26781 点 Start Udp，然后回这一格看有没有指令进来。"/>
-                </StackPanel>
-            </Border>
-
-            <!-- ══ ⑤ 网页入口（Ayva）══════════════════════════════════ -->
-            <Border x:Name="AyvaCard" Style="{StaticResource Card}" Visibility="Collapsed">
-                <StackPanel>
-                    <Grid Margin="0,0,0,7">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Margin="0,0,10,0">
-                            <TextBlock Text="🌐 网页入口（Ayva）" FontSize="14" FontWeight="SemiBold"/>
-                            <TextBlock Text="让 Ayva 系的网页遥控器（随机抽插器、远程控制那类）直接指挥设备：打开开关，网页里填好主机和端口（下面会告诉你填什么）就能直接指挥设备 —— 不用装任何东西。"
-                                       Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
-                        </StackPanel>
-                        <Button x:Name="AyvaToggleBtn" Grid.Column="1" Content="开启网页入口"
-                                Style="{StaticResource BtnSecondary}" Width="140" Height="32"
-                                VerticalAlignment="Center" Click="AyvaToggle_Click"/>
-                    </Grid>
-
-                    <Border Background="{StaticResource Surface}" CornerRadius="6" Padding="9,6"
-                            BorderBrush="{StaticResource Border}" BorderThickness="1" Margin="0,0,0,8">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="3"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <Border x:Name="AyvaStatusBar" Grid.Column="0" Background="{StaticResource Muted}" CornerRadius="2"/>
-                            <StackPanel Grid.Column="1" Margin="9,0,0,0">
-                                <TextBlock x:Name="AyvaStatusText" Text="没开：网页连不上来" FontSize="11"
-                                           Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-                                <TextBlock x:Name="AyvaCountText" Text="还没收到指令" Style="{StaticResource Hint}" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </Grid>
-                    </Border>
-
-                    <TextBlock Text="最近收到的一条指令（网页发来的原文）：" Style="{StaticResource Hint}" Margin="0,0,0,4"/>
-                    <Border Background="#0F0F14" CornerRadius="6" Padding="9,6">
-                        <TextBlock x:Name="AyvaLastCmdText" Text="（还没有）" FontFamily="Consolas"
-                                   FontSize="12" Foreground="{StaticResource Accent}" TextWrapping="Wrap"/>
-                    </Border>
-                    <TextBlock x:Name="AyvaHintText" Style="{StaticResource Hint}" Margin="0,8,0,0" Text=""/>
-                </StackPanel>
-            </Border>
-
-            <!-- ══ ⑥ 多输出 ══════════════════════════════════════ -->
+            <!-- ══ ④ 多输出 ══════════════════════════════════════ -->
             <Border x:Name="FanoutCard" Style="{StaticResource Card}" Visibility="Collapsed">
                 <StackPanel>
                     <Grid Margin="0,0,0,7">
@@ -973,13 +891,13 @@
                         <StackPanel Margin="0,0,12,0" VerticalAlignment="Center">
                             <TextBlock Text="一键停止（全域急停：这条链路上的一切都停）" FontSize="12" FontWeight="SemiBold"
                                        Foreground="{StaticResource Danger}" Margin="0,0,0,4"/>
-                            <TextBlock Text="不管这些功能在哪个页面开着，都会一起关掉：声音响应、游戏伴随（含操作联动）、画面观察、氛围微动，以及「游玩」页的🌉游戏桥；同时锁定设备输出。之后要再动设备，先点左下角侧栏的「全部归中」解锁（急停中会先弹确认）。"
+                            <TextBlock Text="不管这些功能在哪个页面开着，都会一起关掉：声音响应、游戏伴随（含操作联动）、画面同步、氛围微动，以及「游玩」页的🌉游戏桥；同时锁定设备输出。之后要再动设备，先点左下角侧栏的「全部归中」解锁（急停中会先弹确认）。"
                                        FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                         </StackPanel>
                         <Button x:Name="StopBtn" Grid.Column="1" Content="⛔ 全部停止" Width="150" Height="42"
                                 FontSize="14" VerticalAlignment="Center"
                                 Style="{StaticResource BtnDanger}" Click="StopBtn_Click"
-                                ToolTip="等于同时按下声音响应、游戏伴随、画面观察、游戏桥四个开关的「关闭」（游戏桥那一处在别页，照样停），再加一次急停"/>
+                                ToolTip="等于同时按下声音响应、游戏伴随、画面同步、游戏桥四个开关的「关闭」（游戏桥那一处在别页，照样停），再加一次急停"/>
                     </Grid>
                     <TextBlock x:Name="StopHintText" Text="" FontSize="10" Foreground="{StaticResource Warning}"
                                Margin="0,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>

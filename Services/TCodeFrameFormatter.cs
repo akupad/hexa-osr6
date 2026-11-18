@@ -42,8 +42,7 @@ public static class TCodeFrameFormatter
                 Math.Clamp(target.InterpolationMs, 1, 9999)));
         }
 
-        // changedOnly 现在只表示「顺带刷新一次插值参数」，不再决定发几根轴：
-        // 真机固件收到少轴的帧会在 20 秒内 panic 重启（灌流量实验复现），所以一律发完整帧。
+        // changedOnly 只表示「顺带刷新一次插值参数」，不决定发几根轴：节拍器一律发完整帧。
         return FormatRaw(updates, previousRaw, previousValid, previousInterval,
             forceInterpolation: !changedOnly);
     }
@@ -130,20 +129,6 @@ public static class TCodeFrameFormatter
             parts.Add(Osr6DeviceProfile.InstalledAxes[i] + value.ToString("D4") + "I" + intervalMs);
         }
         return string.Join(' ', parts);
-    }
-
-    /// <summary>
-    /// 限制单帧位移：target 离 from 太远时只走 maxStep，剩下的留给后面几帧。
-    /// 真机实测（COM3，20 帧/秒）：每帧跳 500 单位连跑 90 秒不崩，跳 1000 单位 7 秒就 panic ——
-    /// 固件处理大位移会写坏自己的堆，所以任何来源的大跳跃都必须在这里被削平。
-    /// </summary>
-    public static int LimitStep(int from, int to, int maxStep)
-    {
-        if (maxStep <= 0) return to;
-        int delta = to - from;
-        if (delta > maxStep) return from + maxStep;
-        if (delta < -maxStep) return from - maxStep;
-        return to;
     }
 
     public static int MapPosition(

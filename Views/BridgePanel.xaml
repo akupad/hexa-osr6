@@ -13,11 +13,6 @@
             <Setter Property="Foreground" Value="{StaticResource Muted}"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
-        <Style x:Key="Hint" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
-            <Setter Property="FontSize" Value="10"/>
-            <Setter Property="Foreground" Value="{StaticResource Muted}"/>
-            <Setter Property="TextWrapping" Value="Wrap"/>
-        </Style>
         <!-- CheckBox 的模板量孩子时给的是「无限宽」，光写 TextWrapping 不会折行、文字会被卡片边缘切掉，
              所以必须显式给一个上限（与测试台原来那份一致）。 -->
         <Style x:Key="WrapText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
@@ -35,7 +30,7 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <StackPanel Margin="0,0,10,0">
-                <TextBlock Text="🌉 游戏桥" FontSize="14" FontWeight="SemiBold"/>
+                <TextBlock Text="🌉 游戏桥" FontSize="14" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
                 <TextBlock Text="给「自己会发动作指令的游戏」用：Hexa 在本机开一个服务（游戏里通常叫 Intiface / Buttplug），游戏连上这个端口就能直接指挥设备 —— 动作由游戏决定，Hexa 不编动作。不玩这类游戏就一直关着，不会有任何影响。"
                            Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
             </StackPanel>

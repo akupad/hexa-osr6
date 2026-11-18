@@ -16,7 +16,7 @@
             <StackPanel Margin="20,18,20,16" MaxWidth="430" HorizontalAlignment="Center">
 
                 <!-- 标题 -->
-                <TextBlock Text="📐 设备校准" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Text="📐 设备校准" FontSize="21" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
                 <TextBlock Text="这台设备不会回报自己停在哪：每一步都要你用眼睛确认过，再点「记录」。"
                            Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,0"/>
 

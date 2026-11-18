@@ -31,20 +31,19 @@ public sealed class LovenseBridgeService : IDisposable
     private CancellationTokenSource? _cancellation;
     private System.Threading.Timer? _ticker;
 
-    private string _action = "";
-    private double _amplitude;
-    private double _hz;
+    /// <summary>主玩具（抽插 L0）与转动玩具（nora → R0）的双通道状态：定向命令只动自己那一路。</summary>
+    private LovenseChannels _channels = LovenseChannels.Empty;
     private double _phase;
-    private double _rotateAmplitude;
-    private double _rotateHz;
     private double _rotatePhase;
     private double _rotatePhaseOffset;
     private bool _rotateLockPending;
     private DateTime _lastCommandUtc = DateTime.MinValue;
-    /// <summary>这条指令跑到什么时候为止（Lovense 一条 Function 会带 timeSec，游戏不会再发第二遍）。</summary>
-    private DateTime _runUntilUtc = DateTime.MinValue;
+    /// <summary>抽插通道跑到什么时候为止（timeSec=0/缺省 = MaxValue 无限直到 Stop）。</summary>
+    private DateTime _strokeRunUntilUtc = DateTime.MinValue;
+    /// <summary>转动通道跑到什么时候为止。</summary>
+    private DateTime _rotateRunUntilUtc = DateTime.MinValue;
     private DateTime _lastTickUtc = DateTime.UtcNow;
-    /// <summary>上一条动作指令到达的时刻：游戏一抽发一条，间隔就是动作周期。</summary>
+    /// <summary>上一条动作指令到达的时刻：游戏一抽发一条，间隔就是动作周期（两通道共用）。</summary>
     private DateTime _lastArrivalUtc = DateTime.MinValue;
     private double _intervalSeconds;
     /// <summary>相位修正量：每条指令到达时把相位误差记进来，几百毫秒内衰减掉，相当于轻轻加/减速而不是一下子跳过去。</summary>
@@ -52,10 +51,14 @@ public sealed class LovenseBridgeService : IDisposable
     private bool _phaseLockPending;
     private double _smoothedAmplitude = -1;
     private double _smoothedRotateAmplitude = -1;
-    /// <summary>timeSec 用完但这一抽还没走完时置位：等它走完再回中位，别在半路上突然停。</summary>
+    /// <summary>抽插 timeSec 用完但这一抽还没走完时置位：等它走完再回中位，别在半路上突然停。</summary>
     private bool _finishing;
     private double _lastPhaseSeen;
     private DateTime _finishStartedUtc = DateTime.MinValue;
+    /// <summary>转动通道 timeSec 用完但这一转还没走完时置位。</summary>
+    private bool _rotateFinishing;
+    private double _rotateLastPhaseSeen;
+    private DateTime _rotateFinishStartedUtc = DateTime.MinValue;
     private DateTime _blockedSinceUtc = DateTime.MinValue;
     private volatile int _strokeDeepPercent = LovenseProtocol.DefaultStrokeDeepPercent;
     private volatile int _strokeTopPercent = LovenseProtocol.DefaultStrokeTopPercent;
@@ -64,6 +67,13 @@ public sealed class LovenseBridgeService : IDisposable
     private volatile int _rotateTopPercent = LovenseProtocol.DefaultRotateTopPercent;
     private volatile bool _sawClient;
     private volatile string _toyName = LovenseProtocol.DefaultToyName;
+    private double _positionCurrent = double.NaN;
+    private double _positionTarget = double.NaN;
+    private IReadOnlyList<(double Ts, double Pos)> _patternPoints = Array.Empty<(double, double)>();
+    private DateTime _patternStartUtc = DateTime.MinValue;
+    private double _patternOffsetMs;
+    private DateTime _loopStartedUtc = DateTime.MinValue;
+    private readonly AutoTwistLink _twistLink = new();
 
     public LovenseBridgeService(MotionEngine engine) => _engine = engine;
 
@@ -111,6 +121,18 @@ public sealed class LovenseBridgeService : IDisposable
 
     /// <summary>true 时游戏一有动作就把档位顶成「不限速」（只守轴限位），游戏停了再摘掉。</summary>
     public bool Unlimited { get; set; } = true;
+
+    /// <summary>true 时只监听 127.0.0.1；false 沿用现状 0.0.0.0（手机 / VR 能连）。</summary>
+    public bool LocalOnly { get; set; }
+
+    /// <summary>true 时 GetToys 额外报一台能 Rotate 的玩具（nora → R0），让游戏也发 Rotate。</summary>
+    public bool ExtraRotateToy { get; set; }
+
+    /// <summary>自动扭转：近 2 秒没有显式旋转命令时，R0 跟 L0 联动。</summary>
+    public bool AutoTwistEnabled { get; set; } = true;
+
+    /// <summary>自动扭转幅度（%）：R0 = 50 ± amp × (L0 偏离中心的归一化量)。</summary>
+    public double AutoTwistAmplitudePercent { get; set; } = 25;
 
     public bool IsRunning { get; private set; }
     public int HttpsPort { get; private set; }
@@ -166,9 +188,11 @@ public sealed class LovenseBridgeService : IDisposable
             lock (_gate)
             {
                 string seen = _sawClient ? "游戏已连上" : "等游戏连接";
-                if (_action.Length == 0 || _action == "Stop") return seen + " · 待机";
-                string text = seen + " · " + _action + " " + _amplitude.ToString("0") + "% / " + _hz.ToString("0.0") + "Hz";
-                if (_rotateAmplitude > 0) text += " + 扭 " + _rotateAmplitude.ToString("0") + "%";
+                if (!_channels.StrokeActive && !_channels.RotateActive) return seen + " · 待机";
+                if (!_channels.StrokeActive)
+                    return seen + " · 转 " + _channels.RotateAction + " " + _channels.RotateAmplitude.ToString("0") + "%";
+                string text = seen + " · " + _channels.StrokeAction + " " + _channels.StrokeAmplitude.ToString("0") + "% / " + _channels.StrokeHz.ToString("0.0") + "Hz";
+                if (_channels.RotateAmplitude > 0) text += " + 扭 " + _channels.RotateAmplitude.ToString("0") + "%";
                 return text;
             }
         }
@@ -188,13 +212,14 @@ public sealed class LovenseBridgeService : IDisposable
             CertificateTrusted = IsTrusted(_certificate);
             _cancellation = new CancellationTokenSource();
 
-            _httpsListener = new TcpListener(IPAddress.Any, httpsPort);
+            IPAddress bind = LocalOnly ? IPAddress.Loopback : IPAddress.Any;
+            _httpsListener = new TcpListener(bind, httpsPort);
             _httpsListener.Start();
             _ = AcceptLoopAsync(_httpsListener, true, _cancellation.Token);
 
             if (httpPort > 0 && httpPort != httpsPort)
             {
-                _httpListener = new TcpListener(IPAddress.Any, httpPort);
+                _httpListener = new TcpListener(bind, httpPort);
                 _httpListener.Start();
                 _ = AcceptLoopAsync(_httpListener, false, _cancellation.Token);
             }
@@ -227,9 +252,19 @@ public sealed class LovenseBridgeService : IDisposable
         ReleaseComfortOverride();
         lock (_gate)
         {
-            _action = "";
+            _channels = LovenseChannels.Empty;
             _sawClient = false;
+            _positionCurrent = double.NaN;
+            _positionTarget = double.NaN;
+            _patternPoints = Array.Empty<(double, double)>();
+            _patternStartUtc = DateTime.MinValue;
+            _loopStartedUtc = DateTime.MinValue;
+            _strokeRunUntilUtc = DateTime.MinValue;
+            _rotateRunUntilUtc = DateTime.MinValue;
+            _finishing = false;
+            _rotateFinishing = false;
         }
+        _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
     }
 
     public void Dispose() => Stop();
@@ -292,7 +327,7 @@ public sealed class LovenseBridgeService : IDisposable
                     if (path.Length == 0) return;
 
                     if (body is { Length: > 0 }) Trace("body " + (body.Length > 200 ? body[..200] + "…" : body));
-                    LovenseProtocol.Outcome outcome = LovenseProtocol.Handle(method, path, body, _toyName);
+                    LovenseProtocol.Outcome outcome = LovenseProtocol.Handle(method, path, body, _toyName, ExtraRotateToy);
                     (string status, byte[] payload) = await BuildResponseAsync(method, path, outcome).ConfigureAwait(false);
                     await WriteResponseAsync(stream, status, "application/json; charset=utf-8", payload, keepAlive).ConfigureAwait(false);
                     Apply(outcome);
@@ -331,15 +366,74 @@ public sealed class LovenseBridgeService : IDisposable
             _lastCommandUtc = DateTime.UtcNow;
             if (!outcome.Ok) return;
             if (outcome.Action.Length == 0) return;          // GetToys 这类查询不动设备
-            if (outcome.Action == "Stop" || (outcome.Amplitude <= 0 && outcome.RotateAmplitude <= 0))
+
+            // Position / PatternV2 不认 toy 定向，保持整机语义（转动通道一起停）。
+            if (outcome.Action == "Position")
             {
-                _action = "";
-                _amplitude = 0;
-                _rotateAmplitude = 0;
+                _channels = _channels with
+                {
+                    StrokeAction = "Position", StrokeAmplitude = 0, StrokeHz = 0, StrokeSeconds = 0,
+                    StrokeLoopRunSec = 0, StrokeLoopPauseSec = 0, StrokeTopOverride = -1, StrokeDeepOverride = -1,
+                    RotateAction = "", RotateAmplitude = 0, RotateHz = 0, RotateSeconds = 0
+                };
+                _positionTarget = double.IsNaN(outcome.L0Target) ? 50 : Math.Clamp(outcome.L0Target, 0, 100);
+                if (double.IsNaN(_positionCurrent)) _positionCurrent = _positionTarget;
+                _strokeRunUntilUtc = DateTime.MaxValue;
+                return;
+            }
+            // PatternV2：Setup 只存点不动作；Play 从当前时刻开播，无限直到 Stop。
+            if (outcome.Action == "PatternV2Setup")
+            {
+                _patternPoints = outcome.PatternPoints ?? Array.Empty<(double, double)>();
+                return;
+            }
+            if (outcome.Action == "PatternV2Play")
+            {
+                _channels = _channels with
+                {
+                    StrokeAction = "PatternV2", StrokeAmplitude = 0, StrokeHz = 0, StrokeSeconds = 0,
+                    StrokeLoopRunSec = 0, StrokeLoopPauseSec = 0, StrokeTopOverride = -1, StrokeDeepOverride = -1,
+                    RotateAction = "", RotateAmplitude = 0, RotateHz = 0, RotateSeconds = 0
+                };
+                _patternStartUtc = DateTime.UtcNow;
+                _patternOffsetMs = outcome.PatternOffsetMs;
+                _strokeRunUntilUtc = DateTime.MaxValue;
+                return;
+            }
+
+            // 通用 Function / Stop：双通道合并，toy 定向命令只动自己那一路。
+            LovenseChannels before = _channels;
+            _channels = LovenseChannels.Merge(_channels, outcome);
+            LovenseChannels next = _channels;
+            bool strokeStopped = before.StrokeActive && !next.StrokeActive;
+            bool rotateStopped = before.RotateActive && !next.RotateActive;
+            if (strokeStopped)
+            {
+                _positionCurrent = double.NaN;
+                _positionTarget = double.NaN;
+                _patternPoints = Array.Empty<(double, double)>();
+                _patternStartUtc = DateTime.MinValue;
+                _finishing = false;
+                _finishStartedUtc = DateTime.MinValue;
+                _phaseLockPending = false;
+                _smoothedAmplitude = -1;
+                _strokeRunUntilUtc = DateTime.MinValue;
+            }
+            if (rotateStopped)
+            {
+                _rotateFinishing = false;
+                _rotateFinishStartedUtc = DateTime.MinValue;
+                _rotateLockPending = false;
+                _smoothedRotateAmplitude = -1;
+                _rotateRunUntilUtc = DateTime.MinValue;
+            }
+            if (!next.StrokeActive && !next.RotateActive)
+            {
                 ReleaseComfortOverride();
                 _engine.TrySendDirectAxes([50, 50, 50, 50, 50, 50], 0.45);
                 return;
             }
+
             // 用户定的规矩：玩游戏时唯一的限制是设置页的轴限位，所以收到动作就把档位换成「不限速」，
             // 游戏一停（Stop / 超时收尾）再摘下来，不影响脚本、声音那些路径。
             if (Unlimited) _engine.ComfortOverride = Hexa.Models.ComfortProfile.Game;
@@ -355,21 +449,40 @@ public sealed class LovenseBridgeService : IDisposable
             }
             _lastArrivalUtc = arrival;
 
-            _action = outcome.Action;
-            _amplitude = outcome.Amplitude;
-            // 游戏一抽发一条：动作要从这条指令到达的瞬间开始（真正对齐在 Tick 里做，
-            // 因为被限速器压慢时不该对齐——那样它永远追不上，反而一顿一顿）。
-            _phaseLockPending = true;
-            _finishing = false;
-            _finishStartedUtc = DateTime.MinValue;
-            _hz = LovenseProtocol.TempoHz(_intervalSeconds, Math.Clamp(outcome.Hz, 0.1, 3.0));
-            _rotateAmplitude = outcome.RotateAmplitude;
-            // 旋转也按指令节奏走：一条指令正好拧一个来回，发得越密拧得越快。
-            _rotateLockPending = true;
-            _rotateHz = LovenseProtocol.TwistHz(_intervalSeconds, Math.Clamp(outcome.RotateHz, 0.1, 2.0));
-            // 游戏一条命令只发一次，时长靠 timeSec 说明（缺省 20 秒，和 Lovense 官方默认一致）。
-            double seconds = outcome.Seconds > 0 ? Math.Clamp(outcome.Seconds, 0.2, 3600) : 20;
-            _runUntilUtc = _lastCommandUtc.AddSeconds(seconds);
+            bool strokeChanged = before.StrokeAction != next.StrokeAction
+                || before.StrokeAmplitude != next.StrokeAmplitude
+                || before.StrokeHz != next.StrokeHz
+                || before.StrokeSeconds != next.StrokeSeconds;
+            bool rotateChanged = before.RotateAction != next.RotateAction
+                || before.RotateAmplitude != next.RotateAmplitude
+                || before.RotateHz != next.RotateHz
+                || before.RotateSeconds != next.RotateSeconds;
+
+            if (strokeChanged && next.StrokeActive)
+            {
+                // 游戏一抽发一条：动作要从这条指令到达的瞬间开始（真正对齐在 Tick 里做，
+                // 因为被限速器压慢时不该对齐——那样它永远追不上，反而一顿一顿）。
+                _channels = _channels with { StrokeHz = LovenseProtocol.TempoHz(_intervalSeconds, Math.Clamp(next.StrokeHz, 0.1, 3.0)) };
+                _phaseLockPending = true;
+                _finishing = false;
+                _finishStartedUtc = DateTime.MinValue;
+                _loopStartedUtc = arrival;
+                // 游戏一条命令只发一次，时长靠 timeSec 说明；官方 timeSec = 0 / 缺省 = 无限直到 Stop。
+                _strokeRunUntilUtc = next.StrokeSeconds > 0
+                    ? _lastCommandUtc.AddSeconds(Math.Clamp(next.StrokeSeconds, 0.2, 3600))
+                    : DateTime.MaxValue;
+            }
+            if (rotateChanged && next.RotateActive)
+            {
+                // 旋转也按指令节奏走：一条指令正好拧一个来回，发得越密拧得越快。
+                _channels = _channels with { RotateHz = LovenseProtocol.TwistHz(_intervalSeconds, Math.Clamp(next.RotateHz, 0.1, 2.0)) };
+                _rotateLockPending = true;
+                _rotateFinishing = false;
+                _rotateFinishStartedUtc = DateTime.MinValue;
+                _rotateRunUntilUtc = next.RotateSeconds > 0
+                    ? _lastCommandUtc.AddSeconds(Math.Clamp(next.RotateSeconds, 0.2, 3600))
+                    : DateTime.MaxValue;
+            }
         }
     }
 
@@ -383,75 +496,100 @@ public sealed class LovenseBridgeService : IDisposable
         string action;
         double amplitude, hz, rotateAmplitude, rotateHz;
         int strokeTop, strokeDeep, rotateTop, rotateDeep;
-        DateTime last, until;
+        DateTime strokeUntil, rotateUntil, loopStarted;
+        double loopRun, loopPause;
         lock (_gate)
         {
-            action = _action;
-            amplitude = _amplitude;
-            hz = _hz;
-            rotateAmplitude = _rotateAmplitude;
-            rotateHz = _rotateHz;
-            strokeTop = _strokeTopPercent;
-            strokeDeep = _strokeDeepPercent;
+            action = _channels.StrokeAction;
+            amplitude = _channels.StrokeAmplitude;
+            hz = _channels.StrokeHz;
+            rotateAmplitude = _channels.RotateAmplitude;
+            rotateHz = _channels.RotateHz;
+            strokeTop = _channels.StrokeTopOverride >= 0 ? _channels.StrokeTopOverride : _strokeTopPercent;
+            strokeDeep = _channels.StrokeDeepOverride >= 0 ? _channels.StrokeDeepOverride : _strokeDeepPercent;
             rotateTop = _rotateTopPercent;
             rotateDeep = _rotateDeepPercent;
-            last = _lastCommandUtc;
-            until = _runUntilUtc;
+            strokeUntil = _strokeRunUntilUtc;
+            rotateUntil = _rotateRunUntilUtc;
+            loopStarted = _loopStartedUtc;
+            loopRun = _channels.StrokeLoopRunSec;
+            loopPause = _channels.StrokeLoopPauseSec;
         }
-        if (action.Length == 0) return;
+        bool strokeActive = action.Length > 0 && action != "Stop";
+        bool rotateActive = rotateAmplitude > 0;
+        if (!strokeActive && !rotateActive) return;
 
         int endMargin = _endMarginPercent;
 
-        // timeSec 用完（游戏关了、暂停了也一样）：先把这一抽走完再回中位，中途掐断会明显一顿。
-        if (now > until && !_finishing)
+        // Position：按命令间隔插值走向目标轴值（没有间隔就默认 0.2 秒）。
+        if (action == "Position")
+        {
+            double interval = _intervalSeconds > 0 ? _intervalSeconds : 0.2;
+            double posBlend = Math.Clamp(dt / Math.Max(interval, 0.02), 0, 1);
+            _positionCurrent += (_positionTarget - _positionCurrent) * posBlend;
+            double posMain = _positionCurrent;
+            double posTwist = AutoTwistEnabled && !_twistLink.ExplicitRotateActive(now)
+                ? AutoTwistLink.ComputeLinked(posMain, AutoTwistAmplitudePercent, rotateTop, rotateDeep)
+                : 50;
+            _engine.TrySendDirectAxes(
+                [posMain, 50 + (posMain - 50) * 0.10, 50 + (posMain - 50) * 0.08, posTwist, 50, 50], 0.06);
+            return;
+        }
+
+        // PatternV2：带时间戳的位置序列，按 elapsed = 当前 - 开始 + offset 线性插值。
+        if (action == "PatternV2")
+        {
+            double elapsedMs = (now - _patternStartUtc).TotalMilliseconds + _patternOffsetMs;
+            double bar = LovenseProtocol.PatternV2PositionAt(_patternPoints, elapsedMs);
+            double patMain = LovenseProtocol.StrokeAxisValue(bar);
+            double patTwist = AutoTwistEnabled && !_twistLink.ExplicitRotateActive(now)
+                ? AutoTwistLink.ComputeLinked(patMain, AutoTwistAmplitudePercent, rotateTop, rotateDeep)
+                : 50;
+            _engine.TrySendDirectAxes(
+                [patMain, 50 + (patMain - 50) * 0.10, 50 + (patMain - 50) * 0.08, patTwist, 50, 50], 0.06);
+            return;
+        }
+
+        // 抽插 timeSec 用完（游戏关了、暂停了也一样）：先把这一抽走完再回中位，中途掐断会明显一顿。
+        if (strokeActive && now > strokeUntil && !_finishing)
         {
             _finishing = true;
             _finishStartedUtc = now;
             _lastPhaseSeen = _phase;
         }
 
-        // 两根滑杆定死「抬到哪儿、插到哪儿」：行程只在这个区间里，再大的强度也出不去。
-        // 舒适档的速度上限决定能跑多快，两者打架时压频率，否则限速器会把整段波形削圆。
+        // loopRunningSec / loopPauseSec：「动 N 秒停 M 秒」。停的那段停在区间中点，不推相位；
+        // 转动通道此时继续自己的节奏，不被抽插的循环暂停带走。
+        bool loopPaused = LovenseProtocol.LoopPaused(loopRun, loopPause, (now - loopStarted).TotalSeconds);
         (double windowTop, double windowDeep) = LovenseProtocol.StrokeWindow(strokeTop, strokeDeep);
-        double windowSpan = windowDeep - windowTop;
-        var profile = _engine.ActiveComfortProfile;
-        double speedLimit = profile.MaxAxisSpeedPerSecond;
-        // 游戏强度是一档一档跳的（13→19）：直接跟会让行程一步甩出去，这里用 120ms 平滑过去。
-        double blend = Math.Clamp(dt / 0.12, 0, 1);
-        _smoothedAmplitude = _smoothedAmplitude < 0 ? amplitude : _smoothedAmplitude + (amplitude - _smoothedAmplitude) * blend;
-        _smoothedRotateAmplitude = _smoothedRotateAmplitude < 0 ? rotateAmplitude : _smoothedRotateAmplitude + (rotateAmplitude - _smoothedRotateAmplitude) * blend;
-        amplitude = _smoothedAmplitude;
-        rotateAmplitude = _smoothedRotateAmplitude;
-        // 限速器管的是真实走过的路：区间越窄，同样强度下实际行程越短，也就能跑得更快。
-        // 扭转也有一根条子：两个端点定死「转到哪儿」，强度决定在这个区间里摆多大。
-        (double rotateWindowTop, double rotateWindowDeep) = LovenseProtocol.StrokeWindow(rotateTop, rotateDeep);
-        double rotateSpan = rotateWindowDeep - rotateWindowTop;
-        double travelled = amplitude * windowSpan / 100.0 * (1.0 - endMargin / 100.0);
-        double commandedHz = hz;
-        double commandedRotateHz = rotateHz;
-        hz = LovenseProtocol.FitHz(hz, travelled, speedLimit);
-        rotateHz = LovenseProtocol.FitHz(rotateHz, rotateAmplitude * rotateSpan / 100.0, speedLimit);
-        if (_phaseLockPending)
-        {
-            _phaseLockPending = false;
-            // 只有真能按游戏的节拍跑时才对齐；被物理限速压慢时对齐没有意义（它根本追不上）。
-            if (hz >= commandedHz * 0.95)
-                _phaseOffset = Math.Clamp(-LovenseProtocol.PhaseError(_phase), -0.25, 0.25);
-        }
-        if (_rotateLockPending)
-        {
-            _rotateLockPending = false;
-            // 旋转同样对齐到这条指令：每条指令都从「转回原位」开始拧一个新来回，
-            // 这样一抽一拧是对上的，而不是两条波形各转各的漂在一起。
-            if (rotateHz >= commandedRotateHz * 0.95)
-                _rotatePhaseOffset = Math.Clamp(-LovenseProtocol.PhaseError(_rotatePhase), -0.25, 0.25);
-        }
-
-        // 抽插和转动各走各的相位：一条命令里同时有 Vibrate 和 Rotate 时两根轴一起动。
         double windowMid = (windowTop + windowDeep) / 2.0;
-        double main = windowMid;
-        if (amplitude > 0)
+        double main = LovenseProtocol.StrokeAxisValue(windowMid);
+        if (loopPaused)
         {
+            main = LovenseProtocol.StrokeAxisValue(windowMid);
+        }
+        else if (amplitude > 0)
+        {
+            // 两根滑杆定死「抬到哪儿、插到哪儿」：行程只在这个区间里，再大的强度也出不去。
+            // 舒适档的速度上限决定能跑多快，两者打架时压频率，否则限速器会把整段波形削圆。
+            double windowSpan = windowDeep - windowTop;
+            var profile = _engine.ActiveComfortProfile;
+            double speedLimit = profile.MaxAxisSpeedPerSecond;
+            // 游戏强度是一档一档跳的（13→19）：直接跟会让行程一步甩出去，这里用 120ms 平滑过去。
+            double blend = Math.Clamp(dt / 0.12, 0, 1);
+            _smoothedAmplitude = _smoothedAmplitude < 0 ? amplitude : _smoothedAmplitude + (amplitude - _smoothedAmplitude) * blend;
+            amplitude = _smoothedAmplitude;
+            // 限速器管的是真实走过的路：区间越窄，同样强度下实际行程越短，也就能跑得更快。
+            double travelled = amplitude * windowSpan / 100.0 * (1.0 - endMargin / 100.0);
+            double commandedHz = hz;
+            hz = LovenseProtocol.FitHz(hz, travelled, speedLimit);
+            if (_phaseLockPending)
+            {
+                _phaseLockPending = false;
+                // 只有真能按游戏的节拍跑时才对齐；被物理限速压慢时对齐没有意义（它根本追不上）。
+                if (hz >= commandedHz * 0.95)
+                    _phaseOffset = Math.Clamp(-LovenseProtocol.PhaseError(_phase), -0.25, 0.25);
+            }
             _phase = LovenseProtocol.Frac(_phase + dt * hz);
             // 用「相位 + 修正量」出波形：修正量在 150ms 内衰减到 0，看起来只是这一抽略快或略慢，不会跳。
             double shown = LovenseProtocol.Frac(_phase + _phaseOffset);
@@ -462,17 +600,8 @@ public sealed class LovenseBridgeService : IDisposable
             main = LovenseProtocol.StrokeAxisValue(
                 LovenseProtocol.StrokeWavePosition(windowTop, windowDeep, amplitude, punch, endMargin));
         }
-        double twist = 50;
-        if (rotateAmplitude > 0)
-        {
-            _rotatePhase += dt * rotateHz;
-            if (_rotatePhase >= 1.0) _rotatePhase -= Math.Floor(_rotatePhase);
-            double shownRotate = LovenseProtocol.Frac(_rotatePhase + _rotatePhaseOffset);
-            _rotatePhaseOffset *= Math.Exp(-dt / 0.15);
-            twist = LovenseProtocol.StrokePosition(
-                rotateWindowTop, rotateWindowDeep, rotateAmplitude, Math.Sin(2 * Math.PI * shownRotate));
-        }
-        // 收尾：这一抽绕回起点（或等满 1.5 秒）就停在中位。
+
+        // 抽插收尾：这一抽绕回起点（或等满 1.5 秒）就停在中位。
         if (_finishing)
         {
             bool wrapped = _phase < _lastPhaseSeen;
@@ -481,18 +610,75 @@ public sealed class LovenseBridgeService : IDisposable
             {
                 lock (_gate)
                 {
-                    _action = "";
+                    _channels = _channels with
+                    {
+                        StrokeAction = "", StrokeAmplitude = 0, StrokeHz = 0, StrokeSeconds = 0,
+                        StrokeLoopRunSec = 0, StrokeLoopPauseSec = 0, StrokeTopOverride = -1, StrokeDeepOverride = -1
+                    };
                     _finishing = false;
                     _finishStartedUtc = DateTime.MinValue;
                 }
-                ReleaseComfortOverride();
-                // 停在这一段的区间中间，而不是一路弹回全局中位：少做一次没必要的位移。
-                double rest = LovenseProtocol.StrokeAxisValue((windowTop + windowDeep) / 2.0);
-                double restRotate = (rotateWindowTop + rotateWindowDeep) / 2.0;
-                _engine.TrySendDirectAxes(
-                    [rest, 50 + (rest - 50) * 0.10, 50 + (rest - 50) * 0.08, restRotate, 50, 50], 0.45);
-                return;
+                main = LovenseProtocol.StrokeAxisValue(windowMid);
+                if (!_channels.RotateActive) ReleaseComfortOverride();
             }
+        }
+
+        // 转动通道（含 nora 那一路）：显式旋转命令，近 2 秒内以它为尊，自动扭转不插手。
+        (double rotateWindowTop, double rotateWindowDeep) = LovenseProtocol.StrokeWindow(rotateTop, rotateDeep);
+        double twist = 50;
+        if (rotateAmplitude > 0)
+        {
+            _twistLink.MarkExplicitRotate(now);
+            var profile = _engine.ActiveComfortProfile;
+            double speedLimit = profile.MaxAxisSpeedPerSecond;
+            // 扭转强度也平滑过去，避免一档一档跳。
+            double blend = Math.Clamp(dt / 0.12, 0, 1);
+            _smoothedRotateAmplitude = _smoothedRotateAmplitude < 0 ? rotateAmplitude : _smoothedRotateAmplitude + (rotateAmplitude - _smoothedRotateAmplitude) * blend;
+            rotateAmplitude = _smoothedRotateAmplitude;
+            double rotateSpan = rotateWindowDeep - rotateWindowTop;
+            double commandedRotateHz = rotateHz;
+            rotateHz = LovenseProtocol.FitHz(rotateHz, rotateAmplitude * rotateSpan / 100.0, speedLimit);
+            if (_rotateLockPending)
+            {
+                _rotateLockPending = false;
+                // 旋转同样对齐到这条指令：每条指令都从「转回原位」开始拧一个新来回。
+                if (rotateHz >= commandedRotateHz * 0.95)
+                    _rotatePhaseOffset = Math.Clamp(-LovenseProtocol.PhaseError(_rotatePhase), -0.25, 0.25);
+            }
+            _rotatePhase += dt * rotateHz;
+            if (_rotatePhase >= 1.0) _rotatePhase -= Math.Floor(_rotatePhase);
+            double shownRotate = LovenseProtocol.Frac(_rotatePhase + _rotatePhaseOffset);
+            _rotatePhaseOffset *= Math.Exp(-dt / 0.15);
+            twist = LovenseProtocol.StrokePosition(
+                rotateWindowTop, rotateWindowDeep, rotateAmplitude, Math.Sin(2 * Math.PI * shownRotate));
+            // 转动 timeSec 用完：把这一转走完再回中位。
+            if (now > rotateUntil && !_rotateFinishing)
+            {
+                _rotateFinishing = true;
+                _rotateFinishStartedUtc = now;
+                _rotateLastPhaseSeen = _rotatePhase;
+            }
+            if (_rotateFinishing)
+            {
+                bool wrapped = _rotatePhase < _rotateLastPhaseSeen;
+                _rotateLastPhaseSeen = _rotatePhase;
+                if (wrapped || (now - _rotateFinishStartedUtc).TotalSeconds > 1.5)
+                {
+                    lock (_gate)
+                    {
+                        _channels = _channels with { RotateAction = "", RotateAmplitude = 0, RotateHz = 0, RotateSeconds = 0 };
+                        _rotateFinishing = false;
+                        _rotateFinishStartedUtc = DateTime.MinValue;
+                    }
+                    twist = (rotateWindowTop + rotateWindowDeep) / 2.0;
+                    if (!_channels.StrokeActive) ReleaseComfortOverride();
+                }
+            }
+        }
+        else if (AutoTwistEnabled && !_twistLink.ExplicitRotateActive(now) && strokeActive && amplitude > 0)
+        {
+            // 没有显式旋转：R0 跟 L0 联动（插入转一边、拔出转回），走同一插值。
+            twist = AutoTwistLink.ComputeLinked(main, AutoTwistAmplitudePercent, rotateTop, rotateDeep);
         }
 
         bool sent = _engine.TrySendDirectAxes(

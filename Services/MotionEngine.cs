@@ -20,7 +20,6 @@ public sealed class MotionEngine : IDisposable
     private readonly BlackBoxRecorder? _blackBox;
     private readonly object _stateLock = new();
     private readonly object _dispatchLock = new();
-    private readonly MotionSafetyLimiter _safetyLimiter = new();
     private readonly AutoBehaviorSequencer _autoSequencer = new();
     private readonly System.Threading.Timer _watchdogTimer;
 
@@ -225,7 +224,7 @@ public sealed class MotionEngine : IDisposable
     public bool CanAcceptDirectInput => CanRun && !IsRunning && !IsEasing && !TakenOverByOthers;
 
     /// <summary>
-    /// 直接输入被拒的原因（空串＝能接）。游戏桥、画面跟随这类连续源拿到 false 时一直是静默丢弃的，
+    /// 直接输入被拒的原因（空串＝能接）。游戏桥、画面同步这类连续源拿到 false 时一直是静默丢弃的，
     /// 出问题只能看到「机器不动」，这个属性让调用方能把原因写进日志。
     /// </summary>
     public string DirectInputBlockReason
@@ -332,13 +331,12 @@ public sealed class MotionEngine : IDisposable
         {
             "audio" => "声音响应",
             "bridge" => "游戏桥",
-            "ayva" => "网页遥控器",
             "脚本播放" => "脚本播放",
             "gamepad" => "手柄",
             "editor" => "编排预览",
             "ai" => "AI 助手",
             "manual" => "手动动轴",
-            "screen" => "画面跟随",
+            "screen" => "画面同步",
             _ => owner,
         }
         // 引擎自己的收尾动作也要有名字：DeviceIsMoving 含 IsEasing/IsHoming，
@@ -495,8 +493,8 @@ public sealed class MotionEngine : IDisposable
             _transport.StopMotion();
             _transport.SendAxes(
                 [50, 50, 50, 50, 50, 50],
-                _cfg.AxisMin,
-                _cfg.AxisMax,
+                _cfg.EffectiveAxisMin,
+                _cfg.EffectiveAxisMax,
                 interpolationMs: 1200,
                 changedOnly: false);
         }
@@ -516,6 +514,13 @@ public sealed class MotionEngine : IDisposable
 
     public void EmergencyStop()
     {
+        // 先停、后收拾：不进 _dispatchLock，别的线程正占着调度锁（脚本/游戏桥/归中）也不用等。
+        // 锁存和输出闸门先落下，后面任何还在路上的帧都会被串口层丢掉；DSTOP 立刻发出去。
+        EmergencyStopped = true;
+        RuleEngineActive = false;
+        _transport.OutputEnabled = false;
+        _transport.StopMotion();
+
         lock (_dispatchLock)
         {
             lock (_stateLock)
@@ -565,7 +570,7 @@ public sealed class MotionEngine : IDisposable
             }
             double[] center = [50, 50, 50, 50, 50, 50];
             _transport.StopMotion();
-            _transport.SendAxes(center, _cfg.AxisMin, _cfg.AxisMax, interpolationMs: 1000, changedOnly: false);
+            _transport.SendAxes(center, _cfg.EffectiveAxisMin, _cfg.EffectiveAxisMax, interpolationMs: 1000, changedOnly: false);
             ResetOutputState(center);
         }
         _blackBox?.Record("state", force ? "归中：用户操作（解除急停并解锁输出）" : "归中：自动收尾");
@@ -1325,7 +1330,7 @@ public sealed class MotionEngine : IDisposable
     /// <summary>
     /// 启动精确的「动 N 秒 → 停 N 秒 → 歇 N 秒」挑逗循环（对齐 c.py start_teasing）。
     /// moveSec 夹到 1-10，stopSec/pauseSec 夹到 1-15；再次调用可动态调整参数。
-    /// 循环运行于 Engine 层、受 MotionSafetyLimiter / ComfortProfile 约束；stop / 急停 / 切其它模式即清除。
+    /// 循环运行于 Engine 层、受 ComfortProfile 强度上限约束；stop / 急停 / 切其它模式即清除。
     /// </summary>
     public bool StartTease(double moveSec, double stopSec, double pauseSec)
     {
@@ -1986,7 +1991,11 @@ public sealed class MotionEngine : IDisposable
                 // 氛围叠加必须在「多轴门控」之前：用户关掉「多轴动作」时，次要轴要照样被钉回中位，
                 // 不能被氛围层偷偷又抬起来。
                 IReadOnlyList<double> staged = ambientOverlay ? ApplyAmbientOverlay(target, deltaSeconds) : target;
-                output = _safetyLimiter.Step(ApplyMultiAxisGate(staged), deltaSeconds, ActiveComfortProfile);
+                // 不再按舒适档削速度/加速度：目标原样下发，只夹到 0–100。
+                IReadOnlyList<double> gated = ApplyMultiAxisGate(staged);
+                output = new double[6];
+                for (int i = 0; i < 6; i++)
+                    output[i] = i < gated.Count && double.IsFinite(gated[i]) ? Math.Clamp(gated[i], 0, 100) : _lastOutput[i];
                 Array.Copy(output, _lastOutput, 6);
                 long now = Stopwatch.GetTimestamp();
                 bool heartbeatDue = _lastOutputAt <= 0
@@ -1997,8 +2006,8 @@ public sealed class MotionEngine : IDisposable
             }
             _transport.SendAxes(
                 output,
-                _cfg.AxisMin,
-                _cfg.AxisMax,
+                _cfg.EffectiveAxisMin,
+                _cfg.EffectiveAxisMax,
                 ToInterpolationMs(interpolationSeconds ?? deltaSeconds),
                 changedOnly);
             return true;
@@ -2038,7 +2047,6 @@ public sealed class MotionEngine : IDisposable
             _modeStartedAt = now;
             _lastOutputAt = now;
             _lastSchedulerTickAt = now;
-            _safetyLimiter.Reset(_lastOutput);
         }
     }
 

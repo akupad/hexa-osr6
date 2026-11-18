@@ -181,7 +181,7 @@ public static class StrokePresetIO
             Title      = title,
             Filter     = "动作库 JSON (*.json)|*.json|所有文件 (*.*)|*.*",
             DefaultExt = ".json",
-            FileName   = $"helix-presets-{DateTime.Now:yyyyMMdd-HHmm}.json",
+            FileName   = $"hexa-presets-{DateTime.Now:yyyyMMdd-HHmm}.json",
         };
         if (!ShowDialog(dialog, owner)) return null;
 

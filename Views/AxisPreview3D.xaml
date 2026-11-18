@@ -70,26 +70,40 @@
                        IsHitTestVisible="False"
                        HorizontalAlignment="Left" VerticalAlignment="Top"/>
 
-            <!-- 底部：左下实时数值 + 右下操作提示合并成一行两列，窄视口下各自省略号截断 -->
-            <Grid Margin="8,0,8,6" IsHitTestVisible="False"
+            <!-- 底部：左下实时数值占一行；第二行 = 操作提示 + 重置视角按钮，不再重叠 -->
+            <Grid Margin="8,0,8,6"
                   HorizontalAlignment="Stretch" VerticalAlignment="Bottom">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
-                    <ColumnDefinition Width="Auto"/>
-                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
                 <!-- x:Name 不能改：AxisPreview3D.xaml.cs 在刷新它 -->
-                <TextBlock x:Name="LiveLabel" Grid.Column="0" Text="L0 50  L1 50  L2 50&#10;R0 50  R1 50  R2 50"
+                <TextBlock x:Name="LiveLabel" Grid.Row="0" Text="L0 50  L1 50  L2 50&#10;R0 50  R1 50  R2 50"
                            FontSize="9" FontFamily="Consolas,Cascadia Mono,monospace"
                            Foreground="{StaticResource Muted}"
-                           Margin="0,0,8,0"
-                           TextTrimming="CharacterEllipsis"
+                           Margin="0,0,8,2"
+                           IsHitTestVisible="False"
                            HorizontalAlignment="Left" VerticalAlignment="Bottom"/>
-                <TextBlock Grid.Column="1" Text="左键拖动转视角 · 滚轮缩放 · Shift 拖动平移"
-                           FontSize="9"
-                           Foreground="{StaticResource Faint}"
-                           Margin="0,0,0,20"
-                           TextTrimming="CharacterEllipsis"
-                           HorizontalAlignment="Right" VerticalAlignment="Bottom"/>
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0" Text="左键拖动转视角 · 滚轮缩放 · Shift 拖动平移"
+                               FontSize="9"
+                               Foreground="{StaticResource Faint}"
+                               IsHitTestVisible="False"
+                               TextTrimming="CharacterEllipsis"
+                               HorizontalAlignment="Left" VerticalAlignment="Bottom"/>
+                    <Button x:Name="ResetViewButton"
+                            Grid.Column="1"
+                            Content="重置视角"
+                            Style="{StaticResource BtnSecondary}"
+                            Padding="6,2" FontSize="10"
+                            Margin="8,0,0,0"
+                            ToolTip="设备摆正 + 相机回默认机位"
+                            Click="ResetViewButton_Click"/>
+                </Grid>
             </Grid>
 
             <!-- 顶部居中：数据来源提示（右上角让给 HelixViewport3D 的坐标轴） -->
@@ -100,15 +114,6 @@
                        IsHitTestVisible="False"
                        HorizontalAlignment="Center" VerticalAlignment="Top"/>
 
-            <!-- 右下角：重置视角（调用 HelixViewport3D 内置复位，中键双击同效） -->
-            <Button x:Name="ResetViewButton"
-                    Content="重置视角"
-                    Style="{StaticResource BtnSecondary}"
-                    Padding="6,2" FontSize="10"
-                    Margin="0,0,8,6"
-                    ToolTip="设备摆正 + 相机回默认机位"
-                    HorizontalAlignment="Right" VerticalAlignment="Bottom"
-                    Click="ResetViewButton_Click"/>
         </Grid>
     </Border>
 </UserControl>

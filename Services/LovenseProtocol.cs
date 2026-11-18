@@ -11,13 +11,22 @@ namespace Hexa.Services;
 public static class LovenseProtocol
 {
     /// <summary>
-    /// 我们报给游戏的那台玩具。默认 gravity：Lovense 家的抽插机（抽 + 振动），
-    /// 和我们这台「抽 + 转」的机器最接近——主菜都是抽，而不是振动。
-    /// 名字只影响游戏对能力的认知（它连上问一次），实际怎么动由我们这边的映射决定。
+    /// 我们报给游戏的那台玩具。默认 Solace Pro：Lovense 家的抽插机，抽是主菜，
+    /// 和我们这台「抽 + 转」的机器最接近。名字只影响游戏对能力的认知（它连上问一次），
+    /// 实际怎么动由我们这边的映射决定；想要游戏发 Rotate 就开「额外报一个会旋转的玩具」。
     /// </summary>
     public const string ToyId = "osr6hexa";
-    public const string DefaultToyName = "gravity";
+    public const string RotateToyId = "osr6rotate";
+    public const string DefaultToyName = "Solace Pro";
     private const string ToyNickName = "OSR6";
+
+    /// <summary>toy 参数定向到哪一台：全部 / 主玩具（抽插）/ 转动玩具（nora → R0）。</summary>
+    public enum ToyTarget
+    {
+        All,
+        Main,
+        Rotate
+    }
 
     /// <summary>Lovense 的强度是 0–20 的整数，拉满就走整段行程（0–100）。</summary>
     public static double StrokeAmplitude(int strength)
@@ -170,6 +179,42 @@ public static class LovenseProtocol
     /// </summary>
     public static double PhaseError(double phase) => Frac(phase + 0.5) - 0.5;
 
+    /// <summary>timeSec 的语义：0 或缺省 = 无限直到 Stop；>0 夹进 0.2–3600 秒。</summary>
+    public static double EffectiveSeconds(double seconds) =>
+        double.IsFinite(seconds) && seconds > 0 ? Math.Clamp(seconds, 0.2, 3600) : double.PositiveInfinity;
+
+    /// <summary>loopRunningSec / loopPauseSec 的「动 N 秒停 M 秒」：run 或 pause ≤ 0 时不开循环。</summary>
+    public static bool LoopPaused(double runSec, double pauseSec, double elapsedSec)
+    {
+        if (!double.IsFinite(runSec) || !double.IsFinite(pauseSec) || runSec <= 0 || pauseSec <= 0) return false;
+        if (!double.IsFinite(elapsedSec) || elapsedSec <= 0) return false;
+        double cycle = runSec + pauseSec;
+        return elapsedSec % cycle >= runSec;
+    }
+
+    /// <summary>PatternV2 位置序列的线性插值：返回 0–100 的条位置（还没翻成轴值）。</summary>
+    public static double PatternV2PositionAt(IReadOnlyList<(double Ts, double Pos)> points, double elapsedMs)
+    {
+        if (points is null || points.Count == 0) return 50;
+        if (points.Count == 1) return points[0].Pos;
+        if (!double.IsFinite(elapsedMs)) elapsedMs = 0;
+        (double ts0, double pos0) = points[0];
+        if (elapsedMs <= ts0) return pos0;
+        for (int i = 1; i < points.Count; i++)
+        {
+            (double ts1, double pos1) = points[i];
+            if (elapsedMs < ts1)
+            {
+                double span = ts1 - ts0;
+                double frac = span > 0 ? (elapsedMs - ts0) / span : 1;
+                return pos0 + (pos1 - pos0) * frac;
+            }
+            ts0 = ts1;
+            pos0 = pos1;
+        }
+        return pos0;
+    }
+
     /// <summary>转动通道（nora 的 Rotate）单独一根滑杆：扭的幅度比抽插小得多，25% 已经很明显。</summary>
     public static double RotateAmplitude(int strength)
     {
@@ -187,8 +232,9 @@ public static class LovenseProtocol
 
     /// <summary>
     /// 把 "Vibrate:16,Rotate:8" 这类串整个拆开。官方动作名有 Vibrate / Rotate / Pump /
-    /// Thrusting / Fingering / Suction / Depth / All / Stop（前六个 0–20，Pump 只有 0–3）；
-    /// 除 Rotate 外都落到 OSR6 的直线行程上。Thrust 是 Thrusting 的简写，也认。
+    /// Thrusting / Fingering / Suction / Depth / All / Stop（Vibrate/Rotate/Thrusting/Fingering/Suction/All
+    /// 0–20，Pump 与 Depth 只有 0–3）；除 Rotate 外都落到 OSR6 的直线行程上。
+    /// Thrust 是 Thrusting 的简写，也认。Stroke / Oscillate 在这里不拆，由 Handle 单独解析。
     /// All:n 是「所有功能一起到 n」（Pure Onyx 主用这个），我们把 n 同时给抽插和转动。
     /// </summary>
     public static IReadOnlyList<(string Name, int Strength)> ParseActions(string? action)
@@ -212,7 +258,7 @@ public static class LovenseProtocol
                 || name.Equals("Pump", StringComparison.OrdinalIgnoreCase);
             if (!known) continue;
             if (!int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int strength)) strength = 20;
-            int max = name.Equals("Pump", StringComparison.OrdinalIgnoreCase) ? 3 : 20;
+            int max = name.Equals("Pump", StringComparison.OrdinalIgnoreCase) || name.Equals("Depth", StringComparison.OrdinalIgnoreCase) ? 3 : 20;
             found.Add((name, Math.Clamp(strength, 0, max)));
         }
         return found;
@@ -226,28 +272,46 @@ public static class LovenseProtocol
     }
 
     /// <summary>GetToys 里的 toys 字段是一段「被转义的 JSON 字符串」，游戏会再解一次。</summary>
-    public static string ToysJson(string toyName = DefaultToyName) =>
-        "{" + string.Create(CultureInfo.InvariantCulture,
-            $"\"{ToyId}\":{{\"id\":\"{ToyId}\",\"status\":\"1\",\"version\":\"\",\"name\":\"{Sanitize(toyName)}\",\"battery\":100,\"nickName\":\"{ToyNickName}\"}}")
-        + "}";
+    public static string ToysJson(string toyName = DefaultToyName, bool includeRotateToy = false)
+    {
+        string primary = $"\"{ToyId}\":{{\"id\":\"{ToyId}\",\"status\":\"1\",\"version\":\"\",\"name\":\"{Sanitize(toyName)}\",\"battery\":100,\"nickName\":\"{ToyNickName}\",\"shortFunctionNames\":[\"Vibrate\",\"Rotate\"],\"fullFunctionNames\":[\"Vibrate\",\"Rotate\",\"Stroke\",\"Oscillate\"]}}";
+        if (includeRotateToy)
+            primary += ",\"" + RotateToyId + "\":{\"id\":\"" + RotateToyId + "\",\"status\":\"1\",\"version\":\"\",\"name\":\"nora\",\"battery\":100,\"nickName\":\"OSR6-R\",\"shortFunctionNames\":[\"Vibrate\",\"Rotate\"],\"fullFunctionNames\":[\"Vibrate\",\"Rotate\"]}";
+        return "{" + primary + "}";
+    }
 
-    /// <summary>玩具名会原样进 JSON，只留字母数字下划线，避免用户手输把报文写坏。</summary>
+    /// <summary>
+    /// 玩具名会原样进 JSON。真实 Lovense 本地接口的 GetToys name 是小写、单词间留空格
+    /// （Solace Pro 报 "solace pro"，Nora 报 "nora"，Max 报 "max"），游戏常按这个 name 判型号，
+    /// 所以这里转小写、把连续空白压成一个空格，其余非字母数字字符一律去掉，避免用户手输把报文写坏。
+    /// </summary>
     public static string Sanitize(string? toyName)
     {
-        if (string.IsNullOrWhiteSpace(toyName)) return DefaultToyName;
+        if (string.IsNullOrWhiteSpace(toyName)) return Sanitize(DefaultToyName);
         Span<char> buffer = stackalloc char[24];
         int n = 0;
+        bool lastWasSpace = false;
         foreach (char c in toyName.Trim())
         {
             if (n >= buffer.Length) break;
-            if (char.IsLetterOrDigit(c) || c == '_' || c == '-') buffer[n++] = char.ToLowerInvariant(c);
+            if (char.IsLetterOrDigit(c) || c == '_' || c == '-')
+            {
+                buffer[n++] = char.ToLowerInvariant(c);
+                lastWasSpace = false;
+            }
+            else if (char.IsWhiteSpace(c) && !lastWasSpace && n > 0)
+            {
+                buffer[n++] = ' ';
+                lastWasSpace = true;
+            }
         }
-        return n == 0 ? DefaultToyName : new string(buffer[..n]);
+        while (n > 0 && buffer[n - 1] == ' ') n--;
+        return n == 0 ? Sanitize(DefaultToyName) : new string(buffer[..n]);
     }
 
-    public static string OkBody(bool withToys, string toyName = DefaultToyName)
+    public static string OkBody(bool withToys, string toyName = DefaultToyName, bool includeRotateToy = false)
     {
-        string toys = withToys ? ",\"data\":{\"toys\":" + JsonSerializer.Serialize(ToysJson(toyName)) + ",\"platform\":\"windows\",\"appType\":\"remote\"}" : "";
+        string toys = withToys ? ",\"data\":{\"toys\":" + JsonSerializer.Serialize(ToysJson(toyName, includeRotateToy)) + ",\"platform\":\"windows\",\"appType\":\"remote\"}" : "";
         return "{\"code\":200" + toys + ",\"message\":\"\",\"result\":true,\"type\":\"OK\"}";
     }
 
@@ -256,13 +320,44 @@ public static class LovenseProtocol
         + ",\"message\":" + JsonSerializer.Serialize(message)
         + ",\"result\":false,\"type\":\"error\"}";
 
-    /// <summary>Seconds 是这条指令要求的时长（Lovense 的 timeSec，缺省 20 秒）：它一次只发一条，靠这个字段说「跑多久」。</summary>
+    /// <summary>
+    /// Seconds 是这条指令要求的时长（Lovense 的 timeSec，0/缺省 = 无限直到 Stop）；一次只发一条，
+    /// 靠这个字段说「跑多久」。L0Target 是 Position 命令的直接轴值；PatternPoints/PatternOffsetMs/PatternTimeMs
+    /// 给 PatternV2；StrokeMin/StrokeMax 是 Function 的 Stroke:min-max；LoopRunningSec/LoopPauseSec 是「动 N 秒停 M 秒」。
+    /// </summary>
     public sealed record Outcome(
         bool Ok, string Body, string Action, int Strength, double Amplitude, double Hz, double Seconds = 0,
-        double RotateAmplitude = 0, double RotateHz = 0);
+        double RotateAmplitude = 0, double RotateHz = 0, double L0Target = double.NaN,
+        double LoopRunningSec = 0, double LoopPauseSec = 0,
+        IReadOnlyList<(double Ts, double Pos)>? PatternPoints = null,
+        double PatternOffsetMs = 0, double PatternTimeMs = 0,
+        double StrokeMin = -1, double StrokeMax = -1, bool StopPrevious = true,
+        ToyTarget Target = ToyTarget.All);
+
+    /// <summary>
+    /// Standard API 的 toy 参数定向：空/缺省/同时含两台/未知 id = 全部（保持原行为）；
+    /// 只含主玩具 = Main；只含转动玩具 = Rotate。toy 是单 id 字符串或 id 数组（7.71.0+），
+    /// 这里也容错逗号分隔的字符串写法。
+    /// </summary>
+    public static ToyTarget ResolveToyTarget(string? toyRaw)
+    {
+        if (string.IsNullOrWhiteSpace(toyRaw)) return ToyTarget.All;
+        bool main = false, rotate = false;
+        foreach (string part in toyRaw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.Equals(ToyId, StringComparison.OrdinalIgnoreCase)) main = true;
+            else if (part.Equals(RotateToyId, StringComparison.OrdinalIgnoreCase)) rotate = true;
+        }
+        return (main, rotate) switch
+        {
+            (true, false) => ToyTarget.Main,
+            (false, true) => ToyTarget.Rotate,
+            _ => ToyTarget.All
+        };
+    }
 
     /// <summary>把一条 /command 请求翻成「要做什么动作 + 回什么」。纯函数，端口与设备都不在这儿。</summary>
-    public static Outcome Handle(string method, string path, string? body, string toyName = DefaultToyName)
+    public static Outcome Handle(string method, string path, string? body, string toyName = DefaultToyName, bool includeRotateToy = false)
     {
         // 先剥掉 ?query 再判 verb：老式接口是 /Vibrate?v=10，不剥就整条当成一个陌生的 verb。
         int question = path.IndexOf('?');
@@ -271,7 +366,14 @@ public static class LovenseProtocol
         string actionText = "";
         string presetName = "";
         string patternStrength = "";
+        string positionValue = "";
+        string toyRaw = "";
         double seconds = 0;
+        double loopRunningSec = 0;
+        double loopPauseSec = 0;
+        double strokeMin = -1;
+        double strokeMax = -1;
+        bool stopPrevious = true;
         try
         {
             if (!string.IsNullOrWhiteSpace(body) && body.TrimStart().StartsWith('{'))
@@ -284,6 +386,29 @@ public static class LovenseProtocol
                 if (root.TryGetProperty("strength", out var st)) patternStrength = (st.GetString() ?? "").Trim();
                 if (root.TryGetProperty("timeSec", out var sec) && sec.ValueKind == JsonValueKind.Number
                     && sec.TryGetDouble(out double parsedSeconds)) seconds = parsedSeconds;
+                if (root.TryGetProperty("loopRunningSec", out var lrs) && lrs.ValueKind == JsonValueKind.Number
+                    && lrs.TryGetDouble(out double parsedLrs)) loopRunningSec = parsedLrs;
+                if (root.TryGetProperty("loopPauseSec", out var lps) && lps.ValueKind == JsonValueKind.Number
+                    && lps.TryGetDouble(out double parsedLps)) loopPauseSec = parsedLps;
+                if (root.TryGetProperty("value", out var val))
+                    positionValue = val.ValueKind == JsonValueKind.String ? (val.GetString() ?? "") : val.GetRawText();
+                if (root.TryGetProperty("stopPrevious", out var sp) && sp.ValueKind == JsonValueKind.Number
+                    && sp.TryGetInt32(out int parsedSp)) stopPrevious = parsedSp != 0;
+                if (root.TryGetProperty("toy", out var toy))
+                {
+                    if (toy.ValueKind == JsonValueKind.String)
+                    {
+                        toyRaw = (toy.GetString() ?? "").Trim();
+                    }
+                    else if (toy.ValueKind == JsonValueKind.Array)
+                    {
+                        var toyIds = new List<string>();
+                        foreach (JsonElement item in toy.EnumerateArray())
+                            if (item.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(item.GetString()))
+                                toyIds.Add(item.GetString()!.Trim());
+                        toyRaw = string.Join(',', toyIds);
+                    }
+                }
             }
         }
         catch (JsonException)
@@ -310,7 +435,7 @@ public static class LovenseProtocol
         else if (verb is "gettoys") command = "GetToys";
 
         if (command.Equals("GetToys", StringComparison.OrdinalIgnoreCase))
-            return new Outcome(true, OkBody(true, toyName), "", 0, 0, 0);
+            return new Outcome(true, OkBody(true, toyName, includeRotateToy), "", 0, 0, 0);
 
         if (command.Equals("Preset", StringComparison.OrdinalIgnoreCase))
             return PresetToOutcome(presetName, seconds);
@@ -327,6 +452,18 @@ public static class LovenseProtocol
             return new Outcome(true, OkBody(false), "Vibrate", peak, StrokeAmplitude(peak), StrokeHz(peak), seconds);
         }
 
+        if (command.Equals("Position", StringComparison.OrdinalIgnoreCase))
+        {
+            // 实时位置：value 是 0–100 的条位置，直接翻成 L0 轴值（Position 38 → L0 62）。
+            if (!double.TryParse(positionValue, NumberStyles.Float, CultureInfo.InvariantCulture, out double pos))
+                return new Outcome(false, ErrorBody(400, "Invalid Command"), "", 0, 0, 0);
+            pos = Math.Clamp(pos, 0, 100);
+            return new Outcome(true, OkBody(false), "Position", 0, 0, 0, L0Target: StrokeAxisValue(pos));
+        }
+
+        if (command.Equals("PatternV2", StringComparison.OrdinalIgnoreCase))
+            return PatternV2ToOutcome(body, stopPrevious);
+
         // 游戏每隔两秒发一次 {"type":"ping"} 探活：这种没有 command 的报文回 200 就行，
         // 回 400 会被它当成"玩具坏了"，之后就再也不发动作了。
         if (command.Length == 0 && body is not null && body.Contains("\"type\"", StringComparison.Ordinal))
@@ -335,14 +472,18 @@ public static class LovenseProtocol
         if (!command.Equals("Function", StringComparison.OrdinalIgnoreCase))
             return new Outcome(false, ErrorBody(400, "Invalid Command"), "", 0, 0, 0);
 
+        // toy 参数定向：只有开了额外旋转玩具才认（不开时行为与旧版完全一致）。
+        ToyTarget target = includeRotateToy ? ResolveToyTarget(toyRaw) : ToyTarget.All;
+
         // 一条消息里可以同时带抽插和转动（"Vibrate:16,Rotate:8"）：两路都留下来，
         // OSR6 本来就有直线和扭转两组轴，能同时动。
         IReadOnlyList<(string Name, int Strength)> actions = ParseActions(actionText);
         int strokeStrength = 0;
         int rotateStrength = 0;
+        int oscillateStrength = 0;
         var labels = new List<string>(2);
 
-        // 我们对外报的玩具是 gravity（抽 + 振动）：分得清能力的游戏会一条消息里同时发
+        // 我们对外报的玩具是抽插机：分得清能力的游戏会一条消息里同时发
         // Thrusting（抽）和 Vibrate（振）。振动马达我们没有，但转轴有——这种时候把振动
         // 接到转轴上，两路就都动起来了。只有振动、没有抽的消息仍按"主菜"算到直线上，
         // 否则那些只会发 Vibrate 的老游戏就只剩下转了。
@@ -350,9 +491,43 @@ public static class LovenseProtocol
         foreach ((string name, int value) in actions)
             if (name is "Thrust" or "Thrusting" or "Fingering" or "Suction" or "Depth" or "Pump") { hasThrust = true; break; }
 
+        // Stroke:min-max 必须与 Thrusting 联用且差 ≥ 20，否则忽略（官方规则）；Oscillate 0–20 映射到转轴。
+        foreach (string part in actionText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            int colon = part.IndexOf(':');
+            if (colon <= 0) continue;
+            string name = part[..colon].Trim();
+            string range = part[(colon + 1)..].Trim();
+            if (name.Equals("Stroke", StringComparison.OrdinalIgnoreCase))
+            {
+                int dash = range.IndexOf('-');
+                if (dash > 0
+                    && double.TryParse(range[..dash], NumberStyles.Float, CultureInfo.InvariantCulture, out double smin)
+                    && double.TryParse(range[(dash + 1)..], NumberStyles.Float, CultureInfo.InvariantCulture, out double smax))
+                {
+                    smin = Math.Clamp(smin, 0, 100);
+                    smax = Math.Clamp(smax, 0, 100);
+                    if (hasThrust && Math.Abs(smax - smin) >= 20) { strokeMin = Math.Min(smin, smax); strokeMax = Math.Max(smin, smax); }
+                }
+            }
+            else if (name.Equals("Oscillate", StringComparison.OrdinalIgnoreCase)
+                && int.TryParse(range, NumberStyles.Integer, CultureInfo.InvariantCulture, out int osc))
+            {
+                oscillateStrength = Math.Clamp(osc, 0, 20);
+            }
+        }
+
         foreach ((string name, int value) in actions)
         {
-            if (name == "Stop") return new Outcome(true, OkBody(false), "Stop", 0, 0, 0);
+            if (name == "Stop") return new Outcome(true, OkBody(false), "Stop", 0, 0, 0, StopPrevious: stopPrevious, Target: target);
+            if (target == ToyTarget.Rotate)
+            {
+                // 定向到 nora（osr6rotate）的命令：Vibrate 和 Rotate 都只当转动强度，绝不碰抽插。
+                int scaledRotate = name is "Pump" or "Depth" ? (int)Math.Round(value * 20.0 / 3.0) : value;
+                if (scaledRotate > rotateStrength) rotateStrength = scaledRotate;
+                labels.Add(name == "Vibrate" ? "Vibrate>转" : name);
+                continue;
+            }
             if (name == "Rotate")
             {
                 rotateStrength = Math.Max(rotateStrength, value);
@@ -376,11 +551,18 @@ public static class LovenseProtocol
             if (scaled > strokeStrength) { strokeStrength = scaled; }
             if (!labels.Contains(name)) labels.Add(name);
         }
-        if (strokeStrength <= 0 && rotateStrength <= 0) return new Outcome(true, OkBody(false), "Stop", 0, 0, 0);
+        if (oscillateStrength > 0)
+        {
+            rotateStrength = Math.Max(rotateStrength, oscillateStrength);
+            labels.Add("Oscillate");
+        }
+        if (strokeStrength <= 0 && rotateStrength <= 0) return new Outcome(true, OkBody(false), "Stop", 0, 0, 0, StopPrevious: stopPrevious, Target: target);
         return new Outcome(
             true, OkBody(false), string.Join('+', labels), Math.Max(strokeStrength, rotateStrength),
             StrokeAmplitude(strokeStrength), StrokeHz(strokeStrength), seconds,
-            RotateAmplitude(rotateStrength), RotateHz(rotateStrength));
+            RotateAmplitude(rotateStrength), RotateHz(rotateStrength),
+            StrokeMin: strokeMin, StrokeMax: strokeMax,
+            LoopRunningSec: loopRunningSec, LoopPauseSec: loopPauseSec, StopPrevious: stopPrevious, Target: target);
     }
 
     private static Outcome PresetToOutcome(string name, double seconds)
@@ -395,5 +577,51 @@ public static class LovenseProtocol
         };
         if (strength == 0) return new Outcome(false, ErrorBody(404, "Invalid Parameter"), "", 0, 0, 0);
         return new Outcome(true, OkBody(false), "Vibrate", strength, StrokeAmplitude(strength), StrokeHz(strength), seconds);
+    }
+
+    private static Outcome PatternV2ToOutcome(string? body, bool stopPrevious)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return new Outcome(false, ErrorBody(400, "Invalid Command"), "", 0, 0, 0);
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            JsonElement root = doc.RootElement;
+            if (!root.TryGetProperty("type", out var typeEl))
+                return new Outcome(false, ErrorBody(400, "Invalid Command"), "", 0, 0, 0);
+            string type = (typeEl.GetString() ?? "").Trim();
+            if (type.Equals("Setup", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!root.TryGetProperty("actions", out var actionsEl) || actionsEl.ValueKind != JsonValueKind.Array)
+                    return new Outcome(false, ErrorBody(404, "Invalid Parameter"), "", 0, 0, 0);
+                var points = new List<(double Ts, double Pos)>();
+                foreach (JsonElement item in actionsEl.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("ts", out var tsEl) || !item.TryGetProperty("pos", out var posEl)) continue;
+                    if (!tsEl.TryGetDouble(out double ts) || !posEl.TryGetDouble(out double pos)) continue;
+                    points.Add((Math.Max(0, ts), Math.Clamp(pos, 0, 100)));
+                }
+                points.Sort(static (a, b) => a.Ts.CompareTo(b.Ts));
+                return new Outcome(true, OkBody(false), "PatternV2Setup", 0, 0, 0, PatternPoints: points, StopPrevious: stopPrevious);
+            }
+            if (type.Equals("Play", StringComparison.OrdinalIgnoreCase))
+            {
+                double offsetTime = 0;
+                double timeMs = 0;
+                if (root.TryGetProperty("offsetTime", out var offEl) && offEl.TryGetDouble(out double off)) offsetTime = Math.Clamp(off, 0, 15000);
+                if (root.TryGetProperty("timeMs", out var tEl) && tEl.TryGetDouble(out double t)) timeMs = t;
+                // 官方：timeMs 必须 > 100，否则这条 Play 被忽略。
+                if (timeMs <= 100) return new Outcome(false, ErrorBody(404, "Invalid Parameter"), "", 0, 0, 0);
+                return new Outcome(true, OkBody(false), "PatternV2Play", 0, 0, 0, PatternOffsetMs: offsetTime, PatternTimeMs: timeMs, StopPrevious: stopPrevious);
+            }
+            if (type.Equals("Stop", StringComparison.OrdinalIgnoreCase))
+                return new Outcome(true, OkBody(false), "Stop", 0, 0, 0, StopPrevious: stopPrevious);
+            if (type.Equals("SyncTime", StringComparison.OrdinalIgnoreCase))
+                return new Outcome(true, OkBody(false), "", 0, 0, 0, StopPrevious: stopPrevious);
+            return new Outcome(false, ErrorBody(404, "Invalid Parameter"), "", 0, 0, 0);
+        }
+        catch (JsonException)
+        {
+            return new Outcome(false, ErrorBody(400, "Invalid Command"), "", 0, 0, 0);
+        }
     }
 }

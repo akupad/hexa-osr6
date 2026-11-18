@@ -27,7 +27,6 @@ public partial class App : System.Windows.Application
 
     /// <summary>Lovense 兼容服务：游戏把本机当 Lovense 玩具连进来时，命令从这儿落到设备。</summary>
     public static LovenseBridgeService Lovense { get; private set; } = null!;
-    public static AyvaWebSocketService AyvaWeb { get; private set; } = null!;
     public static TcodeFanout Fanout { get; private set; } = null!;
     public static LibraryWebService LibraryWeb { get; private set; } = null!;
 
@@ -237,10 +236,12 @@ public partial class App : System.Windows.Application
             Unlimited = Settings.LovenseUnlimited,
             RotateTopPercent = Settings.LovenseRotateTopPercent,
             RotateDeepPercent = Settings.LovenseRotateDeepPercent,
+            LocalOnly = Settings.LovenseLocalOnly,
+            ExtraRotateToy = Settings.LovenseExtraRotateToy,
+            AutoTwistEnabled = Settings.AutoTwistEnabled,
+            AutoTwistAmplitudePercent = Settings.AutoTwistAmplitudePercent,
         };
         if (Settings.LovenseBridgeEnabled) Lovense.Start(Settings.LovenseBridgePort, LovenseBridgeService.DefaultHttpPort);
-        AyvaWeb = new AyvaWebSocketService(Engine);
-        if (Settings.AyvaWebSocketEnabled) AyvaWeb.Start();
 
         Fanout = new TcodeFanout { Enabled = Settings.FanoutEnabled };
         Fanout.Configure(Settings.FanoutTargets);
@@ -400,10 +401,6 @@ public partial class App : System.Windows.Application
                     else if (Settings.GameBridgeEnabled && !Bridge.Active)
                         TrayIcon?.ShowBalloonTip(9000, "游戏桥没起来",
                             "原因：" + (Bridge.LastError ?? "未知") + " —— 到「游玩 → 游戏桥」换一个监听端口再开一次。",
-                            ToolTipIcon.Warning);
-                    else if (Settings.AyvaWebSocketEnabled && !AyvaWeb.IsRunning)
-                        TrayIcon?.ShowBalloonTip(9000, "网页入口没起来",
-                            "原因：" + (AyvaWeb.LastError ?? "未知") + " —— 到「测试台 → 网页入口」换端口或先关掉占用它的程序。",
                             ToolTipIcon.Warning);
                 }
                 catch { /* 提示失败不影响主流程 */ }
@@ -706,7 +703,6 @@ public partial class App : System.Windows.Application
         WebApi?.Dispose();
         RuleEngine?.Dispose();
         GameTelemetry?.Dispose();
-        AyvaWeb?.Dispose();
         Fanout?.Dispose();
         LibraryWeb?.Dispose();
         AudioReactive?.Dispose();

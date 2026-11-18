@@ -26,6 +26,17 @@ public static class LocalizationTable
         ("⚙️  设置", "⚙️  Settings"),
         ("🧪  测试台", "🧪  Test bench"),
 
+        // ── 测试台 · 画面同步卡 ─────────────────────────────────────────
+        ("③ 画面同步", "③ Screen Sync"),
+        ("🖥 画面同步（能跟着画面里的动作走）", "🖥 Screen Sync (follows the motion on screen)"),
+        ("开启同步", "Start screen sync"),
+        ("关闭同步", "Stop screen sync"),
+        ("方向反转（设备方向和画面相反时勾上）",
+            "Reverse direction (tick if the device moves opposite to the picture)"),
+        ("倾斜同步（近似，默认关）", "Tilt sync (approximate, off by default)"),
+        ("🧍 姿态识别（YOLO）已移到「实验台 → 画面同步」。",
+            "🧍 Pose detection (YOLO) has moved to Test bench → Screen Sync."),
+
         // ── 主窗口：连接 / 安全 / 为什么不动 三行 + 归中·急停 ──────────
         ("未连接", "Not connected"),
         ("⬆  全部归中", "⬆  Center all"),
@@ -55,7 +66,6 @@ public static class LocalizationTable
         ("挑逗", "Tease"),
         ("声音响应", "Sound reactive"),
         ("游戏桥", "Game bridge"),
-        ("网页遥控器", "Web remote"),
         ("手柄", "Gamepad"),
         ("编排预览", "Editor preview"),
         ("AI 助手", "AI assistant"),
@@ -415,8 +425,12 @@ public static class LocalizationTable
             "Copies the recent log to the clipboard so you can send it on"),
         ("插着 USB 线时不用蓝牙，连得更稳",
             "Skips Bluetooth while a USB cable is plugged in — a steadier link"),
-        ("当前是模拟设备（未连接真实硬件）· 点这里退出模拟",
-            "Simulation mode (no real hardware) · click to exit"),
+        ("设备没插也能试所有玩法，指令只记录不发设备。",
+            "Try every mode without hardware — commands are logged, never sent to a device"),
+        ("没在模拟：走的是真实串口", "Not simulating — using the real serial port"),
+        ("还没记录到指令", "No commands recorded yet"),
+        ("进入模拟设备", "Enter simulation mode"),
+        ("退出模拟设备", "Leave simulation mode"),
         ("退出模拟设备，回到真实串口连接", "Leave simulation mode and go back to the real serial port"),
         ("跟着提示一步步测每个轴的实际边界（会让设备动起来）",
             "Step-by-step guide to measure each axis's real limits (this moves the device)"),
@@ -467,6 +481,12 @@ public static class LocalizationTable
 
         // ── 补充：脚本库页漏掉的一个静态标签 ──────────────────────────
         ("动作幅度", "Motion range"),
+
+        // ── Lovense 兼容卡：仅本机 / 额外旋转玩具 / 自动扭转 ──────────
+        ("仅本机连接（127.0.0.1）", "Local only (127.0.0.1)"),
+        ("额外报一个会旋转的玩具（nora → R0）", "Also report a rotating toy (nora → R0)"),
+        ("自动扭转（R0 跟 L0 联动）", "Auto twist (R0 follows L0)"),
+        ("幅度", "Amount"),
     ];
 
     /// <summary>查表用的字典（由 <see cref="Entries"/> 在静态构造时建好）。</summary>

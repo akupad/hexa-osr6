@@ -195,7 +195,7 @@ internal static class SelfTest
                 // 这两条要看「全新安装的默认值」，不是用户当前设置 —— 用户完全可以按自己喜好关掉；
                 // 2026-10-09 他关掉「舒适档限速」后这条就一直红，那是把用户选择当成了回归。
                 var bridgeDefaults = new AppSettings();
-                Check("桥的整形默认开着（去抖）", bridgeDefaults.BridgeInputSmoothing);
+                Check("桥的整形默认关（去抖；90ms 低通让节奏游戏发肉，按 2026-10 决定）", !bridgeDefaults.BridgeInputSmoothing);
                 Check("桥也遵守舒适档限速（默认开）", bridgeDefaults.BridgeUseComfortLimits);
                 Lines.Add($"      （他当前的桥设置：去抖={cfg.BridgeInputSmoothing} · 舒适档限速={cfg.BridgeUseComfortLimits} · 多轴联动={cfg.BridgeAxisLink}）");
                 // 桥是"直接下发源"，它驱动机器时**不置**任何模式标志位。
@@ -284,7 +284,7 @@ internal static class SelfTest
                 travel > 50 && travel < 3000
                 && suggestion is >= LatencyCalibrator.MinCompensationMs and <= LatencyCalibrator.MaxCompensationMs);
 
-            Section("八点五、画面信号（观察模式）：能看、看得见、且绝不碰设备");
+            Section("八点五、画面同步（观察模式）：能看、看得见、且绝不碰设备");
             // 用户的主场景是"跟着画面里的内容动"。这一步只做观察，所以最要紧的是
             // ① 抓不到时给原因而不是崩 ② 它一条 TCode 都不许发出去。
             try
@@ -348,7 +348,7 @@ internal static class SelfTest
             }
             catch (Exception ex)
             {
-                Check("画面信号服务可用", false);
+                Check("画面同步服务可用", false);
                 Lines.Add("      原因：" + ex.GetBaseException().Message);
             }
 
@@ -592,8 +592,9 @@ internal static class SelfTest
             Thread.Sleep(250);
 
             // 测试台改成「点哪个看哪个」（用户原话「我要的是两排、方便我选功能，我不想一直往下滑」）。
-            // 量两件事：选择区是两列三块；任意时刻只有一张卡片可见 —— 曾经出现过两栏方案下
-            // 收起的一栏仍占半屏（ColumnDefinition Width="*"），那种毛病只有量得出来。
+            // 量三件事：选择区是两排两列的四块；任意时刻只有一张卡片可见 —— 曾经出现过两栏方案下
+            // 收起的一栏仍占半屏（ColumnDefinition Width="*"），那种毛病只有量得出来；
+            // 另外钉住「设备模拟器已经搬走」：卡片与导航按钮都不许在测试台上复活。
             App.Dispatch(() =>
             {
                 try
@@ -606,49 +607,37 @@ internal static class SelfTest
                     var audio = FindByName(page, "AudioCard");
                     var companion = FindByName(page, "CompanionCard");
                     var screen = FindByName(page, "ScreenCard");
-                    var sim = FindByName(page, "SimulatorCard");
-                    var thirdBtn = FindByName(page, "FeatureScreenBtn") as System.Windows.Controls.Button;
-                    var simBtn = FindByName(page, "FeatureSimBtn") as System.Windows.Controls.Button;
+                    var fanoutCard = FindByName(page, "FanoutCard");
+                    var audioBtn = FindByName(page, "FeatureAudioBtn") as System.Windows.Controls.Button;
+                    var companionBtn = FindByName(page, "FeatureCompanionBtn") as System.Windows.Controls.Button;
+                    var screenBtn = FindByName(page, "FeatureScreenBtn") as System.Windows.Controls.Button;
+                    var fanBtn = FindByName(page, "FeatureFanoutBtn") as System.Windows.Controls.Button;
                     int pickerCols = picker?.ColumnDefinitions.Count ?? -1;
                     int pickerBtns = picker?.Children.OfType<System.Windows.Controls.Button>().Count() ?? -1;
-                    int thirdSpan = thirdBtn == null ? -1 : System.Windows.Controls.Grid.GetColumnSpan(thirdBtn);
-                    int simSpan = simBtn == null ? -1 : System.Windows.Controls.Grid.GetColumnSpan(simBtn);
-                    var ayva = FindByName(page, "AyvaCard");
-                    var fanoutCard = FindByName(page, "FanoutCard");
-                    var fanBtn = FindByName(page, "FeatureFanoutBtn") as System.Windows.Controls.Button;
-                    int fanSpan = fanBtn == null ? -1 : System.Windows.Controls.Grid.GetColumnSpan(fanBtn);
-                    var ayvaBtn = FindByName(page, "FeatureAyvaBtn") as System.Windows.Controls.Button;
-                    int ayvaSpan = ayvaBtn == null ? -1 : System.Windows.Controls.Grid.GetColumnSpan(ayvaBtn);
                     // 光看 ColumnSpan 不够：曾经 UniformGrid 下第三个按钮只占半排、右边空一块（渲染图才看得出来）。
                     // 所以直接量宽度：四块两排两列时，每一块都必须接近半排宽（两列 + 中间 12px 间隙）。
-                    // 2026-10-06：功能从 3 块变 4 块（新增「④ 设备模拟器」），第三块不再跨整排 ——
-                    // 断言跟着改成「每块都占半排」，强度不降：照样查跨列、照样量宽度、照样不许留空。
+                    // 2026-11-18：设备模拟器搬到设置页的连接卡，这里只剩 4 块（①②③④），每块各占半排、都不跨列。
                     double pickerWidth = picker?.ActualWidth ?? -1;
-                    double thirdWidth = thirdBtn?.ActualWidth ?? -1;
-                    double simWidth = simBtn?.ActualWidth ?? -1;
                     double halfWidth = (pickerWidth - 12) / 2;
-                    double ayvaWidth = ayvaBtn?.ActualWidth ?? -1;
-                    double fanWidth = fanBtn?.ActualWidth ?? -1;
-                    // 2026-10-06：功能从 4 块变 5 块（新增「⑤ 网页入口」），第五块占满整排 ——
-                    // 断言相应变成「前四块各占半排 + 第五块占整排」，强度不降：照样查跨列、照样量宽度、照样不许留空。
-                    Check($"测试台功能选择区是六块各占半排（{pickerCols} 列 / {pickerBtns} 块 / 跨 {thirdSpan}+{simSpan}+{ayvaSpan}+{fanSpan} 列）",
-                        pickerCols == 2 && pickerBtns == 6
-                        && thirdSpan == 1 && simSpan == 1 && ayvaSpan == 1 && fanSpan == 1
-                        && thirdWidth >= halfWidth * 0.95 && simWidth >= halfWidth * 0.95
-                        && ayvaWidth >= halfWidth * 0.95 && fanWidth >= halfWidth * 0.95);
-                    Check("测试台默认只显示 ① 声音响应（另五块收起）",
+                    var featureButtons = new[] { audioBtn, companionBtn, screenBtn, fanBtn };
+                    bool eachHalfCell = featureButtons.All(btn => btn is not null
+                        && System.Windows.Controls.Grid.GetColumnSpan(btn) == 1
+                        && btn.ActualWidth >= halfWidth * 0.95);
+                    Check($"测试台功能选择区是四块两排两列（{pickerCols} 列 / {pickerBtns} 块）",
+                        pickerCols == 2 && pickerBtns == 4 && eachHalfCell);
+                    Check("测试台不再有「设备模拟器」卡片与导航按钮（已搬到设置页的串口区）",
+                        FindByName(page, "SimulatorCard") is null && FindByName(page, "FeatureSimBtn") is null);
+                    Check("测试台默认只显示 ① 声音响应（另三块收起）",
                         audio?.Visibility == System.Windows.Visibility.Visible
                         && companion?.Visibility != System.Windows.Visibility.Visible
                         && screen?.Visibility != System.Windows.Visibility.Visible
-                        && sim?.Visibility != System.Windows.Visibility.Visible
-                        && ayva?.Visibility != System.Windows.Visibility.Visible
                         && fanoutCard?.Visibility != System.Windows.Visibility.Visible);
                     Invoke(page, "ShowCard", "ScreenCard");
                     Check("测试台选中 ③ 后只剩 ③ 可见（另三块收起、不留半屏空栏）",
                         screen?.Visibility == System.Windows.Visibility.Visible
                         && audio?.Visibility != System.Windows.Visibility.Visible
                         && companion?.Visibility != System.Windows.Visibility.Visible
-                        && sim?.Visibility != System.Windows.Visibility.Visible);
+                        && fanoutCard?.Visibility != System.Windows.Visibility.Visible);
                 }
                 catch (Exception ex) { Check("测试台功能切换", false); Lines.Add("      原因：" + ex.Message); }
             });
@@ -718,6 +707,16 @@ internal static class SelfTest
                         && FindByName(page, "FirmwareSaveBtn") is not null
                         && FindByName(page, "FirmwareRestartBtn") is not null
                         && FindByName(page, "FirmwareStatusText") is not null);
+                    // 设备模拟器搬到设置页的串口区（2026-11-18）：开关必须在，而且原来那条
+                    // 「当前是模拟设备 · 点这里退出模拟」的状态条已经并进这一格（不许两处并存）。
+                    var simToggle = FindByName(page, "SimToggleBtn") as System.Windows.Controls.Button;
+                    var simStatus = FindByName(page, "SimStatusText") as System.Windows.Controls.TextBlock;
+                    var simHint = FindByName(page, "SimHintText") as System.Windows.Controls.TextBlock;
+                    Check($"设置页串口区有模拟设备开关（按钮「{simToggle?.Content}」，状态「{simStatus?.Text}」）",
+                        simToggle is not null && simStatus is { Text.Length: > 0 }
+                        && simHint?.Text.Contains("指令只记录不发设备") == true
+                        && FindByName(page, "SimCountText") is not null
+                        && FindByName(page, "SimulationBanner") is null);
                 }
                 catch (Exception ex) { Check("设置页的固件设置卡", false); Lines.Add("      原因：" + ex.Message); }
             });
@@ -852,6 +851,7 @@ internal static class SelfTest
                 {
                     RenderPage(Path.Combine(shotDir, name + ".png"), factory, 1280, 900);
                     RenderPage(Path.Combine(shotDir, name + "-narrow.png"), factory, 880, 760);
+                    RenderPage(Path.Combine(shotDir, name + "-max.png"), factory, 1720, 990);
                 }
                 // 游玩页把游戏桥挂在最下面，900px 的视口看不到它 —— 再单独出一张「整页」图，
                 // 用来复核桥卡与端口提示行的排版（渲染只是开发用，不进产品界面）。
@@ -899,38 +899,7 @@ internal static class SelfTest
                 }
             }
 
-            Section("十六、网页入口（Ayva）：服务能起、能收 TCode、真解析成动作");
-            {
-                bool wasRunning = App.AyvaWeb.IsRunning;
-                bool entryUp = false;
-                bool gotFrame = false;
-                bool parsed = false;
-                string seen = "";
-                try
-                {
-                    App.AyvaWeb.Start();
-                    entryUp = App.AyvaWeb.IsRunning;
-                    if (entryUp)
-                    {
-                        long before = App.AyvaWeb.Frames;
-                        using var client = new System.Net.WebSockets.ClientWebSocket();
-                        client.ConnectAsync(new Uri(App.AyvaWeb.Url), CancellationToken.None).GetAwaiter().GetResult();
-                        byte[] payload = Encoding.ASCII.GetBytes("L08000 R06000");
-                        client.SendAsync(new ArraySegment<byte>(payload), System.Net.WebSockets.WebSocketMessageType.Text, true, CancellationToken.None).GetAwaiter().GetResult();
-                        gotFrame = SpinWait.SpinUntil(() => App.AyvaWeb.Frames > before, 3000);
-                        seen = App.AyvaWeb.LastCommand;
-                        parsed = seen == "L08000 R06000";
-                        client.CloseAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "", CancellationToken.None).GetAwaiter().GetResult();
-                    }
-                }
-                catch (Exception ex) { Lines.Add("      原因：" + ex.Message); }
-                finally { if (!wasRunning) App.AyvaWeb.Stop(); }
-
-                Check($"网页入口能起来并监听（{App.AyvaWeb.Url}）", entryUp);
-                Check($"网页发来的 TCode 真被收到并解析（帧计数增加，原文“{seen}”）", gotFrame && parsed);
-            }
-
-            Section("十七、多输出：同一条指令真的发给网络目标");
+            Section("十六、多输出：同一条指令真的发给网络目标");
             {
                 bool wasEnabled = App.Fanout.Enabled;
                 string wasTargets = App.Settings.FanoutTargets;
@@ -966,7 +935,7 @@ internal static class SelfTest
                     got && received.Split(' ').Contains("L05000"));
             }
 
-            Section("十八、节拍跟踪：能不能从起音序列里把 BPM 测出来");
+            Section("十七、节拍跟踪：能不能从起音序列里把 BPM 测出来");
             {
                 // 合成 120 BPM：每 0.5 秒一次强起音，喂 10 秒（100Hz 帧率，每 50 帧一次）。
                 var tracker = new Hexa.Services.TempoTracker();
@@ -995,7 +964,7 @@ internal static class SelfTest
                 Check($"没有起音时不乱报（Bpm={quiet.Bpm:0.0}，Locked={quiet.Locked}）", !quiet.Locked);
             }
 
-            Section("十九、脚本库网页：能起来、能返回页面、只服务本机");
+            Section("十八、脚本库网页：能起来、能返回页面、只服务本机");
             {
                 bool wasRunning = App.LibraryWeb.IsRunning;
                 bool up = false;

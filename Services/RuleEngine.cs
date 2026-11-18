@@ -43,7 +43,7 @@ public sealed class RuleEngine : IDisposable
     /// <summary>脚本播放器叫停伴随期间为真（见 <see cref="YieldToManualPlayback"/>）。</summary>
     private bool _yieldedForManualPlayback;
 
-    /// <summary>画面信号正在驱动设备、伴随让位期间为真（见 <see cref="ScreenWatchService.FollowWantsDevice"/>）。</summary>
+    /// <summary>画面同步正在驱动设备、伴随让位期间为真（见 <see cref="ScreenWatchService.FollowWantsDevice"/>）。</summary>
     private bool _yieldedForScreen;
 
     /// <summary>伴随反应：事件要多新才算「刚发生」（秒）。比它旧的只可能落在保持窗口里。</summary>
@@ -81,7 +81,7 @@ public sealed class RuleEngine : IDisposable
     public bool YieldedForManualPlayback => _yieldedForManualPlayback;
 
     /// <summary>
-    /// 画面信号正在驱动设备、伴随让位期间为真。状态板据此显示「正在跟画面里的动作走」——
+    /// 画面同步正在驱动设备、伴随让位期间为真。状态板据此显示「正在跟画面里的动作走」——
     /// 用户选了「画面内容」这条来源，最想知道的就是「画面里没事发生时它到底动不动」。
     /// </summary>
     public bool YieldedForScreen => _yieldedForScreen;
@@ -92,13 +92,13 @@ public sealed class RuleEngine : IDisposable
     /// </summary>
     private string SourceId => (_cfg.CompanionSource ?? "").Trim().ToLowerInvariant();
 
-    /// <summary>「画面内容」这一路：设备由画面信号独占驱动，伴随自己不产生任何自动动作。</summary>
+    /// <summary>「画面内容」这一路：设备由画面同步独占驱动，伴随自己不产生任何自动动作。</summary>
     private bool ScreenOnlySource() => string.Equals(SourceId, "screen", StringComparison.Ordinal);
 
-    /// <summary>画面信号能不能参与驱动（「画面内容」明确指定，或「自动」里作为遥测之后、声音之前的那一层）。</summary>
+    /// <summary>画面同步能不能参与驱动（「画面内容」明确指定，或「自动」里作为遥测之后、声音之前的那一层）。</summary>
     private bool ScreenSourceAllowed() => SourceId is "screen" or "auto";
 
-    /// <summary>画面信号此刻是不是要接管设备（只看信号自己，见 ScreenWatchService.FollowWantsDevice）。</summary>
+    /// <summary>画面同步此刻是不是要接管设备（只看信号自己，见 ScreenWatchService.FollowWantsDevice）。</summary>
     private bool ScreenWantsDevice()
     {
         if (!ScreenSourceAllowed()) return false;
@@ -107,12 +107,12 @@ public sealed class RuleEngine : IDisposable
     }
 
     /// <summary>
-    /// 画面信号的服务实例。正常情况下就是「测试台 · 画面信号」那一页懒建并跨页面共享的那个；
+    /// 画面同步的服务实例。正常情况下就是「测试台 · 画面同步」那一页懒建并跨页面共享的那个；
     /// 用户没打开过那一页时（开机直接进游戏）在这里兜底把它开起来 —— 否则「画面内容」这条来源
-    /// 在重启后会静默失效（设置里明明开着画面信号，设备却一动不动，用户只会以为坏了）。
+    /// 在重启后会静默失效（设置里明明开着画面同步，设备却一动不动，用户只会以为坏了）。
     ///
     /// 三条自我约束：
-    /// ① 只有「设置里开着画面信号 + 伴随开着 + 来源要画面」时才动手，绝不偷偷抓别人的画面；
+    /// ① 只有「设置里开着画面同步 + 伴随开着 + 来源要画面」时才动手，绝不偷偷抓别人的画面；
     /// ② <b>复用</b>已有实例（<see cref="ScreenWatchService.Current"/>），不新建第二个 ——
     ///    两个实例会各抓一份画面、各下一次指令，设备会乱抖；
     /// ③ 每 5 秒最多试一次：Start() 会枚举一次窗口，不该被 100ms 的评估周期反复触发。
@@ -131,17 +131,17 @@ public sealed class RuleEngine : IDisposable
         {
             service ??= new ScreenWatchService(_cfg);
             if (!service.IsRunning) service.Start();
-            AppLogger.Info("画面信号：为了「画面内容」这条来源自动开启了观察（设置里「画面信号」是开着的）");
+            AppLogger.Info("画面同步：为了「画面内容」这条来源自动开启了观察（设置里「画面同步」是开着的）");
             return service.IsRunning ? service : null;
         }
         catch (Exception ex)
         {
-            AppLogger.Warn($"画面信号：自动开启失败（「画面内容」这条来源暂时用不了）—— {ex.Message}");
+            AppLogger.Warn($"画面同步：自动开启失败（「画面内容」这条来源暂时用不了）—— {ex.Message}");
             return null;
         }
     }
 
-    /// <summary>上次尝试自动开启画面信号观察的时刻（Environment.TickCount64），做节流用。</summary>
+    /// <summary>上次尝试自动开启画面同步观察的时刻（Environment.TickCount64），做节流用。</summary>
     private long _screenStartAttemptMs;
 
     /// <summary>
@@ -232,13 +232,13 @@ public sealed class RuleEngine : IDisposable
             return;
         }
 
-        // 动作来源 = 画面内容：设备由画面信号独占驱动，规则这一路**一个自动动作都不启动**。
+        // 动作来源 = 画面内容：设备由画面同步独占驱动，规则这一路**一个自动动作都不启动**。
         //
         // 两个必须这么做的理由：
-        // ① 引擎在跑自动动作时 CanAcceptDirectInput 为假，画面信号根本拿不到直接下发权；
+        // ① 引擎在跑自动动作时 CanAcceptDirectInput 为假，画面同步根本拿不到直接下发权；
         // ② 更要紧的是 RuleEngineActive：它一旦为真、而这次接管又不是伴随启动的
         //    （_autoFromCompanion 为假），引擎会把它判成「独占接管」而一律拒绝直接下发 ——
-        //    画面信号会被永久挡在门外。所以这里<b>不</b>置 RuleEngineActive。
+        //    画面同步会被永久挡在门外。所以这里<b>不</b>置 RuleEngineActive。
         // 只留评估定时器：状态板要显示「目标在不在前台 / 画面里有没有事发生」。
         if (ScreenOnlySource())
         {
@@ -246,7 +246,7 @@ public sealed class RuleEngine : IDisposable
             _engine.RuleEngineActive = false;
             _evalTimer ??= MakeTimer(100, EvaluateTick);
             _evalTimer.Start();
-            NoteTransition("伴随：动作来源是「画面内容」，自动动作交给画面信号（规则这一路不启动）", log: true);
+            NoteTransition("伴随：动作来源是「画面内容」，自动动作交给画面同步（规则这一路不启动）", log: true);
             return;
         }
 
@@ -294,12 +294,12 @@ public sealed class RuleEngine : IDisposable
         _yieldedForScreen = false;   // 伴随停了：让位标记一起清（否则状态板会一直写着「画面内容」）
         SyncQuality = "基础";
         if (!wasActive) return;
-        // 「画面内容」这条来源下本类从来没起过自动动作，设备归画面信号管 ——
+        // 「画面内容」这条来源下本类从来没起过自动动作，设备归画面同步管 ——
         // 这里要是照样走一遍 EaseDown，会白白把引擎设成「正在过渡」0.6 秒，
-        // 那 0.6 秒里画面信号反而拿不到直接下发权。
+        // 那 0.6 秒里画面同步反而拿不到直接下发权。
         if (ScreenOnlySource())
         {
-            NoteTransition("伴随停止：画面跟随由画面信号自己收尾");
+            NoteTransition("伴随停止：画面同步由画面同步自己收尾");
             AppLogger.Info("规则引擎已停止");
             return;
         }
@@ -403,7 +403,7 @@ public sealed class RuleEngine : IDisposable
                 return;
             }
 
-            // 画面信号要接管设备（用户把来源选成「画面内容」，或「自动」里遥测没有、画面又过了线）：
+            // 画面同步要接管设备（用户把来源选成「画面内容」，或「自动」里遥测没有、画面又过了线）：
             // 伴随把自动动作缓降停掉、让出设备，由 ScreenWatchService 独占驱动。
             if (ScreenSourceAllowed() && ScreenWantsDevice())
             {
@@ -465,15 +465,15 @@ public sealed class RuleEngine : IDisposable
         }
     }
 
-    // ── 让位给画面信号（「画面内容」这条动作来源）─────────────────────
+    // ── 让位给画面同步（「画面内容」这条动作来源）─────────────────────
     /// <summary>
-    /// 画面信号要驱动设备了：伴随把自动动作缓降停掉、让出设备。
+    /// 画面同步要驱动设备了：伴随把自动动作缓降停掉、让出设备。
     ///
     /// 为什么必须让位而不是各动各的：引擎的「直接下发」有互斥 —— 自动动作在跑
-    /// （<c>AutoRunning</c>）时 <c>CanAcceptDirectInput</c> 为假，画面信号一条指令都发不出去。
+    /// （<c>AutoRunning</c>）时 <c>CanAcceptDirectInput</c> 为假，画面同步一条指令都发不出去。
     /// 让位走的是和脚本一样的缓降（不是急停），停完画面那边下一拍就能拿到控制权。
     ///
-    /// 「源不在前台就停」的语义没变：画面信号自己也会在离开前台时缓降回中
+    /// 「源不在前台就停」的语义没变：画面同步自己也会在离开前台时缓降回中
     /// （见 ScreenWatchService.FollowTargetProblem），本方法只管把规则这一路腾干净。
     /// </summary>
     private void YieldToScreenLocked()
@@ -485,18 +485,18 @@ public sealed class RuleEngine : IDisposable
         if (!_yieldedForScreen)
         {
             _yieldedForScreen = true;
-            AppLogger.Info("伴随让位：画面信号开始接管设备（规则这一路不再下发自动动作）");
+            AppLogger.Info("伴随让位：画面同步开始接管设备（规则这一路不再下发自动动作）");
         }
-        if (_engine.AutoRunning) EaseDownOrStopLocked("画面信号接管");
-        else NoteTransition("画面信号接管：伴随不再下发自动动作");
+        if (_engine.AutoRunning) EaseDownOrStopLocked("画面同步接管");
+        else NoteTransition("画面同步接管：伴随不再下发自动动作");
     }
 
-    /// <summary>画面信号不再要设备了：伴随恢复自己的规则行为（下一次评估就会重新接管/缓降）。</summary>
+    /// <summary>画面同步不再要设备了：伴随恢复自己的规则行为（下一次评估就会重新接管/缓降）。</summary>
     private void ResumeFromScreenLocked()
     {
         if (!_yieldedForScreen) return;
         _yieldedForScreen = false;
-        NoteTransition("画面信号结束：伴随重新接管", log: true);
+        NoteTransition("画面同步结束：伴随重新接管", log: true);
     }
 
     private void RampTick()
@@ -537,7 +537,7 @@ public sealed class RuleEngine : IDisposable
     {
         // 自动动作的第一道门就是 RuleEngineActive（见 MotionEngine.StartRuleAuto）。
         // 正常路径上它早就为真，但「动作来源」从「画面内容」切回其它值时，那一档**有意**把它置成 false
-        // （否则画面信号会被判成「别人独占接管」而永远拿不到直接下发权）——
+        // （否则画面同步会被判成「别人独占接管」而永远拿不到直接下发权）——
         // 这里是唯一能把它复位的地方；不复位就会出现「切回去以后再也不会动」。
         _engine.RuleEngineActive = true;
 
@@ -621,7 +621,7 @@ public sealed class RuleEngine : IDisposable
         //   telemetry = 只用游戏信号 —— 收不到新鲜遥测就当目标不活跃，绝不用声音顶替（静默待机）；
         //   screen    = 只用画面内容 —— 设备由 ScreenWatchService 独占驱动（画面上过线才动，
         //               离开前台就缓降回停）；本引擎**不启动任何自动动作**，也完全不看遥测；
-        //   auto      = 按优先级自动挑一路：<b>有遥测用遥测 → 有画面信号且过线用画面 → 否则声音兜底</b>
+        //   auto      = 按优先级自动挑一路：<b>有遥测用遥测 → 有画面同步且过线用画面 → 否则声音兜底</b>
         //               （前两层见 EvaluateTickLocked 的让位逻辑与 ScreenWatchService.FollowBlocker；
         //                走到这里就说明前两层都没有，于是用下面的规则：底色动作 + 声音兜底）。
         string source = _cfg.CompanionSource;
@@ -656,7 +656,7 @@ public sealed class RuleEngine : IDisposable
 
         if (screenOnly)
         {
-            // 画面内容这一路：设备归画面信号（它在自己的抓帧循环里下发），本引擎一个自动动作都不产生。
+            // 画面内容这一路：设备归画面同步（它在自己的抓帧循环里下发），本引擎一个自动动作都不产生。
             // 这里返回「不活跃」而不是别的：只要没有该动的事，走的就是「缓降回中后停发」那条老路，
             // 和「目标不在前台就静默」完全一致 —— 语义没变，只是动作的出处换了人。
             SyncQuality = "画面";

@@ -194,7 +194,7 @@ public static class NsfwClassifier
 
     /// <summary>
     /// 白话状态字符串（直接给用户看）：
-    /// 「没下载（中档 44MB）」/「下载中 42%」/「已下载（中档 44MB），开启观察后自动加载」/
+    /// 「没下载（中档 44MB）」/「下载中 42%」/「已下载（中档 44MB），开启同步后自动加载」/
     /// 「模型已加载」/「加载失败：…」/「下载失败：…」。
     /// </summary>
     public static string Status
@@ -206,7 +206,7 @@ public static class NsfwClassifier
             string over = Volatile.Read(ref _statusOverride);
             if (over.Length > 0) return over;
             if (IsReady) return $"模型已加载（{VariantLabel()}）";
-            if (IsInstalled) return $"已下载（{VariantLabel()}），开启观察后自动加载";
+            if (IsInstalled) return $"已下载（{VariantLabel()}），开启同步后自动加载";
             return $"没下载（{VariantLabel()}，点下面的按钮下这一档）";
         }
     }
@@ -586,7 +586,7 @@ public static class NsfwClassifier
     /// 把一帧裁成模型要的 224×224 并填进 NCHW 张量（RGB 顺序 = [R 平面, G 平面, B 平面]）。
     ///
     /// 两条路径：
-    /// · 正常路径（画面观察交来的图短边已经是 236）：只做<b>中心裁 224</b>，一次 LockBits 搞定；
+    /// · 正常路径（画面同步交来的图短边已经是 236）：只做<b>中心裁 224</b>，一次 LockBits 搞定；
     /// · 兜底路径（图比 224 还小，比如别处直接塞了张小图）：先按短边缩到 236 再裁。
     /// 两种都写进同一块复用的 <see cref="InputBuffer"/>，中间不产生第二份大图。
     /// </summary>

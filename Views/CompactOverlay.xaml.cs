@@ -41,10 +41,6 @@ public partial class CompactOverlay : Window
     // 出事（未连接 / 急停锁定）时状态点做 2Hz 呼吸，扫一眼就知道不对
     private bool _blinkOn = true;
 
-    // 「急停 / 解除急停」要连点两次：第一次只是预备，4 秒内不点就自动取消
-    private bool _stopArmed;
-    private DateTime _stopArmedAtUtc;
-
     // 画面没变化就整帧跳过，不必每 250ms 白刷一遍
     private string _lastFrame = "";
 
@@ -279,7 +275,7 @@ public partial class CompactOverlay : Window
         var serial = App.Serial;
 
         _blinkOn = !_blinkOn;
-        BlinkStopArmIfTimedOut();
+        
 
         // ── 连接状态 ──
         bool sim      = serial.IsSimulation;
@@ -318,7 +314,7 @@ public partial class CompactOverlay : Window
         // 一整帧的内容；和上一帧完全一样就直接收工（闪烁除外，它每帧都要翻）
         string frame =
             $"{connWord}|{modeWord}|{(showBpm ? bpm : "-")}|{intens}|{e.Speed:F1}|" +
-            $"{(blink ? (_blinkOn ? "1" : "0") : "1")}|{(_hover ? "h" : "-")}|{(_stopArmed ? "a" : "-")}|" +
+            $"{(blink ? (_blinkOn ? "1" : "0") : "1")}|{(_hover ? "h" : "-")}|-|" +
             $"{(estopped ? "E" : online ? "O" : "D")}|{(e.IsPaused ? "P" : "-")}|{why}";
         if (frame == _lastFrame) return;
         _lastFrame = frame;
@@ -387,7 +383,7 @@ public partial class CompactOverlay : Window
 
     private void PauseBtn_Click(object sender, RoutedEventArgs e)
     {
-        CancelStopArm();
+        
         if (!App.Engine.TogglePause())
             AppLogger.Info("暂停没生效：现在没有在跑的动作");
         _lastFrame = "";
@@ -395,18 +391,14 @@ public partial class CompactOverlay : Window
     }
 
     /// <summary>
-    /// 急停按钮：只有「设备连着」且「真有东西可停 / 正处在急停锁定」时才可按。
-    /// 按第一下只是预备（按钮变成红色「确认急停 / 确认归中」），4 秒内再按一下才真的执行。
+    /// 急停按钮：和主窗口左边的「⛔ 锁定急停」一样——任何时候都能按，按一下立刻停。
+    /// 已急停时再按＝解除（走和侧栏「全部归中」同一个确认框）。
     /// </summary>
     private void UpdateStopButton(bool online, bool estopped, bool moving)
     {
-        bool actionable = online && (estopped || moving);
-        StopBtn.IsEnabled = actionable;
-
-        string verb = estopped ? "解除急停" : "急停";
-        if (_stopArmed && actionable && !estopped) verb = "确认急停";
-        StopBtn.Content = verb;
-        StopBtn.Tag = _stopArmed ? "armed" : "stop";
+        StopBtn.IsEnabled = true;
+        StopBtn.Content = estopped ? "解除急停" : "急停";
+        StopBtn.Tag = "stop";
 
         string hotkey = "";
         try
@@ -416,70 +408,34 @@ public partial class CompactOverlay : Window
         }
         catch { /* 热键读不到不影响按钮本身 */ }
 
-        StopBtn.ToolTip = !online
-            ? "设备没连上，先到「设置」页连上设备"
-            : estopped
-                ? "解除急停锁定：设备会重新通电、慢慢回到正中间（会先弹确认框）"
-                : !moving
-                    ? "现在没有东西在动，不用停"
-                    : hotkey.Length > 0
-                        ? $"立刻停下并锁住设备输出（要连点两次，防误触）；也可以直接按 {hotkey}"
-                        : "立刻停下并锁住设备输出（要连点两次，防误触）";
+        StopBtn.ToolTip = estopped
+            ? "解除急停锁定：设备会重新通电、慢慢回到正中间（会先弹确认框）"
+            : hotkey.Length > 0
+                ? $"立刻停下并锁住设备输出；也可以直接按 {hotkey}"
+                : "立刻停下并锁住设备输出";
     }
 
     private void StopBtn_Click(object sender, RoutedEventArgs e)
     {
         var engine = App.Engine;
-        bool estopped = engine.EmergencyStopped;
-
-        // 解除急停会让设备重新通电并动起来，必须和主窗口「全部归中」用同一条路、同一个确认框。
-        // 悬浮窗是置顶小窗，光靠"4 秒内点两下"不够 —— 双击就可能误触，而主窗口那条入口是弹框确认。
-        if (estopped)
-        {
-            _stopArmed = false;
-            if (System.Windows.MessageBox.Show(
-                    "设备处于急停锁定，归中会解除急停并重新使能输出，是否继续？",
-                    "解除急停", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
-            {
-                _lastFrame = "";
-                Refresh();
-                return;
-            }
-            _lastFrame = "";
-            engine.Home();
-            AppLogger.Info("悬浮窗：已解除急停并归中");
-            Refresh();
-            return;
-        }
-
-        if (!_stopArmed)
-        {
-            // 第一次点击只是「预备」：不给设备下任何指令
-            _stopArmed = true;
-            _stopArmedAtUtc = DateTime.UtcNow;
-            _lastFrame = "";
-            Refresh();
-            return;
-        }
-
-        // 第二次点击：真的执行急停
-        _stopArmed = false;
         _lastFrame = "";
+
+        if (engine.EmergencyStopped)
+        {
+            if (System.Windows.MessageBox.Show(
+                    LocalizationService.T("设备处于急停锁定，归中会解除急停并重新使能输出，是否继续？"),
+                    LocalizationService.T("解除急停"), MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes)
+            {
+                engine.Home();
+                AppLogger.Info("悬浮窗：已解除急停并归中");
+            }
+            Refresh();
+            return;
+        }
+
         engine.EmergencyStop();
         AppLogger.Warn("悬浮窗：已急停（全部任务取消，输出锁定）");
         Refresh();
-    }
-
-    private void BlinkStopArmIfTimedOut()
-    {
-        if (_stopArmed && (DateTime.UtcNow - _stopArmedAtUtc).TotalSeconds > 4) CancelStopArm();
-    }
-
-    private void CancelStopArm()
-    {
-        if (!_stopArmed) return;
-        _stopArmed = false;
-        _lastFrame = "";
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -671,7 +627,7 @@ public partial class CompactOverlay : Window
 
     private void PanelBtn_Click(object sender, RoutedEventArgs e)
     {
-        CancelStopArm();
+        
         _panelOpen = !_panelOpen;
         App.Settings.OverlayPanelOpen = _panelOpen;
         ApplyPanelVisibility();
@@ -693,7 +649,7 @@ public partial class CompactOverlay : Window
 
     private void PresetBtn_Click(object sender, RoutedEventArgs e)
     {
-        CancelStopArm();
+        
         if (sender is not FrameworkElement { Tag: string id } || id.Length == 0) return;
 
         App.Engine.ApplyQuickPreset(id);
@@ -748,7 +704,7 @@ public partial class CompactOverlay : Window
 
     private void ClickThroughBtn_Click(object sender, RoutedEventArgs e)
     {
-        CancelStopArm();
+        
         SetClickThrough(true);
         AppLogger.Info("悬浮窗：已开启点击穿透（撤销走托盘菜单）");
     }
@@ -882,7 +838,7 @@ public partial class CompactOverlay : Window
         if (e.LeftButton != MouseButtonState.Pressed) return;
         if (IsInteractive(e.OriginalSource as DependencyObject)) return;   // 按钮/滑杆自己处理，别顺手拖窗
 
-        CancelStopArm();      // 点别处 = 放弃「预备」
+        
         _dragging = true;
         try
         {
@@ -948,7 +904,7 @@ public partial class CompactOverlay : Window
 
     private void CloseBtn_Click(object sender, RoutedEventArgs e)
     {
-        CancelStopArm();
+        
 
         // 走 App 的统一入口：顺带把托盘菜单里的勾选状态同步好
         App.HideOverlay();

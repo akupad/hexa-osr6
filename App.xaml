@@ -746,6 +746,13 @@
                 <Setter Property="FontSize"        Value="11"/>
             </Style>
 
+            <!-- 说明小字：设置页、测试台、游戏桥共用，一律折行 -->
+            <Style x:Key="Hint" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                <Setter Property="FontSize" Value="10"/>
+                <Setter Property="Foreground" Value="{StaticResource Muted}"/>
+                <Setter Property="TextWrapping" Value="Wrap"/>
+            </Style>
+
         </ResourceDictionary>
     </Application.Resources>
 </Application>

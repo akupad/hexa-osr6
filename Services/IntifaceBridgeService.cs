@@ -30,6 +30,7 @@ public sealed class IntifaceBridgeService : IDisposable
     private CancellationTokenSource? _cts;
     private System.Timers.Timer? _tickTimer;
     private readonly Dictionary<string, RotateState> _rotateStates = new(StringComparer.OrdinalIgnoreCase);
+    private readonly AutoTwistLink _twistLink = new();
 
     // ── 动作整形（游戏指令 → 连续、立体、不超舒适档的动作）─────────────
     // 游戏每 20–50ms 发一条、常常只有一根轴、还带噪声：直接透传就是「抖 + 平」。
@@ -538,27 +539,27 @@ public sealed class IntifaceBridgeService : IDisposable
                     if (frame.Opcode == 0xA || frame.Opcode != 0x1) continue;   // 只处理文本帧
                     string json = Encoding.UTF8.GetString(frame.Payload);
                     Log("RX", $"[会话 {session.Tag}] " + (json.Length > 180 ? json[..180] + "…" : json));
-                    // 仲裁：不是当前有发言权的客户端时，只回错误、不动设备（否则两边抢同一根轴 -> 设备乱抖）。
-                    // 注意：仲裁刻意不拦停车类指令（StopDeviceCmd / StopAllDevices）——「谁都能让机器停」
-                    // 是安全语义，把停车也挡掉只会让某个客户端以为自己停了而机器还在动。别顺手补上。
+                    // 仲裁：不是当前有发言权的客户端时，驱动类指令逐条拒绝、停止类永不拦
+                    //（否则两边抢同一根轴 -> 设备乱抖）。以前按整帧 Contains 判，混在同一帧里的
+                    // StopAllDevices 会被一起丢掉 —— 「谁都能让机器停」是安全语义，停车类永不拦。
                     bool hasFloor;
                     lock (_sessionsLock) hasFloor = ReferenceEquals(_activeSession, session);
-                    if (!hasFloor && (json.Contains("LinearCmd") || json.Contains("RotateCmd") || json.Contains("VibrateCmd")
-                        || json.Contains("ScalarCmd")))
-                    {
-                        byte[] denied = Encoding.UTF8.GetBytes(
-                            "[{\"Error\":{\"Id\":0,\"ErrorMessage\":\"another client owns the device\",\"ErrorCode\":4}}]");
-                        await SendAsync(session, denied).ConfigureAwait(false);
-                        Note($"[会话 {session.Tag}] 丢弃：另一个客户端正在驱动设备（最后连上的客户端有发言权）");
-                        continue;
-                    }
+                    bool deniedAny = false;
                     long dispatchStart = Environment.TickCount64;
                     foreach (string response in IntifaceProtocol.Process(json, Mode, EnqueueAction, _cfg.GameBridgeVibrateMode,
-                        note => NoteVibrateIgnored($"[会话 {session.Tag}] 丢弃：{note}"), session.Protocol))
+                        note => NoteVibrateIgnored($"[会话 {session.Tag}] 丢弃：{note}"), session.Protocol,
+                        element =>
+                        {
+                            if (hasFloor || !IntifaceProtocol.IsDriveMessage(element)) return true;
+                            deniedAny = true;
+                            return false;
+                        }))
                     {
                         byte[] payload = Encoding.UTF8.GetBytes(response);
                         await SendAsync(session, payload).ConfigureAwait(false);
                     }
+                    if (deniedAny)
+                        Note($"[会话 {session.Tag}] 丢弃驱动指令：另一个客户端正在驱动设备（停止类指令不会被拦）");
                     long dispatchMs = Environment.TickCount64 - dispatchStart;
                     if (json.Contains("\"RequestServerInfo\"", StringComparison.Ordinal))
                     {
@@ -595,7 +596,7 @@ public sealed class IntifaceBridgeService : IDisposable
                 }
                 // 判定改用「会话表空了」：以前用计数，而 StopLocked 会把计数硬清成 0，
                 // 之后最后一个会话断开时计数变成 -1，条件永不成立 —— bridge 会永久占着直接输入控制权，
-                // 表现为「关了桥之后，声音响应/画面跟随/手动动轴都动不了」。
+                // 表现为「关了桥之后，声音响应/画面同步/手动动轴都动不了」。
                 if (lastSession)
                 {
                     _engine.ReleaseDirectInput("bridge");   // 交还控制权（声音响应可以重新接管）
@@ -673,7 +674,7 @@ public sealed class IntifaceBridgeService : IDisposable
 
         // 归中的本意是「玩完别把机器别在端点一直别着劲」，但它是一次自动机械运动，
         // 而且 Home() 会停掉当时在跑的一切。所以只在「没有别的源在动」时才归中：
-        // 否则（脚本/声音响应/画面跟随正在驱动）只保持已发的 DSTOP，不去踩别人。
+        // 否则（脚本/声音响应/画面同步正在驱动）只保持已发的 DSTOP，不去踩别人。
         string? owner = _engine.DirectInputOwner;
         if (_engine.IsRunning || _engine.ScriptPlaying
             || (owner is not null && !string.Equals(owner, "bridge", StringComparison.Ordinal)))
@@ -734,14 +735,27 @@ public sealed class IntifaceBridgeService : IDisposable
                     return Math.Clamp(linear.Position, Math.Min(lo, hi), Math.Max(lo, hi));
                 }
 
-                int duration = Math.Clamp(linear.DurationMs, BridgeMinInterpolationMs, 9999);
+                int duration = Math.Clamp(linear.DurationMs, IntifaceProtocol.MinLinearDurationMs(ShapingActive), 9999);
 
                 if (!ShapingActive)
                 {
-                    // 三个整形开关全关 = 旧行为：原样透传。
+                    // 三个整形开关全关 = 旧行为：原样透传。下限在整形全关时放宽到 10ms（节奏游戏需要「发肉」），
+                    // 60ms 是整形路径的阀；开任一整形开关时仍按 60ms 保护机械。
                     int position = Passthrough();
                     SendTCode($"{linear.Axis}{position:D4}I{duration}");
-                    LastCommand = $"直线 {linear.Axis} → {position / 100.0:P0}（{duration}ms · 原样透传）";
+                    LastCommand = $"直线 {linear.Axis} → {position / 100.0:P0}（{duration}ms · 透传）";
+                    // 自动扭转：只发 LinearCmd 的游戏也能让 R0 跟 L0 联动（近 2 秒有显式旋转则听游戏的）。
+                    if (string.Equals(linear.Axis, "L0", StringComparison.OrdinalIgnoreCase)
+                        && _cfg.AutoTwistEnabled && !_twistLink.ExplicitRotateActive(DateTime.UtcNow))
+                    {
+                        double linked = AutoTwistLink.ComputeLinked(
+                            Math.Clamp(linear.Position / 99.99, 0, 100), _cfg.AutoTwistAmplitudePercent,
+                            _cfg.LovenseRotateTopPercent, _cfg.LovenseRotateDeepPercent);
+                        int r0Lo = AxisLimit("R0", lower: true);
+                        int r0Hi = AxisLimit("R0", lower: false);
+                        int r0Raw = (int)Math.Round(Math.Clamp(linked * 99.99, Math.Min(r0Lo, r0Hi), Math.Max(r0Lo, r0Hi)));
+                        SendTCode($"R0{r0Raw:D4}I{duration}");
+                    }
                     break;
                 }
 
@@ -789,6 +803,21 @@ public sealed class IntifaceBridgeService : IDisposable
                     }
                     _shapeDriven[index] = true;
                     _shapeDrivenAt[index] = Environment.TickCount64;
+                    // 自动扭转：只发 LinearCmd 的游戏，L0 直驱时让 R0 跟着联动（近 2 秒有显式旋转则听游戏的）。
+                    if (string.Equals(linear.Axis, "L0", StringComparison.OrdinalIgnoreCase)
+                        && _cfg.AutoTwistEnabled && !_twistLink.ExplicitRotateActive(DateTime.UtcNow))
+                    {
+                        int r0Index = Array.FindIndex(ShaperAxes,
+                            axis => string.Equals(axis, "R0", StringComparison.OrdinalIgnoreCase));
+                        if (r0Index >= 0)
+                        {
+                            _shapeTarget[r0Index] = AutoTwistLink.ComputeLinked(
+                                level, _cfg.AutoTwistAmplitudePercent,
+                                _cfg.LovenseRotateTopPercent, _cfg.LovenseRotateDeepPercent);
+                            _shapeDriven[r0Index] = true;
+                            _shapeDrivenAt[r0Index] = Environment.TickCount64;
+                        }
+                    }
                 }
                 LastCommand = $"直线 {linear.Axis} → {Math.Clamp(linear.Position / 99.99, 0, 100):0}%（整形中）";
                 break;
@@ -832,6 +861,8 @@ public sealed class IntifaceBridgeService : IDisposable
             }
 
             case IntifaceProtocol.RotateAction rotate:
+                // 显式旋转命令：近 2 秒内自动扭转不插手（游戏在管 R0）。
+                _twistLink.MarkExplicitRotate(DateTime.UtcNow);
                 SetRotateState(rotate.Axis, rotate.Speed, rotate.Clockwise);
                 LastCommand = rotate.Speed <= 0.001
                     ? $"旋转 {rotate.Axis} 停止"
@@ -961,7 +992,7 @@ public sealed class IntifaceBridgeService : IDisposable
     {
         try
         {
-            var table = lower ? _cfg.AxisMin : _cfg.AxisMax;
+            var table = lower ? _cfg.EffectiveAxisMin : _cfg.EffectiveAxisMax;
             if (table is not null && table.TryGetValue(axis, out int value)) return Math.Clamp(value, 0, 9999);
             foreach ((string key, int candidate) in table ?? [])
                 if (string.Equals(key, axis, StringComparison.OrdinalIgnoreCase)) return Math.Clamp(candidate, 0, 9999);
@@ -1026,6 +1057,8 @@ public sealed class IntifaceBridgeService : IDisposable
                 foreach (string axis in rotatingAxes)
                 {
                     if (!_rotateStates.TryGetValue(axis, out RotateState? state) || state.Speed <= 0.001) continue;
+                    // 只要还在主动旋转，自动扭转就持续让位（RotateCmd 只有一条，但旋转状态机要跑很久）。
+                    _twistLink.MarkExplicitRotate(DateTime.UtcNow);
                     // 关键：旋转也夹在用户设置的轴限位里。
                     // 原来这里只夹 0–9999，等于把"轴限位"这道安全阀只装在了直线路径上：
                     // 用户把 R0 限到 2000–8000 保护机械，游戏一条 RotateCmd 就能把它转到 0。
@@ -1156,15 +1189,14 @@ public sealed class IntifaceBridgeService : IDisposable
                 // 0–100 → 该轴校准过的 [下限, 上限]。原来直接 ×99.99，两头会被夹成非线性，
                 // 用户在设置页收窄过的行程也得不到线性映射。
                 int raw = TCodeFrameFormatter.MapPosition(
-                    ShaperAxes[i], Math.Clamp(values[i], 0, 100), _cfg.AxisMin, _cfg.AxisMax);
+                    ShaperAxes[i], Math.Clamp(values[i], 0, 100), _cfg.EffectiveAxisMin, _cfg.EffectiveAxisMax);
                 if (Math.Abs(raw - _shapeSent[i]) < 1) continue;      // 没变化就不发，省串口带宽
                 _shapeSent[i] = raw;
                 _shapeValue[i] = values[i];
                 toSend.Add($"{ShaperAxes[i]}{raw:D4}I{interpolation}");
             }
         }
-        // 一拍的轴合成一行发。以前是每根轴发一行——六行里每行只有一根轴，
-        // 真机固件在这种残帧下会 panic 重启（灌流量实验 20 秒复现），必须整帧下发。
+        // 一拍的轴合成一行发，不拆成每轴一行。
         if (toSend.Count > 0) SendTCode(string.Join(' ', toSend));
     }
 
@@ -1418,14 +1450,49 @@ internal static class IntifaceProtocol
     }
 
     /// <summary>
-    /// 版本协商：一律按 v3 应答（客户端报 4 也压回 3）。
-    /// 原因：Buttplug v4 的消息层是另一套（Linear/Rotate/Scalar 全删、改 OutputCmd、握手改
-    /// ProtocolVersionMajor/Minor），本桥只实现了 v3 那一套 + v3 的 ScalarCmd。以前报 4 却回 v3 报文，
-    /// 客户端会按 v4 解析而看不到设备；压到 3 是唯一自洽的答案。
+    /// 版本协商：本桥只实现了 v3 消息层（含 v3 ScalarCmd），所以一律按 v3 应答。
+    /// 客户端请求的版本比服务端高时不回 v3 让客户端降级——Buttplug v3 Patch1 规定 ServerInfo
+    /// 「不能返回高于客户端的版本，匹配不上就应报错」，v4 更规定客户端 major 高于服务端视为
+    /// 无效连接应断连；报错由 ProcessOne 的 RequestServerInfo 分支负责（ErrorCode 1 = ERROR_INIT）。
     /// </summary>
     internal static int NegotiateMessageVersion(JsonElement requestServerInfo) => 3;
 
+    /// <summary>LinearCmd 最短插值：整形全关时 10ms（节奏游戏要「发肉」），任一整形开关打开时 60ms。</summary>
+    internal static int MinLinearDurationMs(bool shapingActive) => shapingActive ? 60 : 10;
+
     private static bool IsSingle(string mode) => mode == "single";
+
+    /// <summary>驱动类指令（会抢设备发言权）。停止类（StopDeviceCmd/StopAllDevices）与握手/扫描类不算。</summary>
+    internal static bool IsDriveMessage(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object) return false;
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            switch (property.Name)
+            {
+                case "LinearCmd":
+                case "RotateCmd":
+                case "VibrateCmd":
+                case "ScalarCmd":
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>取一条 Buttplug 消息对象里的 Id（缺省 0）。</summary>
+    private static uint MessageIdOf(JsonElement element)
+    {
+        if (element.ValueKind != JsonValueKind.Object) return 0;
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            if (property.Value.ValueKind == JsonValueKind.Object
+                && property.Value.TryGetProperty("Id", out JsonElement idElement)
+                && idElement.TryGetUInt32(out uint parsed))
+                return parsed;
+        }
+        return 0;
+    }
 
 
     /// <summary>WebSocket 握手应答（RFC 6455）。</summary>
@@ -1476,7 +1543,7 @@ internal static class IntifaceProtocol
     {
         var parts = new List<string>();
         if (!string.Equals(vibrateMode, "off", StringComparison.OrdinalIgnoreCase))
-            parts.Add("\"VibrateCmd\":[{\"FeatureDescriptor\":\"V0\",\"ActuatorType\":\"Vibrate\",\"StepCount\":100}]");
+            parts.Add("\"VibrateCmd\":[{}]");
         return parts.Count == 0 ? string.Empty : "," + string.Join(",", parts);
     }
 
@@ -1530,7 +1597,7 @@ internal static class IntifaceProtocol
     }
 
     public static List<string> Process(string json, string mode, Action<BridgeAction> onAction, string vibrateMode = "position",
-        Action<string>? onNote = null, SessionState? session = null)
+        Action<string>? onNote = null, SessionState? session = null, Func<JsonElement, bool>? messageGate = null)
     {
         var responses = new List<string>();
         try
@@ -1542,7 +1609,15 @@ internal static class IntifaceProtocol
                 foreach (JsonElement item in root.EnumerateArray())
                 {
                     // 逐条兜住：以前一条坏消息会抛到外层 catch，把同一批里后面的指令（包括 StopAllDevices）一起丢掉。
-                    try { ProcessOne(item, mode, vibrateMode, responses, onAction, onNote, session); }
+                    try
+                    {
+                        if (messageGate != null && !messageGate(item))
+                        {
+                            responses.Add($"[{{\"Error\":{{\"Id\":{MessageIdOf(item)},\"ErrorMessage\":\"another client owns the device\",\"ErrorCode\":4}}}}]");
+                            continue;
+                        }
+                        ProcessOne(item, mode, vibrateMode, responses, onAction, onNote, session);
+                    }
                     catch (Exception ex)
                     {
                         AppLogger.Warn("游戏桥单条消息处理失败（已跳过这一条）: " + ex.Message);
@@ -1552,7 +1627,14 @@ internal static class IntifaceProtocol
             }
             else if (root.ValueKind == JsonValueKind.Object)
             {
-                ProcessOne(root, mode, vibrateMode, responses, onAction, onNote, session);
+                if (messageGate != null && !messageGate(root))
+                {
+                    responses.Add($"[{{\"Error\":{{\"Id\":{MessageIdOf(root)},\"ErrorMessage\":\"another client owns the device\",\"ErrorCode\":4}}}}]");
+                }
+                else
+                {
+                    ProcessOne(root, mode, vibrateMode, responses, onAction, onNote, session);
+                }
             }
             else
             {
@@ -1593,11 +1675,24 @@ internal static class IntifaceProtocol
             {
                 case "RequestServerInfo":
                 {
-                    // 版本协商：客户端报 MessageVersion >= 4 才升到 v4（多一套 ScalarCmd），
-                    // 缺失或 < 4 一律落回 v3 —— 报 3 时的输出必须与加 ScalarCmd 之前逐字节一致。
+                    // 版本协商：客户端在 RequestServerInfo 里报 MessageVersion（v4 起改用
+                    // ProtocolVersionMajor/Minor）。请求版本 > 3 时按规范回 ERROR_INIT
+                    // （v3 Patch1：ServerInfo 匹配不上就报错；v4：客户端 major 高于服务端=无效连接），
+                    // 不能回 v3 让客户端降级。请求 <= 3 一律回 v3；v2+ ServerInfo 只含
+                    // Id/ServerName/MessageVersion/MaxPingTime（ServerMajor/Minor/Build 是 v0/v1 遗留）。
+                    int requested = value.TryGetProperty("MessageVersion", out JsonElement mv) && mv.TryGetInt32(out int requestedVersion)
+                        ? requestedVersion
+                        : value.TryGetProperty("ProtocolVersionMajor", out JsonElement pv) && pv.TryGetInt32(out int requestedMajor)
+                            ? requestedMajor
+                            : 3;
+                    if (requested > 3)
+                    {
+                        responses.Add($"[{{\"Error\":{{\"Id\":{id},\"ErrorMessage\":\"spec version mismatch: server supports up to 3\",\"ErrorCode\":1}}}}]");
+                        break;
+                    }
                     int negotiated = NegotiateMessageVersion(value);
                     if (session != null) session.MessageVersion = negotiated;
-                    responses.Add($"[{{\"ServerInfo\":{{\"Id\":{id},\"MessageVersion\":{negotiated},\"MaxPingTime\":0,\"ServerName\":\"Hexa OSR6 Bridge\",\"ServerMajorVersion\":{negotiated},\"ServerMinorVersion\":0,\"ServerBuildVersion\":0}}}}]");
+                    responses.Add($"[{{\"ServerInfo\":{{\"Id\":{id},\"ServerName\":\"Hexa OSR6 Bridge\",\"MessageVersion\":{negotiated},\"MaxPingTime\":0}}}}]");
                     break;
                 }
                 case "RequestDeviceList":
@@ -1605,9 +1700,9 @@ internal static class IntifaceProtocol
                     break;
                 case "StartScanning":
                     responses.Add($"[{{\"Ok\":{{\"Id\":{id}}}}}]");
-                    responses.Add(DeviceAddedJson(id, 0, mode, vibrateMode, session?.MessageVersion ?? 3));
+                    responses.Add(DeviceAddedJson(0, 0, mode, vibrateMode, session?.MessageVersion ?? 3));
                     // single 只呈现 1 台设备；dual 追加第 2 台。
-                    if (!IsSingle(mode)) responses.Add(DeviceAddedJson(id, 1, mode, vibrateMode, session?.MessageVersion ?? 3));
+                    if (!IsSingle(mode)) responses.Add(DeviceAddedJson(0, 1, mode, vibrateMode, session?.MessageVersion ?? 3));
                     // Buttplug v3 规定扫描结束要回 ScanningFinished（Id 用 StartScanning 的 Id）。
                     // 少这一条的后果：走"扫描"流程的客户端（Intiface Central 系、部分插件）会一直等扫描结束，永远不进驱动阶段。
                     responses.Add($"[{{\"ScanningFinished\":{{\"Id\":{id}}}}}]");

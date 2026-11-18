@@ -2,8 +2,6 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
-    <!-- 不联网做漏洞审计：NU1900 在取不到漏洞库时会变成警告，卡住发布流程的 0 警告闸门 -->
-    <NuGetAudit>false</NuGetAudit>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
@@ -19,11 +17,11 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="HelixToolkit.Wpf" Version="3.1.2" />
     <!-- 本地画面识别（Services/NsfwClassifier.cs）：只在本机推理，不联网、不上传。
-         1.30.0 = 实测可用版本（win-x64 原生 onnxruntime.dll 随包一起发布；发布后必须核对它真的在包根目录）。 -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.30.0" />
-    <PackageReference Include="NAudio" Version="3.1.0" />
-    <PackageReference Include="System.IO.Ports" Version="10.0.12" />
-    <PackageReference Include="System.Speech" Version="10.0.12" />
+         win-x64 原生 onnxruntime.dll 随包一起发布；发布后必须核对它真的在包根目录。 -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.32.0" />
+    <PackageReference Include="NAudio" Version="3.3.0" />
+    <PackageReference Include="System.IO.Ports" Version="10.0.15" />
+    <PackageReference Include="System.Speech" Version="10.0.15" />
   </ItemGroup>
   <ItemGroup>
     <None Update="Assets\icon.ico">

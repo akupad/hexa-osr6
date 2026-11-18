@@ -212,7 +212,12 @@ public partial class PlaygroundPage : Page
         switch (mode)
         {
             case 0:
-                LeftCol.Width  = new GridLength(344);
+                // 左栏按 2:3 比例随窗口放宽，但夹在 344–420 之间：既不再锁死，也不会把滑杆拉成长条
+                double content = Math.Max(width - 48, 0);
+                double left = Math.Max(344, Math.Min((content - 14) * 2.0 / 5.0, 420));
+                LeftCol.Width  = new GridLength(left);
+                LeftCol.MinWidth = 344;
+                LeftCol.MaxWidth = 420;
                 GapCol.Width   = new GridLength(14);
                 RightCol.Width = new GridLength(1, GridUnitType.Star);
                 RightCol.MinWidth = 260;
@@ -284,6 +289,14 @@ public partial class PlaygroundPage : Page
         LovenseRotateRange.LowerValue = App.Settings.LovenseRotateTopPercent;
         LovenseRotateRange.UpperValue = App.Settings.LovenseRotateDeepPercent;
         ApplyLovenseRotate();
+        LovenseLocalOnlyCheck.IsChecked = App.Settings.LovenseLocalOnly;
+        LovenseExtraRotateToyCheck.IsChecked = App.Settings.LovenseExtraRotateToy;
+        AutoTwistCheck.IsChecked = App.Settings.AutoTwistEnabled;
+        AutoTwistSlider.Value = App.Settings.AutoTwistAmplitudePercent;
+        AutoTwistCheck.Checked += (_, _) => ApplyAutoTwist();
+        AutoTwistCheck.Unchecked += (_, _) => ApplyAutoTwist();
+        AutoTwistSlider.ValueChanged += (_, _) => ApplyAutoTwist();
+        ApplyAutoTwist();
         // 拖条时让机器立刻走到那个位置（手感预览）。订阅放在初值赋值之后，免得打开页面就把设备拽走。
         LovenseRange.LowerValueChanged += (_, _) => PreviewLovenseAxis(0, LovenseRange.LowerValue);
         LovenseRange.UpperValueChanged += (_, _) => PreviewLovenseAxis(0, LovenseRange.UpperValue);
@@ -362,6 +375,13 @@ public partial class PlaygroundPage : Page
     {
         App.Settings.Save();
         LovenseBridgeService? lovense = App.Lovense;
+        if (lovense is not null)
+        {
+            lovense.LocalOnly = App.Settings.LovenseLocalOnly;
+            lovense.ExtraRotateToy = App.Settings.LovenseExtraRotateToy;
+            lovense.AutoTwistEnabled = App.Settings.AutoTwistEnabled;
+            lovense.AutoTwistAmplitudePercent = App.Settings.AutoTwistAmplitudePercent;
+        }
         lovense?.Stop();
         if (!App.Settings.LovenseBridgeEnabled) { RefreshLovenseStatus(); return; }
         lovense?.Start(App.Settings.LovenseBridgePort, LovenseBridgeService.DefaultHttpPort);
@@ -409,6 +429,38 @@ public partial class PlaygroundPage : Page
             // 立刻生效：关掉时把已经顶上来的「不限速」档摘掉，勾上时等游戏下一条指令自己挂上去。
             if (!unlimited && App.Engine.ComfortOverride is not null) App.Engine.ComfortOverride = null;
         }
+        App.Settings.Save();
+    }
+
+    private void ApplyAutoTwist()
+    {
+        if (AutoTwistCheck is null || AutoTwistSlider is null || AutoTwistText is null) return;
+        bool enabled = AutoTwistCheck.IsChecked == true;
+        double amp = Math.Clamp(AutoTwistSlider.Value, 0, 60);
+        AutoTwistText.Text = (int)Math.Round(amp) + "%";
+        App.Settings.AutoTwistEnabled = enabled;
+        App.Settings.AutoTwistAmplitudePercent = amp;
+        if (App.Lovense is not null)
+        {
+            App.Lovense.AutoTwistEnabled = enabled;
+            App.Lovense.AutoTwistAmplitudePercent = amp;
+        }
+        App.Settings.Save();
+    }
+
+    private void LovenseLocalOnly_Changed(object sender, RoutedEventArgs e)
+    {
+        if (LovenseLocalOnlyCheck is null) return;
+        App.Settings.LovenseLocalOnly = LovenseLocalOnlyCheck.IsChecked == true;
+        RestartLovenseBridge();
+    }
+
+    private void LovenseExtraRotateToy_Changed(object sender, RoutedEventArgs e)
+    {
+        if (LovenseExtraRotateToyCheck is null) return;
+        bool extra = LovenseExtraRotateToyCheck.IsChecked == true;
+        App.Settings.LovenseExtraRotateToy = extra;
+        if (App.Lovense is not null) App.Lovense.ExtraRotateToy = extra;
         App.Settings.Save();
     }
 

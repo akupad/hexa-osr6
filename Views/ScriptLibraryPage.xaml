@@ -10,7 +10,7 @@
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
                   Padding="0,14,0,20">
     <!-- MaxWidth：窗口很宽时内容不再被拉成横跨整屏的长条（正文只会更宽，不会更窄） -->
-    <Grid Margin="24,0,24,0" MaxWidth="1080"
+    <Grid Margin="24,0,24,0" MaxWidth="1440"
           MinHeight="{Binding ViewportHeight, RelativeSource={RelativeSource AncestorType=ScrollViewer}}">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>  <!-- 0 页头 -->
@@ -19,26 +19,44 @@
             <RowDefinition Height="Auto"/>  <!-- 3 页脚一行 -->
         </Grid.RowDefinitions>
 
-        <!-- ══ 0 页头：标题 + 一行说明（原来三行压成一行） ═══════════ -->
+        <!-- ══ 0 页头：标题一行、说明一行，搜索在右侧 ═══════════ -->
         <Grid Grid.Row="0" Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <TextBlock Text="📚 脚本库" FontSize="21" FontWeight="SemiBold" VerticalAlignment="Center"/>
-            <TextBlock Grid.Column="1" Margin="12,0,0,3" VerticalAlignment="Bottom"
-                       Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap"
-                       Text="库里的脚本可以直接播放（会驱动设备）；删除只删库内副本，不动原文件。编排工程要先到「脚本制作」页导出成 funscript，才会出现在下面的列表里。"/>
+            <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                <TextBlock Text="📚 脚本库" FontSize="21" FontWeight="SemiBold"/>
+                <TextBlock Margin="0,3,0,0"
+                           Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap"
+                           Text="库里的脚本可以直接播放（会驱动设备）；删除只删库内副本，不动原文件。编排工程要先到「脚本制作」页导出成 funscript，才会出现在下面的列表里。"/>
+            </StackPanel>
             <!-- 去社区找脚本：只负责把搜索页开好，不在后台抓取 —— 社区的使用条款明确禁止程序自动访问，
                  所以这里刻意不做"自动搜下"，只把你送到搜索页，剩下的点击由你自己来。 -->
-            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
-                <TextBox x:Name="CommunitySearchBox" Width="180" Height="28" FontSize="12"
-                         VerticalContentAlignment="Center" Margin="0,0,6,0"
-                         ToolTip="填视频名 / 作品名（中英文都行），点右边按钮去社区搜配套脚本"
-                         KeyDown="CommunitySearchBox_KeyDown"/>
+            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="12,0,0,0">
+                <Grid>
+                    <TextBox x:Name="CommunitySearchBox" Width="180" Height="28" FontSize="12"
+                             VerticalContentAlignment="Center"
+                             ToolTip="填视频名 / 作品名（中英文都行），点右边按钮去社区搜配套脚本"
+                             KeyDown="CommunitySearchBox_KeyDown"/>
+                    <TextBlock Text="搜社区脚本…" FontSize="12"
+                               Foreground="{StaticResource Faint}"
+                               IsHitTestVisible="False"
+                               VerticalAlignment="Center" Margin="8,0,0,0">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+                                <Setter Property="Visibility" Value="Collapsed"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Text, ElementName=CommunitySearchBox}" Value="">
+                                        <Setter Property="Visibility" Value="Visible"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
                 <Button x:Name="CommunitySearchBtn" Content="🔍 去社区搜" Height="28" FontSize="12"
-                        Padding="10,0" Style="{StaticResource BtnSecondary}" Click="CommunitySearch_Click"
+                        Margin="6,0,0,0" Padding="10,0" Style="{StaticResource BtnSecondary}" Click="CommunitySearch_Click"
                         ToolTip="在浏览器里打开社区的搜索页。不自动抓取、不自动下载 —— 社区条款禁止程序自动访问，这也保证了你的账号不会被封"/>
             </StackPanel>
         </Grid>

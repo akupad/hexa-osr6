@@ -233,14 +233,6 @@ public sealed class WebApiService : IDisposable
         // 急停优先：锁存期间只放行「急停 / 解除急停 / 只读查询」，其余写操作一律 409。
         // 外部调用永远抢不过本地急停，这是硬规矩。
         // /safety/home 放行是必须的：它是唯一的「解除急停」路径（MotionEngine.Home() 里会清 EmergencyStopped）
-        bool safetyPath = path is "/safety/estop" or "/safety/disarm" or "/safety/home";
-        if (req.HttpMethod != "GET" && !safetyPath && _engine.EmergencyStopped)
-        {
-            AppLogger.Warn($"[外部控制] {peer} 急停锁存期间拒绝写操作：{path}");
-            resp.StatusCode = 409;
-            await WriteJsonAsync(resp, new { error = "emergency stop is latched", safety = _engine.SafetyStatus });
-            return;
-        }
 
         try
         {
@@ -413,6 +405,77 @@ public sealed class WebApiService : IDisposable
             intensity = Math.Round(_engine.IntensityScale, 3),
             preset    = _engine.CurrentStroke?.Id,
             axes,
+            follow    = FollowStatus(),
+            serial    = SerialStatus(),
+        };
+    }
+
+    /// <summary>
+    /// 串口这一侧发出去没有：模拟模式下 <c>commands</c> 会一直涨、<c>last</c> 是最后一条 TCode。
+    /// 手机/外部程序问「画面在跟但设备没动」时，这一行能分清是没下发还是没接设备。
+    /// </summary>
+    private static object SerialStatus()
+    {
+        var commands = App.Serial.SimulationCommands;
+        int count = commands.Count;
+        return new
+        {
+            open = App.Serial.IsOpen,
+            port = App.Serial.PortName,
+            sim  = App.Serial.IsSimulation,
+            commands = count,
+            last = count > 0 ? commands[count - 1] : null,
+        };
+    }
+
+    /// <summary>
+    /// 画面同步此刻的状态（手机/外部程序查「为什么不动」就看这里）。
+    /// reason 和测试台卡片上写的是同一句白话：没开、没挑窗口、场景没过线、设备被别处占着……
+    /// <c>wantsDevice</c> 才是「画面确实想驱动设备」的凭据 —— 它为 true 而设备不动，问题就在下游。
+    /// </summary>
+    private static object FollowStatus()
+    {
+        ScreenWatchService? watch = ScreenWatchService.Current;
+        if (watch is null)
+            return new { enabled = false, running = false, wantsDevice = false, active = false, depth = 0.0, hz = 0.0, reason = "画面同步没开", pose = (object?)null };
+        return new
+        {
+            enabled     = true,
+            running     = watch.IsRunning,
+            wantsDevice = watch.FollowWantsDevice,
+            active      = watch.FollowActive,
+            depth       = Math.Round(watch.FollowDepth, 3),
+            hz          = Math.Round(watch.FollowHz, 2),
+            reason      = watch.FollowReason,
+            pose        = PoseStatus(watch),
+            gate        = GateStatus(watch),
+        };
+    }
+
+    /// <summary>入场闸门的判定量（见 <see cref="ScreenWatchService.FollowGateDiagnostics"/>）：跟随时掉一下就知道是哪一个门关的。
+    /// <c>blob</c> = 主体块这一拍有没有信号，<c>blobBox</c> = 它认出来的那一块（0–1 归一化）。</summary>
+    private static object GateStatus(ScreenWatchService watch)
+    {
+        var (suspect, captureFailed, failure, poseLive, blob, bx0, by0, bx1, by1) = watch.FollowGateDiagnostics;
+        return new
+        {
+            suspect, captureFailed, failure, poseLive, blob,
+            blobBox = new { x0 = bx0, y0 = by0, x1 = bx1, y1 = by1 },
+        };
+    }
+
+    /// <summary>姿态信号源的四项计数（见 <see cref="ScreenWatchService.PoseDiagnostics"/>），推理半天没信号就看它。</summary>
+    private static object PoseStatus(ScreenWatchService watch)
+    {
+        var (submit, detect, person, samples, running, depth) = watch.PoseDiagnostics;
+        return new
+        {
+            running,
+            submit,
+            detect,
+            person,
+            samples,
+            depth = double.IsFinite(depth) ? Math.Round(depth, 1) : (double?)null,
         };
     }
 
@@ -772,12 +835,12 @@ public sealed class WebApiService : IDisposable
 
 
 <script>
-let token=localStorage.getItem('helixToken')||'';
+let token=localStorage.getItem('hexaToken')||localStorage.getItem('helixToken')||'';
 document.getElementById('token').value=token;
 document.querySelectorAll('#axes').forEach(()=>{});
 const AXES=['L0','L1','L2','R0','R1','R2'];
 const PRESETS=[['gentle','轻柔'],['daily','日常'],['crazy','疯狂'],['tease','挑逗'],['heartbeat','心跳']];
-function saveToken(){token=document.getElementById('token').value.trim();localStorage.setItem('helixToken',token);}
+function saveToken(){token=document.getElementById('token').value.trim();localStorage.setItem('hexaToken',token);}
 async function api(path,opts={}){
   const headers=Object.assign({'X-Hexa-Token':token},opts.headers||{});
   const r=await fetch(path,Object.assign({},opts,{headers}));

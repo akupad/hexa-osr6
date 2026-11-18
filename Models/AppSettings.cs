@@ -25,12 +25,6 @@ public class AppSettings
     public bool PreferWired   { get; set; } = true;
     public bool SimulationMode { get; set; } = false;
 
-    /// <summary>
-    /// Ayva 网页入口（<c>ws://localhost:8581/ws</c>）：让 Ayva 系的网页遥控器直接驱动设备。
-    /// 默认关；在「测试台 → ⑤ 网页入口」里开。
-    /// </summary>
-    public bool AyvaWebSocketEnabled { get; set; } = false;
-
     /// <summary>多输出总开关：把发给设备的同一条 TCode 同时转给下面这些目标。</summary>
     public bool FanoutEnabled { get; set; } = false;
 
@@ -86,6 +80,22 @@ public class AppSettings
         { ["L0"]=0,["L1"]=0,["L2"]=0,["R0"]=0,["R1"]=0,["R2"]=0 };
     public Dictionary<string, int> AxisMax { get; set; } = new()
         { ["L0"]=9999,["L1"]=9999,["L2"]=9999,["R0"]=9999,["R1"]=9999,["R2"]=9999 };
+
+    /// <summary>轴限位总开关。默认关：关着时设备走全程，AxisMin/AxisMax 只是存着的数值。</summary>
+    public bool AxisLimitsEnabled { get; set; } = false;
+
+    private static readonly Dictionary<string, int> FullRangeMin = new()
+        { ["L0"]=0,["L1"]=0,["L2"]=0,["R0"]=0,["R1"]=0,["R2"]=0 };
+    private static readonly Dictionary<string, int> FullRangeMax = new()
+        { ["L0"]=9999,["L1"]=9999,["L2"]=9999,["R0"]=9999,["R1"]=9999,["R2"]=9999 };
+
+    /// <summary>运动输出实际用的下限：总开关关着时一律 0。只读，别往里写。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Dictionary<string, int> EffectiveAxisMin => AxisLimitsEnabled ? AxisMin : FullRangeMin;
+
+    /// <summary>运动输出实际用的上限：总开关关着时一律 9999。只读，别往里写。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Dictionary<string, int> EffectiveAxisMax => AxisLimitsEnabled ? AxisMax : FullRangeMax;
 
     // ── 手柄映射 ──────────────────────────────────────────────────────
     public GamepadConfig GamepadMap { get; set; } = new();
@@ -199,13 +209,20 @@ public class AppSettings
     /// </summary>
     public bool AudioListenOnly { get; set; } = false;
 
-    // ── 画面观察（给「游戏伴随」用的画面信号；现在只测量、不驱动设备）────
+    // ── 画面同步（给「游戏伴随」用的画面同步；现在只测量、不驱动设备）────
     /// <summary>
-    /// 「画面信号（观察模式）」开关。<b>默认关</b>：它只是盯住一个窗口算几个数字给用户看，
+    /// 「画面同步（观察模式）」开关。<b>默认关</b>：它只是盯住一个窗口算几个数字给用户看，
     /// 一条动作指令都不发（见 <see cref="Hexa.Services.ScreenWatchService"/>）。
     /// 等这个信号在真实内容上验证可用了，再考虑把它接成伴随的「动作来源」之一。
     /// </summary>
     public bool ScreenWatchEnabled { get; set; } = false;
+
+    /// <summary>
+    /// 「跟着当前窗口自动动」：开着时 <see cref="ScreenWatchTarget"/> 和 <see cref="CompanionProcess"/>
+    /// 由画面同步服务每半秒对一次前台窗口自己改（换游戏、换播放器、换浏览器都自动跟过去），
+    /// 不用用户先去下拉框里挑窗口、再回「游戏伴随」绑程序。默认关。
+    /// </summary>
+    public bool AutoFollowScreen { get; set; } = false;
 
     /// <summary>要看哪个窗口：窗口标题或进程名都行（对不上就如实报「找不到那个窗口」）。留空 = 还没选。</summary>
     public string ScreenWatchTarget { get; set; } = "";
@@ -231,9 +248,10 @@ public class AppSettings
     // ── 游戏桥的动作整形 ─────────────────────────────────────────────
     /// <summary>
     /// 游戏桥的指令平滑（去抖）：游戏每 20–50ms 发一条指令、常带噪声，直接透传就是"抖"。
-    /// 默认开，代价是少量延迟（平滑时间常数见 <see cref="BridgeSmoothingMs"/>）。
+    /// 默认关：90ms 低通会让节奏游戏「发肉」（指令被熨平）。只影响新装默认，不迁移已有设置。
+    /// 平滑时间常数见 <see cref="BridgeSmoothingMs"/>。
     /// </summary>
-    public bool BridgeInputSmoothing { get; set; } = true;
+    public bool BridgeInputSmoothing { get; set; } = false;
 
     /// <summary>平滑时间常数（毫秒，0–300，默认 90）：越大越柔、越滞后；0 = 不平滑。</summary>
     public int BridgeSmoothingMs { get; set; } = (int)BridgeMotionShaper.DefaultSmoothingMs;
@@ -343,11 +361,24 @@ public class AppSettings
     /// <summary>打开媒体时按同名自动载入脚本（默认开）。</summary>
     public bool   MediaSyncAutoLoad  { get; set; } = true;
 
-    // ══ 画面跟随（姿态推断节奏）2026-09 ══════════════════════════════════
+    // ══ 画面同步（姿态推断节奏）2026-09 ══════════════════════════════════
     /// <summary>用姿态模型定位运动主体再测节奏（比全画面稳，默认开）。</summary>
     public bool   ScreenUsePose      { get; set; } = true;
-    /// <summary>画面跟随的相位锁定强度 0–1（0 = 只跟速度，1 = 强锁相）。</summary>
+    /// <summary>画面同步的相位锁定强度 0–1（0 = 只跟速度，1 = 强锁相）。逐帧位置跟随质量门不过线时兜底路径仍用它。</summary>
     public double ScreenPhaseLock    { get; set; } = 0.35;
+    /// <summary>画面同步方向反转：画面里哪个方向算「插入」无法自动判断，默认不反转。</summary>
+    public bool   ScreenSyncInvertDirection { get; set; } = false;
+    /// <summary>画面同步倾斜跟随（近似，默认关）：2D 画面只能近似，左右较准，前后靠画面上下分量推测。</summary>
+    public bool   ScreenSyncTiltEnabled { get; set; } = false;
+
+    // ══ 姿态识别（YOLOv8n-pose，本机推理）2026-11 ═══════════════════════════
+    /// <summary>
+    /// 姿态识别总开关。<b>默认开</b>：这是「跟着画面里的动作动」的主信号源，
+    /// 关着就只能靠画面分找人，3D 片源基本不动。真的不想跑推理才关（关着时不抓帧、不加载模型，
+    /// 跟随会自动退到「主体块」那一路 —— 见 ScreenWatchService.ReadBlobGate）。
+    /// 模型文件、下载与就绪判断见 <see cref="Hexa.Services.PoseTracker"/> —— 全仓唯一的姿态引擎。
+    /// </summary>
+    public bool PoseVisionEnabled { get; set; } = true;
 
     // ══ 动作库：收藏 / 最近 / 落盘 ═════════════════════════════════════════
     /// <summary>收藏的动作 id（游玩页与动作页共用）。</summary>
@@ -417,8 +448,8 @@ public class AppSettings
     public bool   LovenseBridgeEnabled { get; set; } = false;
     /// <summary>Lovense 的 SSL 端口，官方 PC 版就是 30010，多数游戏默认也是这个。</summary>
     public int    LovenseBridgePort    { get; set; } = 30010;
-    /// <summary>报给游戏的那台玩具名。游戏按名字决定能发哪些动作：nora = 振动+转动，max = 振动+抽送。</summary>
-    public string LovenseToyName       { get; set; } = "gravity";
+    /// <summary>报给游戏的那台玩具名。游戏按名字决定能发哪些动作：nora = 振动+转动，max = 振动+抽送。默认 Solace Pro（官方文案名）。</summary>
+    public string LovenseToyName       { get; set; } = "Solace Pro";
     /// <summary>行程条左边的圆点＝「最高」：抬到这儿就到顶，防止顶出去以后被机器压住。</summary>
     public int    LovenseStrokeTopPercent { get; set; } = Services.LovenseProtocol.DefaultStrokeTopPercent;
     /// <summary>行程条右边的圆点＝「最深」：插到这儿就不再往下。</summary>
@@ -428,6 +459,14 @@ public class AppSettings
     /// <summary>扭转条的两个端点（% 行程）：R0 只在这段里来回。</summary>
     public int    LovenseRotateTopPercent  { get; set; } = Services.LovenseProtocol.DefaultRotateTopPercent;
     public int    LovenseRotateDeepPercent { get; set; } = Services.LovenseProtocol.DefaultRotateDeepPercent;
+    /// <summary>Lovense 桥只监听 127.0.0.1（true）还是 0.0.0.0（false，默认，手机/VR 能连）。</summary>
+    public bool   LovenseLocalOnly { get; set; } = false;
+    /// <summary>GetToys 额外报一台能 Rotate 的玩具（nora → R0）。默认关：多报一台玩具可能改变游戏的能力判断。</summary>
+    public bool   LovenseExtraRotateToy { get; set; } = false;
+    /// <summary>自动扭转：近 2 秒没有显式旋转命令时 R0 跟 L0 联动。默认开。</summary>
+    public bool   AutoTwistEnabled { get; set; } = true;
+    /// <summary>自动扭转幅度（%）：R0 = 50 ± amp × (L0 偏离中心的归一化量)。</summary>
+    public double AutoTwistAmplitudePercent { get; set; } = 25;
 
     /// <summary>上次编辑的动作合成文件路径（打开/保存时更新，供下次继续编辑）。</summary>
     public string LastCompositionPath { get; set; } = "";
@@ -437,10 +476,9 @@ public class AppSettings
     public bool ScriptDriveDevice { get; set; } = false;
 
     /// <summary>
-    /// 拖动「轴限位」滑块时是否实时驱动设备。默认 false（安全默认）：拖动只改限位数值。
-    /// 用户主动勾选后才持久化为 true，避免重启后意外恢复「一拖就动设备」的危险状态。
+    /// 拖动「轴限位」滑块时是否实时驱动设备。按用户要求默认 true：拖滑块直接驱动设备（开关已隐藏）。
     /// </summary>
-    public bool LimitSliderDriveDevice { get; set; } = false;
+    public bool LimitSliderDriveDevice { get; set; } = true;
 
     /// <summary>动作合成目录（.json）。空 = 默认 compositions 目录。</summary>
     public string CompositionFolder { get; set; } = "";
@@ -644,7 +682,7 @@ public class AppSettings
             ? Math.Clamp(GamepadMap.Deadzone, 0, 0.95)
             : 0.12;
 
-        // 画面观察：目标只做 Trim（窗口随时会开/关，这里不校验存在性，交给服务运行时如实反馈）；
+        // 画面同步：目标只做 Trim（窗口随时会开/关，这里不校验存在性，交给服务运行时如实反馈）；
         // 灵敏度夹在服务认可的区间里，非法值回落默认 1.0。
         ScreenWatchTarget = (ScreenWatchTarget ?? "").Trim();
         ScreenWatchSensitivity = double.IsFinite(ScreenWatchSensitivity)
@@ -722,7 +760,7 @@ public class AppSettings
             if (string.IsNullOrWhiteSpace(profile.Mode)) profile.Mode = "organic_flow";
         }
 
-        // ── 媒体同步 / 画面跟随 / AI / 日志（2026-09 新增，全部要清洗）──────────
+        // ── 媒体同步 / 画面同步 / AI / 日志（2026-09 新增，全部要清洗）──────────
         string rawPlayer = (MediaSyncPlayer ?? "").Trim().ToLowerInvariant();
         MediaSyncPlayer = rawPlayer switch
         {
@@ -800,6 +838,9 @@ public class AppSettings
             Services.LovenseProtocol.StrokeWindow(LovenseRotateTopPercent, LovenseRotateDeepPercent);
         LovenseRotateTopPercent = (int)Math.Round(rotateTop);
         LovenseRotateDeepPercent = (int)Math.Round(rotateDeep);
+        AutoTwistAmplitudePercent = double.IsFinite(AutoTwistAmplitudePercent)
+            ? Math.Clamp(AutoTwistAmplitudePercent, 0, 60)
+            : 25;
         WindowWidth = double.IsFinite(WindowWidth) ? Math.Clamp(WindowWidth, 900, 4096) : 1280;
         WindowHeight = double.IsFinite(WindowHeight) ? Math.Clamp(WindowHeight, 600, 2160) : 800;
         if (!double.IsFinite(WindowLeft) || WindowLeft < -10000) WindowLeft = -1;
@@ -834,6 +875,7 @@ public class AppSettings
         // 外部控制接口：关着的时候不记「允许局域网」，避免下次一开就意外暴露
         if (!WebApiEnabled) WebApiAllowLan = false;
         ApiToken = (ApiToken ?? "").Trim();
+        // "helix-local" 是改名前版本写死的弱默认 token，遇到就换成随机值；改了就认不出旧配置。
         if (ApiToken.Length is < 24 or > 128 || ApiToken == "helix-local")
             ApiToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
 

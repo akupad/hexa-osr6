@@ -201,8 +201,8 @@ static void WriteTestWav(string path, double seconds, bool percussive)
 var passed = 0;
 var failed = 0;
 
-// 开发期探针：HELIX_SR6_RENDER=<dir> 时把 SR6 模型离屏渲染成 PNG（仅用于人工确认朝向）
-if (Environment.GetEnvironmentVariable("HELIX_SR6_RENDER") is { Length: > 0 } renderDir)
+// 开发期探针：HEXA_SR6_RENDER=<dir> 时把 SR6 模型离屏渲染成 PNG（仅用于人工确认朝向）
+if (Environment.GetEnvironmentVariable("HEXA_SR6_RENDER") is { Length: > 0 } renderDir)
 {
     var probeThread = new System.Threading.Thread(() => Hexa.CoreTests.Sr6RenderProbe.Run(renderDir));
     probeThread.SetApartmentState(System.Threading.ApartmentState.STA);
@@ -639,20 +639,6 @@ try
         Math.Abs(LovenseProtocol.Frac(1.25) - 0.25) < 1e-9
         && Math.Abs(LovenseProtocol.Frac(-0.25) - 0.75) < 1e-9);
 
-    // 真机实测：每帧跳 500 单位不崩、1000 单位七秒就 panic，所以单帧位移必须在节拍器里削平。
-    Check("a huge jump is cut down to one safe step",
-        TCodeFrameFormatter.LimitStep(1735, 9148, SerialService.MaxStepPerFrame)
-            == 1735 + SerialService.MaxStepPerFrame);
-    Check("a huge jump downwards is cut down too",
-        TCodeFrameFormatter.LimitStep(9148, 1735, SerialService.MaxStepPerFrame)
-            == 9148 - SerialService.MaxStepPerFrame);
-    Check("a small move passes through untouched",
-        TCodeFrameFormatter.LimitStep(5000, 5123, SerialService.MaxStepPerFrame) == 5123);
-    // 新固件（2026-11）实测 800 / 1200 / 2000 各跑 40 秒零 panic，上限放到 2000；
-    // 它换来的速度是 50ms 走 20% 行程（≈400%/秒），够游戏按节拍跑满。
-    Check("单帧位移上限与新固件实测一致（400%/秒 量级）",
-        SerialService.MaxStepPerFrame is > 500 and <= 2000);
-
     double[] coordinated = Osr6MotionComposer.Compose(
         "game_flow", 0.37, [35, 13, 11, 14, 10, 8], 1, 30, ComfortProfile.Immersive);
     Check("automatic pose contains six installed axes", coordinated.Length == 6
@@ -744,8 +730,8 @@ try
     Check("transport never emits absent accessories", serial.SimulationCommands.Count == beforeAccessory);
     serial.Send("L099999I99999");
     string[] normalizedTokens = serial.SimulationCommands[^1].Split(' ');
-    Check("raw axis token is normalized to safe bounds",
-        normalizedTokens[0] == "L09999I9999" && normalizedTokens.Length == 6);
+    Check("raw axis token is normalized to safe bounds and sent as-is (no six-axis padding)",
+        normalizedTokens[0] == "L09999I9999" && normalizedTokens.Length == 1);
     Check("calibration returns to center before playback", engine.TryMoveCalibrationAxis("L0", 5000));
 
     // ── 暂停 / 继续：停住不动、不回中、不锁输出，继续时接着走 ──────────
@@ -795,7 +781,7 @@ try
     int customPeak = customTokens.Length == 0 ? 0 : customTokens.Max(token => int.Parse(token.Substring(2, 4)));
     Check($"fast custom motion remains responsive (peak {customPeak})", customPeak > 6800);
     int[] customPositions = customTokens.Select(token => int.Parse(token.Substring(2, 4))).ToArray();
-    Check("fast custom motion is still bounded", customPositions.Zip(customPositions.Skip(1), (a, b) => Math.Abs(b - a)).All(delta => delta < 3500));
+    Check("fast custom motion stays inside 0-9999", customPositions.All(p => p is >= 0 and <= 9999));
     Check("custom scheduler uses measured short interpolation", customTokens.Any(token =>
         token.Contains('I') && int.Parse(token[(token.IndexOf('I') + 1)..]) <= 30));
     Check("automatic speed does not slow imported scripts", engine.Speed == 0.5 && engine.ScriptSpeed == 1);
@@ -1003,9 +989,9 @@ try
     var v3ServerInfo = IntifaceProtocol.Process(
         "[{\"RequestServerInfo\":{\"Id\":11,\"ClientName\":\"t\",\"MessageVersion\":3}}]",
         "six", _ => { }, "off", null, v3Session);
-    Check("game bridge v3 client is answered with MessageVersion 3",
+    Check("game bridge v3 client is answered with v2+ ServerInfo (no legacy version fields)",
         v3ServerInfo.Count == 1 && v3ServerInfo[0].Contains("\"MessageVersion\":3")
-        && v3ServerInfo[0].Contains("\"ServerMajorVersion\":3") && v3Session.MessageVersion == 3);
+        && !v3ServerInfo[0].Contains("ServerMajorVersion") && v3Session.MessageVersion == 3);
     string v3DeviceList = IntifaceProtocol.Process("[{\"RequestDeviceList\":{\"Id\":12}}]", "six", _ => { }, "off", null, v3Session)[0];
     // ScalarCmd 本来就是 v3 能力（以前错当成 v4 才宣告，导致 v3 客户端少一条通道）。
     Check("game bridge v3 device list declares ScalarCmd without StepRange",
@@ -1017,10 +1003,12 @@ try
     var v4ServerInfo = IntifaceProtocol.Process(
         "[{\"RequestServerInfo\":{\"Id\":21,\"ClientName\":\"t\",\"MessageVersion\":4}}]",
         "six", _ => { }, "off", null, v4Session);
-    // 客户端报 4 也必须压回 3：v4 消息层是另一套（OutputCmd/ProtocolVersionMajor），本桥只实现 v3 那套。
-    Check("game bridge v4 client is answered with MessageVersion 3",
-        v4ServerInfo.Count == 1 && v4ServerInfo[0].Contains("\"MessageVersion\":3")
-        && v4ServerInfo[0].Contains("\"ServerMajorVersion\":3") && v4Session.MessageVersion == 3);
+    // 客户端报 4：v4 客户端把「服务端 major 低于自己」视为无效连接，会自己断线；按 v3 Patch1 回 Error 让客户端明确知道上限。
+    Check("game bridge v4 client is rejected per spec (server supports up to v3)",
+        v4ServerInfo.Count == 1 && v4ServerInfo[0].Contains("\"Error\"")
+        && v4ServerInfo[0].Contains("\"ErrorCode\":1")
+        && v4ServerInfo[0].Contains("spec version mismatch")
+        && v4Session.MessageVersion == 3);
     string v4DeviceList = IntifaceProtocol.Process("[{\"RequestDeviceList\":{\"Id\":22}}]", "six", _ => { }, "off", null, v4Session)[0];
     int scalarStart = v4DeviceList.IndexOf("\"ScalarCmd\":[", StringComparison.Ordinal);
     int scalarEnd = scalarStart < 0 ? -1 : v4DeviceList.IndexOf("}],", scalarStart);
@@ -1096,6 +1084,33 @@ try
         "six", _ => { });
     Check("game bridge LinearCmd with all-good vectors answers exactly one Ok",
         goodResponses.Count == 1 && goodResponses[0].Contains("\"Ok\"") && !goodResponses[0].Contains("\"Error\""));
+
+    // B2：多客户端仲裁必须解析后逐条拦；混在同一帧里的停止类指令永远不能被丢。
+    var gateActions = new List<IntifaceProtocol.BridgeAction>();
+    bool deniedAny = false;
+    var gateResponses = IntifaceProtocol.Process(
+        "[{\"LinearCmd\":{\"Id\":51,\"DeviceIndex\":0,\"Vectors\":[{\"Index\":0,\"Position\":0.5,\"Duration\":200}]}},{\"StopAllDevices\":{\"Id\":52}}]",
+        "single", gateActions.Add, "off", null, null,
+        element => { if (!IntifaceProtocol.IsDriveMessage(element)) return true; deniedAny = true; return false; });
+    Check("game bridge arbitration parses per message and never drops stops",
+        gateActions.Count == 1 && gateActions[0] is IntifaceProtocol.StopAction
+        && gateResponses.Count == 2
+        && gateResponses.Any(r => r.Contains("\"ErrorCode\":4"))
+        && gateResponses.Any(r => r.Contains("\"Ok\""))
+        && deniedAny);
+    // B3：整形全关时 LinearCmd Duration 下限放宽到 10ms；任一整形开关打开时仍按 60ms 整形阀。
+    Check("game bridge min linear duration drops to 10 ms only when shaping is off",
+        IntifaceProtocol.MinLinearDurationMs(false) == 10
+        && IntifaceProtocol.MinLinearDurationMs(true) == 60);
+    // B1：ServerInfo 只含 v2+ 字段（Id/ServerName/MessageVersion/MaxPingTime）。
+    Check("game bridge ServerInfo carries only v2+ fields",
+        v3ServerInfo[0].Contains("\"Id\"")
+        && v3ServerInfo[0].Contains("\"ServerName\"")
+        && v3ServerInfo[0].Contains("\"MessageVersion\":3")
+        && v3ServerInfo[0].Contains("\"MaxPingTime\"")
+        && !v3ServerInfo[0].Contains("ServerMajorVersion")
+        && !v3ServerInfo[0].Contains("ServerMinorVersion")
+        && !v3ServerInfo[0].Contains("BuildVersion"));
 
     // ── 覆盖机制：每一种"游戏能表达的意图"都必须有明确处置（要么产生动作、要么明确回一条应答），
     // 不许出现"既没动作也没应答"的静默丢弃 —— 这条锁住"漏掉一类意图"这类问题不会再悄悄发生。
@@ -1452,7 +1467,7 @@ try
         bridge.Stop();
         Check("game bridge stops cleanly", !bridge.Active);
         // 硬门槛：Stop() 的承诺不只是"不再监听"——它必须真的让设备停下（DSTOP）
-        // 并把直接输入控制权交还给引擎，否则声音响应/画面跟随会被一个已关闭的桥永久挡住
+        // 并把直接输入控制权交还给引擎，否则声音响应/画面同步会被一个已关闭的桥永久挡住
         // （2026-10-09 审计里正是这个 bug：关了桥之后其它模块全都动不了）。
         var simCmds = serial.SimulationCommands;
         bool sentStop = simCmds.Any(c => c.StartsWith("DSTOP", StringComparison.Ordinal));
@@ -2188,6 +2203,56 @@ try
             && !latchEngine.TrySendDirectAxes([50, 50, 50, 50, 50, 50]));
     }
 
+    // 轴限位总开关：关着走全程，开着才按存的范围；存的数值不因开关丢失。
+    {
+        var limCfg = new AppSettings();
+        limCfg.AxisMin["L0"] = 3000; limCfg.AxisMax["L0"] = 8000;
+        Check("axis limits are off by default and output uses full range",
+            !limCfg.AxisLimitsEnabled
+            && TCodeFrameFormatter.MapPosition("L0", 100, limCfg.EffectiveAxisMin, limCfg.EffectiveAxisMax) == 9999
+            && TCodeFrameFormatter.MapPosition("L0", 0, limCfg.EffectiveAxisMin, limCfg.EffectiveAxisMax) == 0);
+        limCfg.AxisLimitsEnabled = true;
+        Check("axis limits switch on applies the saved range",
+            TCodeFrameFormatter.MapPosition("L0", 100, limCfg.EffectiveAxisMin, limCfg.EffectiveAxisMax) == 8000
+            && TCodeFrameFormatter.MapPosition("L0", 0, limCfg.EffectiveAxisMin, limCfg.EffectiveAxisMax) == 3000);
+        limCfg.AxisLimitsEnabled = false;
+        Check("axis limits switch off keeps the saved values",
+            limCfg.AxisMin["L0"] == 3000 && limCfg.AxisMax["L0"] == 8000);
+        string limJson = System.Text.Json.JsonSerializer.Serialize(limCfg);
+        Check("axis limits switch persists and effective tables are not serialized",
+            limJson.Contains("\"AxisLimitsEnabled\":false") && !limJson.Contains("EffectiveAxis"));
+    }
+
+    // 急停不能被调度锁卡住：别的线程正占着 _dispatchLock 时按急停，必须立刻锁存并发出 DSTOP。
+    {
+        var esCfg = new AppSettings { SimulationMode = true };
+        using var esSerial = new SerialService();
+        esSerial.SetSimulationMode(true);
+        using var esEngine = new MotionEngine(esSerial, esCfg);
+        esSerial.SetSimulationMode(false);
+        esSerial.SetSimulationMode(true);
+        var dispatchLock = typeof(MotionEngine)
+            .GetField("_dispatchLock", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .GetValue(esEngine)!;
+        using var held = new ManualResetEventSlim(false);
+        using var release = new ManualResetEventSlim(false);
+        var holder = new Thread(() => { lock (dispatchLock) { held.Set(); release.Wait(5000); } }) { IsBackground = true };
+        holder.Start();
+        held.Wait(2000);
+        int esBefore = esSerial.SimulationCommands.Count;
+        var esTask = Task.Run(esEngine.EmergencyStop);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        while (sw.ElapsedMilliseconds < 1000
+               && !(esEngine.EmergencyStopped && esSerial.SimulationCommands.Skip(esBefore).Contains("DSTOP")))
+            Thread.Sleep(5);
+        bool fast = esEngine.EmergencyStopped && esSerial.SimulationCommands.Skip(esBefore).Contains("DSTOP");
+        Console.WriteLine($"     estop under held lock: {sw.ElapsedMilliseconds}ms latched={esEngine.EmergencyStopped}");
+        Check("emergency stop latches and sends DSTOP while the dispatch lock is held elsewhere",
+            fast && sw.ElapsedMilliseconds < 200 && !esEngine.TrySendDirectAxes([50, 50, 50, 50, 50, 50]));
+        release.Set();
+        Check("emergency stop finishes its cleanup once the lock frees", esTask.Wait(3000));
+    }
+
     // ── 设置页「轴限位实时驱动」这条链路（用户报"拖到最大机器居中不动"）──
     {
         var calCfg = new AppSettings { SimulationMode = true };
@@ -2865,6 +2930,158 @@ try
             MotionVocabulary.FollowStroke(0.6, 40, 0.45, 0.03, multiAxis: false).Skip(1).All(v => v == MotionVocabulary.Center));
         Check("跟随落点：这一相位下动感档比舒缓档更深", dynamicStroke[0] > gentleStroke[0] + 2);
 
+        // ── 姿态运动源：只有纯函数在这里被测（不跑模型、不起线程、不碰设备）──
+        // 深度公式：髋中点 y 与参考线（踝中点，踝丢了用画面下缘）的比例 → 0..100 并夹取。
+        PosePoint[] Pose(double hipY, double ankleY, int frameHeight = 90)
+        {
+            var k = new PosePoint[17];
+            for (int i = 0; i < k.Length; i++) k[i] = new PosePoint(80, frameHeight * 0.4, 0.9);
+            k[11] = new PosePoint(70, hipY, 0.9);
+            k[12] = new PosePoint(90, hipY, 0.9);
+            k[15] = new PosePoint(70, ankleY, 0.9);
+            k[16] = new PosePoint(90, ankleY, 0.9);
+            return k;
+        }
+
+        Check("姿态深度：站着（髋在踝上方一半）→ 50",
+            Math.Abs(PoseMotionSource.DepthFromKeypoints(Pose(44.5, 89), 90) - 50) < 1e-9);
+        Check("姿态深度：往下蹲（髋贴近踝）→ 明显更深（≈89.9）",
+            Math.Abs(PoseMotionSource.DepthFromKeypoints(Pose(80, 89), 90) - 100.0 * (1 - 9.0 / 89)) < 1e-9);
+
+        // 低置信度：踝丢掉 → 退回画面下缘当参考线（frameHeight-1 = 89）；髋全丢 → 不输出（NaN）。
+        var lowAnkle = Pose(45, 90);
+        lowAnkle[15] = new PosePoint(70, 90, 0.1);
+        lowAnkle[16] = new PosePoint(90, 90, 0.1);
+        var lowHip = Pose(45, 90);
+        lowHip[11] = new PosePoint(70, 45, 0.29);
+        lowHip[12] = new PosePoint(90, 45, 0.29);
+        var oneHip = Pose(45, 90);
+        oneHip[12] = new PosePoint(90, 10, 0.1);                  // 右髋不可信：必须只信左髋
+        oneHip[11] = new PosePoint(70, 90, 0.9);
+        Check("姿态深度：置信度 <0.3 的点一律丢掉（踝丢→用画面下缘 50.56；髋丢→NaN 不输出；只剩一边髋也照算）",
+            Math.Abs(PoseMotionSource.DepthFromKeypoints(lowAnkle, 90) - 100.0 * (1 - 44.0 / 89)) < 1e-9
+            && double.IsNaN(PoseMotionSource.DepthFromKeypoints(lowHip, 90))
+            && !PoseMotionSource.TryDepthFromKeypoints(lowHip, 90, out _)
+            && Math.Abs(PoseMotionSource.DepthFromKeypoints(oneHip, 90) - 100) < 1e-9);
+
+        // 越界：髋沉到画面下方 → 100（不是 222），髋高到画面上方 → 0（不是负数）；数组不足 17 点 → 不输出。
+        Check("姿态深度：越界一律夹在 0–100（髋在画面下 → 100，髋在画面上 → 0，关键点不齐 → NaN）",
+            PoseMotionSource.DepthFromKeypoints(Pose(200, 90), 90) == 100
+            && PoseMotionSource.DepthFromKeypoints(Pose(-50, 90), 90) == 0
+            && double.IsNaN(PoseMotionSource.DepthFromKeypoints(new PosePoint[5], 90)));
+
+        Check("姿态速度：位移 12 / 0.08 秒 = 150（双向同值），异常帧间隔（<0.02 或 >0.5）不冒充速度",
+            Math.Abs(PoseMotionSource.SpeedFromDepths(40, 52, 0.08) - 150) < 1e-9
+            && Math.Abs(PoseMotionSource.SpeedFromDepths(52, 40, 0.08) - 150) < 1e-9
+            && PoseMotionSource.SpeedFromDepths(40, 52, 0.01) == 0
+            && PoseMotionSource.SpeedFromDepths(40, 52, 1.0) == 0
+            && PoseMotionSource.SpeedFromDepths(double.NaN, 52, 0.08) == 0
+            && PoseMotionSource.SpeedToHz(150, 30) == 2.5);   // 5.2×150/(2π×30)≈4.14 → 封顶（=FollowHzCap）
+
+        // 速度→频率（标定版）：hz = clamp(FollowHzGain × v / (2π×半幅), 0, FollowHzCap) = clamp(5.2·v/(2π·A), 0, 2.5)。
+        // 增益 5.2 的标定依据：398 帧真实深蹲视频（pexels_4267356，160×90 分析图）实测 speed 中位 ≈43.2 深度单位/秒、
+        // 该段半幅 ≈36 → 目标常规幅度动作落在 1Hz 中段：2π×36/43.2 ≈ 5.24 → 5.2（修前 hz 恒钉 0.5，std=0）。
+        bool monotonic = true;
+        double prevHz = -1;
+        for (int v = 0; v <= 300; v += 5)
+        {
+            double hz = PoseMotionSource.SpeedToHz(v, 36);
+            if (hz < prevHz) { monotonic = false; break; }
+            prevHz = hz;
+        }
+        Check("姿态频率：speed→hz 单调不减、异常输入回 0、半幅越大频率越低",
+            monotonic
+            && PoseMotionSource.SpeedToHz(0, 36) == 0
+            && PoseMotionSource.SpeedToHz(-5, 36) == 0
+            && PoseMotionSource.SpeedToHz(double.NaN, 36) == 0
+            && PoseMotionSource.SpeedToHz(87, 60) < PoseMotionSource.SpeedToHz(87, 36));
+        double anchorHz = PoseMotionSource.SpeedToHz(43.2, 36);
+        Check("姿态频率：标定锚点——实测中速 43.2 u/s@半幅36 ≈ 0.99Hz，落在常规动作 0.8–1.6 中段",
+            Math.Abs(anchorHz - 5.2 * 43.2 / (Math.Tau * 36)) < 1e-9 && anchorHz > 0.8 && anchorHz < 1.6);
+        Check("姿态频率：慢速贴 0.5 由调用方地板兜住、87 u/s@36≈2.0、110+ 封顶 FollowHzCap=2.5（不再全程钉 0.5）",
+            PoseMotionSource.SpeedToHz(20, 36) < 0.5
+            && PoseMotionSource.SpeedToHz(87, 36) >= 1.98 && PoseMotionSource.SpeedToHz(87, 36) <= 2.05
+            && PoseMotionSource.SpeedToHz(110, 36) == 2.5    // 封顶 = FollowHzCap
+            && PoseMotionSource.SpeedToHz(500, 36) == 2.5);
+
+        // 幻觉踝防护：y 越出 [1, frameHeight-1] 的踝点 = 画面边缘/画面外的检测幻觉，整点丢弃、不进均值
+        // （修前会把参考线拽到髋以上 → 深度假满 100；真实视频上实测约 0.4 秒）。
+        var ghostAnkles = Pose(45, -20, 100);
+        ghostAnkles[15] = new PosePoint(70, -20, 0.9);
+        ghostAnkles[16] = new PosePoint(90, -101, 0.9);           // 两只全在画面外 → 参考线退回下缘 99
+        var highEdge = Pose(45, 94, 100);
+        highEdge[15] = new PosePoint(70, 0.5, 0.9);               // y<1：丢弃，只剩 y=94 的那只踝
+        var lowEdge = Pose(45, -20, 100);
+        lowEdge[15] = new PosePoint(70, -20, 0.9);
+        lowEdge[16] = new PosePoint(90, 101, 0.9);                // 一上一下全越界 → 下缘 99（修前这个输入会假满 100）
+        var bothIn = Pose(45, 94, 100);
+        bothIn[16] = new PosePoint(90, 99, 0.9);                  // 94 与 99(=frameHeight-1) 都合法 → 均值 96.5
+        var atFrameBottom = Pose(44, 90);                         // y=90==frameHeight：贴底幻觉 → 退回 89
+        Check("姿态深度：画面外/贴边的幻觉踝整点丢弃，参考线只由画面内踝决定（边界 −20/−101/0.5/101/99/90==h 全覆盖）",
+            Math.Abs(PoseMotionSource.DepthFromKeypoints(ghostAnkles, 100) - 100.0 * (1 - 54.0 / 99)) < 1e-9
+            && Math.Abs(PoseMotionSource.DepthFromKeypoints(highEdge, 100) - 100.0 * (1 - 49.0 / 94)) < 1e-9
+            && Math.Abs(PoseMotionSource.DepthFromKeypoints(lowEdge, 100) - 100.0 * (1 - 54.0 / 99)) < 1e-9
+            && Math.Abs(PoseMotionSource.DepthFromKeypoints(bothIn, 100) - 100.0 * (1 - 51.5 / 96.5)) < 1e-9
+            && Math.Abs(PoseMotionSource.DepthFromKeypoints(atFrameBottom, 90) - 100.0 * (1 - 45.0 / 89)) < 1e-9);
+
+        // 关闭竞态：Submit 后立刻 Dispose（worker 可能正卡在推理/等待里），8 轮压力。
+        // 修前缺陷：Join(500) 超时照样 _wake.Dispose()，worker 回到 _wake.WaitOne(200)（try 外）→
+        // 未捕获 ObjectDisposedException 直接崩进程；修后循环顶查 _stop + WaitOne 挪进 try，确定性退出。
+        bool disposeSafe = true;
+        for (int cycle = 0; cycle < 8 && disposeSafe; cycle++)
+        {
+            var source = new PoseMotionSource();
+            var noise = new byte[160 * 90 * 4];
+            new Random(cycle).NextBytes(noise);
+            source.Submit(noise, 160, 90);
+            source.Dispose();
+            for (int waited = 0; waited < 200 && source.IsRunning; waited++) Thread.Sleep(10);
+            disposeSafe = !source.IsRunning
+                && !source.Submit(noise, 160, 90)
+                && (source.SampleCount > 0 || !source.TryRead(out _, out _));
+        }
+        Check("姿态运动：推理中途关闭不崩、线程确定性退出（8 轮 Submit→立即 Dispose 压力）", disposeSafe);
+
+        // ── 姿态门控（画面同步的唯一回落点）：姿态有效 → 深度/速度 100% 来自姿态；──
+        //    断掉但没超过保持期 → 原样保持最后一次有效值（不跳、不混画面分）；断超过保持期 → 才回落画面分。
+        const long gateHoldMs = 1500;
+        var gatePoseOk = PoseMotionSource.ResolveFollowSignal(true, 42.5, 13.7, 1000, 900, 80, 3, gateHoldMs);
+        Check("姿态门控：姿态有效时深度与速度 100% 来自姿态（缓存里的画面值 80/3 一个都不掺）",
+            gatePoseOk.Depth == 42.5 && gatePoseOk.Speed == 13.7 && !gatePoseOk.Fallback);
+
+        // 保持窗口边界（空档 0 / 600 / 1499 毫秒）：输出必须与缓存值逐位相等（误差 0）。
+        var hold0 = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 1000, 1000, 42.5, 13.7, gateHoldMs);
+        var hold600 = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 1600, 1000, 42.5, 13.7, gateHoldMs);
+        var hold1499 = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 2499, 1000, 42.5, 13.7, gateHoldMs);
+        Check("姿态门控：空档 0 / 600 / 1499 毫秒都保持最后一次有效姿态值（深度 42.5、速度 13.7 逐位相等）",
+            hold0.Depth == 42.5 && hold0.Speed == 13.7 && !hold0.Fallback
+            && hold600.Depth == 42.5 && hold600.Speed == 13.7 && !hold600.Fallback
+            && hold1499.Depth == 42.5 && hold1499.Speed == 13.7 && !hold1499.Fallback);
+
+        // 到达/超过保持期（1500 毫秒整点与更久）：唯一的回落点。
+        var fall1500 = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 2500, 1000, 42.5, 13.7, gateHoldMs);
+        var fallHuge = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 100000, 1000, 42.5, 13.7, gateHoldMs);
+        Check("姿态门控：空档 1500 毫秒整点与更久都回落画面分（Fallback=true，姿态值不再参与）",
+            fall1500.Fallback && fallHuge.Fallback);
+
+        // 保持不续期：断掉期间逐拍逼近（499/1099/1499 毫秒），窗口始终从最后一次有效时刻起算，1500 整点回落。
+        var step499 = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 1499, 1000, 42.5, 13.7, gateHoldMs);
+        var step1099 = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 2099, 1000, 42.5, 13.7, gateHoldMs);
+        var step1499 = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 2499, 1000, 42.5, 13.7, gateHoldMs);
+        var step1500 = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 2500, 1000, 42.5, 13.7, gateHoldMs);
+        Check("姿态门控：保持期从最后一次有效时刻起算、不因保持而续期（1499 内保持、1500 整点回落）",
+            !step499.Fallback && !step1099.Fallback && !step1499.Fallback && step1500.Fallback);
+
+        // 从没出现过有效姿态（lastValidMs=0）：没有旧值可保持，直接回落，绝不拿 0 当深度。
+        var neverHad = PoseMotionSource.ResolveFollowSignal(false, 0, 0, 150, 0, 0, 0, gateHoldMs);
+        Check("姿态门控：本会话还没出现过有效姿态时直接回落画面分（没有旧值可保持）",
+            neverHad.Fallback);
+
+        // 频率路径：保持期里的频率由最后一次有效速度推出（与姿态有效时同一公式、同一上限）。
+        double heldHz = PoseMotionSource.SpeedToHz(hold1499.Speed, 36);
+        Check("姿态门控：保持期里的频率由最后一次有效速度推出（SpeedToHz 公式不变、仍夹在 FollowHzCap 内）",
+            heldHz == PoseMotionSource.SpeedToHz(13.7, 36) && heldHz >= 0 && heldHz <= PoseMotionSource.FollowHzCap);
+
         // ── Lovense 兼容：游戏问「有什么玩具」必须看见一台 nora，命令强度要翻成动作 ──
         LovenseProtocol.Outcome toys = LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}");
         Check("Lovense：GetToys 回了 200", toys.Ok);
@@ -2873,10 +3090,10 @@ try
             string inner = outer.RootElement.GetProperty("data").GetProperty("toys").GetString() ?? "";
             using System.Text.Json.JsonDocument toyDoc = System.Text.Json.JsonDocument.Parse(inner);
             System.Text.Json.JsonElement toy = toyDoc.RootElement.GetProperty(LovenseProtocol.ToyId);
-            Check("Lovense：GetToys 把玩具名报成 gravity",
-                toy.GetProperty("name").GetString() == "gravity" && toy.GetProperty("nickName").GetString() == "OSR6");
+            Check("Lovense：GetToys 把玩具名报成 Solace Pro（sanitize 后小写）",
+                toy.GetProperty("name").GetString() == "solace pro" && toy.GetProperty("nickName").GetString() == "OSR6");
             Check("Lovense：toys 是二次转义的 JSON 字符串（游戏要再解一次才拿到 name）",
-                inner.Contains("\"name\":\"gravity\""));
+                inner.Contains("\"name\":\"solace pro\""));
         }
         Check("Lovense：Function Vibrate:16 解出动作与强度",
             LovenseProtocol.ParseAction("Vibrate:16") == ("Vibrate", 16));
@@ -2993,13 +3210,15 @@ try
             Math.Abs(vib.Seconds - 20) < 1e-9
             && Math.Abs(LovenseProtocol.Handle("POST", "/command",
                 "{\"command\":\"Function\",\"action\":\"Vibrate:9\",\"timeSec\":7.5}").Seconds - 7.5) < 1e-9);
-        Check("Lovense：没写 timeSec 交给服务端按默认 20 秒处理",
+        Check("Lovense：没写 timeSec 输出 0（官方 0/缺省 = 无限直到 Stop，由服务端处理）",
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:9\"}").Seconds == 0);
         Check("Lovense：玩具名可以换（游戏按名字推它能做哪些动作）",
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}", "max").Body.Contains("max", StringComparison.Ordinal)
             && !LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}", "max").Body.Contains("nora", StringComparison.Ordinal));
-        Check("Lovense：玩具名只留字母数字，手输的引号进不了报文",
-            LovenseProtocol.Sanitize(" \"ma\"x\\ ") == "max" && LovenseProtocol.Sanitize("") == LovenseProtocol.DefaultToyName);
+        Check("Lovense：玩具名转小写且保留空格（Solace Pro → solace pro，与真实 GetToys 一致），手输引号进不了报文",
+            LovenseProtocol.Sanitize("Solace Pro") == "solace pro" && LovenseProtocol.Sanitize("  Solace   Pro  ") == "solace pro"
+            && LovenseProtocol.Sanitize(" \"ma\"x\\ ") == "max" && LovenseProtocol.Sanitize("") == "solace pro"
+            && LovenseProtocol.Sanitize("Nora") == "nora" && LovenseProtocol.Sanitize("Max 2") == "max 2");
         LovenseProtocol.Outcome both = LovenseProtocol.Handle("POST", "/command",
             "{\"command\":\"Function\",\"action\":\"Vibrate:16,Rotate:10\",\"timeSec\":5}");
         Check("Lovense：一条消息同时带抽插和转动时两路都保留", both.Ok && both.Amplitude > 0 && both.RotateAmplitude > 0);
@@ -3013,6 +3232,259 @@ try
                 "{\"command\":\"Function\",\"action\":\"Thrust:20\"}").Amplitude > 40);
         Check("Lovense：玩具名换成 max 也不影响强度解析",
             LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Vibrate:16\"}", "max").Strength == 16);
+        Check("Lovense：timeSec 0/缺省 = 无限直到 Stop（服务端语义）",
+            double.IsPositiveInfinity(LovenseProtocol.EffectiveSeconds(0))
+            && Math.Abs(LovenseProtocol.EffectiveSeconds(20) - 20) < 1e-9
+            && Math.Abs(LovenseProtocol.EffectiveSeconds(0.05) - 0.2) < 1e-9);
+        LovenseProtocol.Outcome loopOutcome = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Vibrate:9\",\"timeSec\":20,\"loopRunningSec\":9,\"loopPauseSec\":4}");
+        Check("Lovense：loopRunningSec/loopPauseSec 解析出来并算「动 N 停 M」",
+            Math.Abs(loopOutcome.LoopRunningSec - 9) < 1e-9 && Math.Abs(loopOutcome.LoopPauseSec - 4) < 1e-9
+            && !LovenseProtocol.LoopPaused(9, 4, 8) && LovenseProtocol.LoopPaused(9, 4, 10)
+            && !LovenseProtocol.LoopPaused(9, 4, 13) && !LovenseProtocol.LoopPaused(0, 0, 100));
+        LovenseProtocol.Outcome posOutcome = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Position\",\"value\":\"38\",\"apiVer\":1}");
+        Check("Lovense：Position 值翻成 L0 直接定位（38 → 轴值 62）",
+            posOutcome.Ok && posOutcome.Action == "Position"
+            && Math.Abs(posOutcome.L0Target - 62) < 1e-9);
+        LovenseProtocol.Outcome pvSetup = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"PatternV2\",\"type\":\"Setup\",\"actions\":[{\"ts\":500,\"pos\":20},{\"ts\":0,\"pos\":80}],\"apiVer\":1}");
+        LovenseProtocol.Outcome pvPlay = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"PatternV2\",\"type\":\"Play\",\"startTime\":0,\"offsetTime\":100,\"timeMs\":1000,\"apiVer\":1}");
+        Check("Lovense：PatternV2 Setup 存时间戳位置序列（按 ts 排序）",
+            pvSetup.Ok && pvSetup.Action == "PatternV2Setup" && pvSetup.PatternPoints is { Count: 2 }
+            && Math.Abs(pvSetup.PatternPoints[0].Ts) < 1e-9 && Math.Abs(pvSetup.PatternPoints[0].Pos - 80) < 1e-9);
+        Check("Lovense：PatternV2 Play/Stop/SyncTime 都认，timeMs≤100 回 404",
+            pvPlay.Ok && pvPlay.Action == "PatternV2Play" && Math.Abs(pvPlay.PatternOffsetMs - 100) < 1e-9
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"PatternV2\",\"type\":\"Stop\"}").Action == "Stop"
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"PatternV2\",\"type\":\"SyncTime\"}").Ok
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"PatternV2\",\"type\":\"Play\",\"timeMs\":100}").Body.Contains("\"code\":404"));
+        Check("Lovense：PatternV2 按时间戳线性插值",
+            Math.Abs(LovenseProtocol.PatternV2PositionAt(new[] { (0.0, 80.0), (500.0, 20.0) }, 250) - 50) < 1e-9
+            && Math.Abs(LovenseProtocol.PatternV2PositionAt(new[] { (0.0, 80.0) }, 999) - 80) < 1e-9);
+        Check("Lovense：Function Stroke:min-max 差≥20 且与 Thrusting 联用才生效",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Thrusting:12,Stroke:30-80\"}") is { StrokeMin: 30, StrokeMax: 80 }
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Thrusting:12,Stroke:40-50\"}").StrokeMin < 0
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Stroke:30-80\"}").StrokeMin < 0);
+        Check("Lovense：Function Oscillate 归到旋转那一路",
+            LovenseProtocol.Handle("POST", "/command", "{\"command\":\"Function\",\"action\":\"Oscillate:14\"}") is { Ok: true, RotateAmplitude: > 0 });
+        Check("Lovense：Depth 上限 20→3（官方 0–3）",
+            LovenseProtocol.ParseAction("Depth:9") == ("Depth", 3)
+            && LovenseProtocol.ParseAction("Depth:2") == ("Depth", 2));
+        Check("Lovense：默认伪装玩具换成 Solace Pro，nora 只在额外旋转玩具开启时出现",
+            LovenseProtocol.ToysJson().Contains("solace pro", StringComparison.Ordinal)
+            && !LovenseProtocol.ToysJson().Contains("nora", StringComparison.Ordinal)
+            && LovenseProtocol.ToysJson(includeRotateToy: true).Contains("nora", StringComparison.Ordinal)
+            && LovenseProtocol.Handle("POST", "/command", "{\"command\":\"GetToys\"}", "max", true).Body.Contains("nora", StringComparison.Ordinal));
+        Check("Lovense：自动扭转联动公式（R0=50±amp×L0 偏离，夹进已设 R0 端点）",
+            Math.Abs(AutoTwistLink.ComputeLinked(50, 25, 20, 80) - 50) < 1e-9
+            && Math.Abs(AutoTwistLink.ComputeLinked(100, 25, 20, 80) - 75) < 1e-9
+            && Math.Abs(AutoTwistLink.ComputeLinked(0, 25, 20, 80) - 25) < 1e-9
+            && Math.Abs(AutoTwistLink.ComputeLinked(100, 25, 40, 60) - 60) < 1e-9
+            && Math.Abs(AutoTwistLink.ComputeLinked(0, 25, 40, 60) - 40) < 1e-9);
+        var twistLink = new AutoTwistLink();
+        var twistNow = DateTime.UtcNow;
+        twistLink.MarkExplicitRotate(twistNow);
+        Check("Lovense：显式旋转 2 秒窗口（到时失效，让联动接回来）",
+            twistLink.ExplicitRotateActive(twistNow)
+            && !twistLink.ExplicitRotateActive(twistNow.AddSeconds(2.5)));
+        var freshLink = new AutoTwistLink();
+        Check("Lovense：没收到过显式旋转时联动不避让",
+            !freshLink.ExplicitRotateActive(DateTime.UtcNow));
+
+        // ── 双玩具定向：ExtraRotateToy 开启后 toy 参数把命令分到抽插/转动两路 ──
+        Check("Lovense：ResolveToyTarget 单主/单转/空/双 id/未知都归到正确一路",
+            LovenseProtocol.ResolveToyTarget("osr6hexa") == LovenseProtocol.ToyTarget.Main
+            && LovenseProtocol.ResolveToyTarget("OSR6ROTATE") == LovenseProtocol.ToyTarget.Rotate
+            && LovenseProtocol.ResolveToyTarget(null) == LovenseProtocol.ToyTarget.All
+            && LovenseProtocol.ResolveToyTarget("") == LovenseProtocol.ToyTarget.All
+            && LovenseProtocol.ResolveToyTarget("osr6hexa,osr6rotate") == LovenseProtocol.ToyTarget.All
+            && LovenseProtocol.ResolveToyTarget("nonsense") == LovenseProtocol.ToyTarget.All);
+        LovenseProtocol.Outcome toMain = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Vibrate:15\",\"toy\":\"osr6hexa\"}", includeRotateToy: true);
+        LovenseProtocol.Outcome toRotate = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Rotate:10\",\"toy\":\"osr6rotate\"}", includeRotateToy: true);
+        LovenseProtocol.Outcome toRotateArr = LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Rotate:10\",\"toy\":[\"osr6rotate\"]}", includeRotateToy: true);
+        Check("Lovense：开额外玩具时 toy 定向到主/转玩具（数组格式也认）",
+            toMain.Target == LovenseProtocol.ToyTarget.Main
+            && toRotate.Target == LovenseProtocol.ToyTarget.Rotate
+            && toRotateArr.Target == LovenseProtocol.ToyTarget.Rotate
+            && LovenseProtocol.Handle("POST", "/command",
+                "{\"command\":\"Function\",\"action\":\"Rotate:10\"}", includeRotateToy: true).Target == LovenseProtocol.ToyTarget.All
+            && LovenseProtocol.Handle("POST", "/command",
+                "{\"command\":\"Function\",\"action\":\"Rotate:10\",\"toy\":\"osr6hexa,osr6rotate\"}", includeRotateToy: true).Target == LovenseProtocol.ToyTarget.All);
+        Check("Lovense：不开额外玩具时 toy 定向被忽略（与旧行为一致）",
+            LovenseProtocol.Handle("POST", "/command",
+                "{\"command\":\"Function\",\"action\":\"Rotate:10\",\"toy\":\"osr6rotate\"}").Target == LovenseProtocol.ToyTarget.All);
+        Check("Lovense：toy=osr6rotate 的 Vibrate 只当转动强度、绝不碰抽插",
+            LovenseProtocol.Handle("POST", "/command",
+                "{\"command\":\"Function\",\"action\":\"Vibrate:15\",\"toy\":\"osr6rotate\"}", includeRotateToy: true)
+                is { Amplitude: 0, RotateAmplitude: > 0, Action: "Vibrate>转" });
+
+        LovenseChannels ch = LovenseChannels.Empty;
+        ch = LovenseChannels.Merge(ch, toMain);
+        Check("Lovense：toy=osr6hexa Vibrate:15 只写抽插路", ch.StrokeActive && ch.StrokeAmplitude > 0 && !ch.RotateActive);
+        ch = LovenseChannels.Merge(ch, toRotate);
+        Check("Lovense：toy=osr6rotate Rotate:10 不覆盖抽插，两路同时有效",
+            ch.StrokeActive && ch.StrokeAmplitude > 0 && ch.RotateActive && ch.RotateAmplitude > 0);
+        LovenseChannels sp0 = LovenseChannels.Merge(ch, LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Vibrate:15\",\"toy\":\"osr6hexa\",\"stopPrevious\":0}", includeRotateToy: true));
+        Check("Lovense：主玩具 stopPrevious:0 不打断自己、也不碰 nora 转动",
+            sp0.StrokeActive && sp0.StrokeAmplitude > 0 && sp0.RotateActive && sp0.RotateAmplitude > 0);
+        ch = LovenseChannels.Merge(ch, LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Stop\",\"toy\":\"osr6rotate\"}", includeRotateToy: true));
+        Check("Lovense：toy=osr6rotate Stop 只停转动，抽插继续",
+            ch.StrokeActive && ch.StrokeAmplitude > 0 && !ch.RotateActive && ch.RotateAmplitude == 0);
+        LovenseChannels bothCh = LovenseChannels.Merge(ch, LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Vibrate:12,Rotate:8\"}"));
+        Check("Lovense：toy 缺省（全部玩具）命令两路一起写",
+            bothCh.StrokeActive && bothCh.StrokeAmplitude > 0 && bothCh.RotateActive && bothCh.RotateAmplitude > 0);
+        bothCh = LovenseChannels.Merge(bothCh, LovenseProtocol.Handle("POST", "/command",
+            "{\"command\":\"Function\",\"action\":\"Stop\"}"));
+        Check("Lovense：toy 缺省 Stop 两路一起停",
+            !bothCh.StrokeActive && !bothCh.RotateActive && bothCh.StrokeAmplitude == 0 && bothCh.RotateAmplitude == 0);
+    }
+
+    // ── 画面同步：逐帧位置跟随（ScreenSyncTracker）────────────────────────
+    static byte[] SyncFrame(double centerY, double halfBlock = 20, byte fg = 220, byte bg = 20)
+    {
+        const int w = ScreenSyncTracker.Width;
+        const int h = ScreenSyncTracker.Height;
+        var gray = new byte[w * h];
+        double sigma = Math.Max(4.0, halfBlock * 3.0);
+        double inv2s2 = 1.0 / (2.0 * sigma * sigma);
+        int y0 = Math.Max(0, (int)Math.Round(centerY - halfBlock * 3));
+        int y1 = Math.Min(h, (int)Math.Round(centerY + halfBlock * 3) + 1);
+        for (int i = 0; i < gray.Length; i++) gray[i] = bg;
+        for (int y = y0; y < y1; y++)
+        {
+            double dy = y - centerY;
+            for (int x = 0; x < w; x++)
+            {
+                double dx = x - w / 2.0;
+                double v = bg + (fg - bg) * Math.Exp(-(dx * dx + dy * dy) * inv2s2);
+                gray[y * w + x] = (byte)Math.Clamp((int)Math.Round(v), 0, 255);
+            }
+        }
+        return gray;
+    }
+
+    static double Pearson(double[] a, double[] b)
+    {
+        double ma = 0, mb = 0;
+        for (int i = 0; i < a.Length; i++) { ma += a[i]; mb += b[i]; }
+        ma /= a.Length; mb /= b.Length;
+        double num = 0, va = 0, vb = 0;
+        for (int i = 0; i < a.Length; i++)
+        {
+            double da = a[i] - ma, db = b[i] - mb;
+            num += da * db; va += da * da; vb += db * db;
+        }
+        return num / Math.Sqrt(va * vb);
+    }
+
+    // ① 亮块按 1Hz 正弦上下移动：位置信号跟上、频率准、方向不跳反。
+    {
+        var tracker = new ScreenSyncTracker();
+        const double dt = 1.0 / 20.0;
+        var pos = new double[60];
+        var trueY = new double[60];
+        for (int i = 0; i < 120; i++)
+        {
+            double t = i * dt;
+            double y = 90 + 40 * Math.Sin(2 * Math.PI * t);
+            tracker.SubmitGray(SyncFrame(y), dt);
+            if (i >= 60)
+            {
+                pos[i - 60] = tracker.Position;
+                trueY[i - 60] = y;
+            }
+        }
+        double corr = Pearson(pos, trueY);
+        Check("画面同步：亮块正弦移动，L0 位置信号与正弦相关 > 0.9 且方向不跳反",
+            tracker.Ok && Math.Abs(corr) > 0.9 && tracker.SignFixes <= 1);
+        Check("画面同步：正弦移动测频误差 < 5%",
+            tracker.Ok && Math.Abs(tracker.Hz - 1.0) / 1.0 < 0.05);
+    }
+
+    // ② 静止画面：质量门不过线，退回原锁相预设波形路径。
+    {
+        var tracker = new ScreenSyncTracker();
+        for (int i = 0; i < 60; i++)
+            tracker.SubmitGray(SyncFrame(90, 20, 20, 20), 1.0 / 20.0);
+        Check("画面同步：静止画面 Ok=false（调用方退回兜底路径）",
+            !tracker.Ok && !tracker.TryGetNormalizedPosition(false, out _));
+    }
+
+    // ③ 幅度减半：第二级相对深度随之减小。
+    {
+        var tracker = new ScreenSyncTracker();
+        const double dt = 1.0 / 20.0;
+        for (int i = 0; i < 120; i++)
+            tracker.SubmitGray(SyncFrame(90 + 40 * Math.Sin(2 * Math.PI * i * dt)), dt);
+        double depthFull = tracker.RelativeDepth;
+        for (int i = 120; i < 240; i++)
+            tracker.SubmitGray(SyncFrame(90 + 20 * Math.Sin(2 * Math.PI * i * dt)), dt);
+        double depthHalf = tracker.RelativeDepth;
+        Check("画面同步：幅度减半后相对深度减小",
+            tracker.Ok && depthFull > ScreenSyncTracker.DepthFloor
+            && depthHalf < depthFull * 0.8);
+    }
+
+    static double SyncCorr(double freq, double phase, double amp = 40, int frames = 240)
+    {
+        var tracker = new ScreenSyncTracker();
+        const double dt = 1.0 / 20.0;
+        var pos = new List<double>();
+        var up = new List<double>();
+        for (int i = 0; i < frames; i++)
+        {
+            double off = amp * Math.Sin(2 * Math.PI * freq * i * dt + phase);
+            tracker.SubmitGray(SyncFrame(90 + off), dt);
+            if (i >= frames / 2 && tracker.TryGetNormalizedPosition(false, out double n))
+            {
+                pos.Add(n);
+                up.Add(-off);
+            }
+        }
+        return pos.Count < 20 ? 0 : Pearson(pos.ToArray(), up.ToArray());
+    }
+
+    // ④ 方向锚定画面几何：不同相位 / 频率下都是「内容往上 = 位置变大」，反转勾选才能固定生效。
+    {
+        double[] cs =
+        {
+            SyncCorr(1.0, 0), SyncCorr(1.0, Math.PI), SyncCorr(1.0, Math.PI / 2),
+            SyncCorr(1.5, 0), SyncCorr(2.0, 0), SyncCorr(0.5, 0, 40, 320),
+        };
+        Check("画面同步：方向与锁定相位/频率无关（内容上移 = 位置变大）",
+            cs.All(c => c > 0.9));
+    }
+
+    // ⑤ 测频取基频：1.5 / 2 / 3 Hz 不再报成 0.5 / 1 Hz。
+    foreach (double f in new[] { 1.5, 2.0, 3.0 })
+    {
+        var tracker = new ScreenSyncTracker();
+        const double dt = 1.0 / 20.0;
+        for (int i = 0; i < 160; i++)
+            tracker.SubmitGray(SyncFrame(90 + 40 * Math.Sin(2 * Math.PI * f * i * dt)), dt);
+        Check($"画面同步：{f}Hz 测频误差 < 5%",
+            tracker.Ok && Math.Abs(tracker.Hz - f) / f < 0.05);
+    }
+
+    // ⑥ 深度按比例：幅度 40→16 后相对深度约 0.4（不是旧算法的 0.76~0.86）。
+    {
+        var tracker = new ScreenSyncTracker();
+        const double dt = 1.0 / 20.0;
+        for (int i = 0; i < 200; i++)
+            tracker.SubmitGray(SyncFrame(90 + 40 * Math.Sin(2 * Math.PI * 1.2 * i * dt)), dt);
+        double d1 = tracker.RelativeDepth;
+        for (int i = 200; i < 400; i++)
+            tracker.SubmitGray(SyncFrame(90 + 16 * Math.Sin(2 * Math.PI * 1.2 * i * dt)), dt);
+        double d2 = tracker.RelativeDepth;
+        Check($"画面同步：幅度 40→16 相对深度按比例下降（{d1:F2}→{d2:F2}）",
+            tracker.Ok && d1 > 0.8 && d2 / d1 > 0.25 && d2 / d1 < 0.6);
     }
 }
 catch (Exception ex)

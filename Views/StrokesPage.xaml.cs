@@ -159,11 +159,22 @@ public partial class StrokesPage : Page
         double pageWidth = ActualWidth > 0 ? ActualWidth : 900;      // 首次布局前给个保守值
         double avail = Math.Max(pageWidth - 48, 240);
 
-        double side = Math.Round(Math.Clamp(avail * 0.42, 200, 300));
-        if (Math.Abs(SideColumn.Width.Value - side) > 0.5) SideColumn.Width = new GridLength(side);
+        // 窄窗（含 narrow 880×760）：右栏整体移到卡片墙下面一行，卡片区独占整行，
+        // 竖向滚动条贴着页面右缘，不再浮在卡片区中间。
+        bool stacked = avail < 900;
+        double sideW = stacked ? 0 : Math.Round(Math.Clamp(avail * 0.42, 200, 300));
+        double gapW = stacked ? 0 : 12;
+
+        if (Math.Abs(SideColumn.Width.Value - sideW) > 0.5) SideColumn.Width = new GridLength(sideW);
+        if (BodyGapCol != null && Math.Abs(BodyGapCol.Width.Value - gapW) > 0.5) BodyGapCol.Width = new GridLength(gapW);
+        if (SidePanel != null)
+        {
+            Grid.SetRow(SidePanel, stacked ? 1 : 0);
+            Grid.SetColumn(SidePanel, stacked ? 0 : 2);
+        }
 
         // 20px 余量 = 竖向滚动条 8 + ScrollViewer 右侧留白 6 + 取整误差
-        double cardsAvail = Math.Max(avail - side - 12 - 20, CardMinWidth);
+        double cardsAvail = Math.Max(avail - sideW - gapW - 20, CardMinWidth);
         int cols = Math.Clamp((int)Math.Floor((cardsAvail + CardGap) / (CardMinWidth + CardGap)), 1, CardMaxCols);
         double width = Math.Max(Math.Floor(cardsAvail / cols) - CardGap - 2, 96);
 

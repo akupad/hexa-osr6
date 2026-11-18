@@ -1,0 +1,52 @@
+<Project>
+  <!-- 关键：这两个目录必须在 Sdk.props 之前设定，让编译产物落在主工程自己的 obj/bin 下。
+       如果留在 tools/PoseCheck/obj，Hexa.csproj 的默认 **/*.cs glob（只排除本目录的 obj/ 和 bin/）
+       会把 PoseCheck.AssemblyInfo.cs 一起编进主工程，报一串「特性重复 CS0579」——
+       实测就是这么炸的。放这里就被默认排除规则挡住了。 -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)..\..\obj\PoseCheck\</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)..\..\bin\PoseCheck\</BaseOutputPath>
+  </PropertyGroup>
+  <Import Project="Sdk.props" Sdk="Microsoft.NET.Sdk" />
+
+  <!-- 只用于验证 PoseTracker 的解码是否和 python 参考实现对齐，不参与主工程编译。
+       直接用 Reference 指到主工程 Release 输出的 Hexa.dll（不走 ProjectReference）：
+       WPF 的 _wpftmp 临时工程在 obj 里会留下过期 AssemblyInfo 并被再 glob 回去，
+       「引用 Hexa 的工程」会偶发 CS0579/CS0246。验证探针没必要冒这个风险，
+       顺序也就变成：先 build 主工程，再 dotnet run 本工程。 -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <UseWPF>true</UseWPF>
+    <!-- Program.cs 整段代码在 #if POSECHECK 里：主工程 Hexa.csproj 的默认 glob 会扫到这个文件，
+         但只有构建本工程时才定义这个常量，所以主工程编到的是空文件（不会多出第二个入口点）。 -->
+    <DefineConstants>$(DefineConstants);POSECHECK</DefineConstants>
+    <HexaOutput>$(MSBuildThisFileDirectory)..\..\bin\Release\net10.0-windows10.0.26100.0</HexaOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="Hexa">
+      <HintPath>$(HexaOutput)\Hexa.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <!-- 和主工程同一个版本，保证探针进程里有 x64 原生 onnxruntime.dll -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.32.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- 验收素材（bus.jpg + 参考值）跟代码一起提交，探针默认从 AppContext.BaseDirectory\assets 读：
+         dotnet run 的输出目录里没有仓库根，素材必须拷过去才跑得起来。用 Update 而不是 Include，
+         因为 SDK 的默认 None 项已经把这两个文件收进来了，再 Include 一遍会 NETSDK1022 重复项。 -->
+    <None Update="assets\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Hexa.dll 的其余依赖（CommunityToolkit.Mvvm、NAudio…）只在真被摸到时才需要：直接从主工程输出目录兜底 -->
+    <None Include="$(HexaOutput)\*.dll" Exclude="$(HexaOutput)\Hexa.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+  <Import Project="Sdk.targets" Sdk="Microsoft.NET.Sdk" />
+</Project>

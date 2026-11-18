@@ -189,7 +189,12 @@ public partial class ManualControlPage : Page
         switch (mode)
         {
             case 0:
-                LeftCol.Width = new GridLength(380);
+                // 左栏按 2:3 比例随窗口放宽，但夹在 380–460 之间：既不再锁死，也不会把六根滑杆拉成横条
+                double content = Math.Max(width - 48, 0);
+                double left = Math.Max(380, Math.Min((content - 14) * 2.0 / 5.0, 460));
+                LeftCol.Width = new GridLength(left);
+                LeftCol.MinWidth = 380;
+                LeftCol.MaxWidth = 460;
                 GapCol.Width = new GridLength(14);
                 RightCol.Width = new GridLength(1, GridUnitType.Star);
                 RightCol.MinWidth = 260;
@@ -250,7 +255,7 @@ public partial class ManualControlPage : Page
                 SmallChange = 20,      // 方向键点一下 = 20 个点，够细
                 LargeChange = 400,     // 点空白轨道 = 400 个点，不会被"点一下飞到底"吓到
                 VerticalAlignment = VerticalAlignment.Center,
-                ToolTip = "0 = 一端，9999 = 另一端，5000 = 正中间（下面那条「中」小刻度就标在中点上）",
+                ToolTip = "0 = 一端，9999 = 另一端，5000 = 正中间",
             };
             slider.ValueChanged += (_, _) => OnSliderChanged(index);
             _sliders[i] = slider;
@@ -269,20 +274,8 @@ public partial class ManualControlPage : Page
             };
             _readouts[i] = readout;
 
-            // 中点刻度：滑杆只有 0–9999 的裸数字，轨道中央那条「中」就是 5000 的位置。
-            // 单独占轨道下面一行（叠在轨道上会被滑块盖住），不吃鼠标、不参与交互。
-            var midTick = new TextBlock
-            {
-                Style = (Style)FindResource("AxisMidTick"),
-                ToolTip = "中点 5000",
-            };
-
             var sliderCell = new Grid();
-            sliderCell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            sliderCell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
-            Grid.SetRow(midTick, 1);
             sliderCell.Children.Add(slider);
-            sliderCell.Children.Add(midTick);
 
             var row = new Grid { Margin = new Thickness(0, 2, 0, 0) };
             row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -825,8 +818,7 @@ public partial class ManualControlPage : Page
         InputOwner => "本页滑杆（手动）",
         "audio" => "声音响应",
         "bridge" => "游戏桥",
-        "ayva" => "网页遥控器",
-        "screen" => "画面跟随",
+        "screen" => "画面同步",
         _ => owner,
     };
 

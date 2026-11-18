@@ -7,7 +7,7 @@
          页头 / 工具条 / 设备提示都是 Auto 行，卡片墙和右栏吃剩下的高度。
          工具条里的分类、搜索、速度、播放全部用 WrapPanel 排 —— 宽度不够时换行，不会被裁掉。
          右栏宽度和卡片宽度由 code-behind 按窗口实算（SideColumn / _cardWidth），不写死像素。 -->
-    <Grid Margin="24,16,24,24">
+    <Grid Margin="24,16,24,24" MaxWidth="1440" HorizontalAlignment="Stretch">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>  <!-- 0 页头 -->
             <RowDefinition Height="Auto"/>  <!-- 1 工具条：分类 / 搜索 / 速度 / 播放 -->
@@ -113,19 +113,23 @@
 
         <!-- ══ 3 主体：左＝动作卡片墙，右＝3D 预览 + 选中动作详情 ═════════ -->
         <Grid Grid.Row="3">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" MinWidth="120"/>
-                <ColumnDefinition Width="12"/>
+                <ColumnDefinition x:Name="BodyGapCol" Width="12"/>
                 <ColumnDefinition x:Name="SideColumn" Width="264"/>
             </Grid.ColumnDefinitions>
 
-            <ScrollViewer x:Name="CardScroll" Grid.Column="0" VerticalScrollBarVisibility="Auto"
+            <ScrollViewer x:Name="CardScroll" Grid.Row="0" Grid.Column="0" VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled">
                 <!-- 右边留 6px：竖向滚动条出现时不至于贴着卡片（滚动条本身 8px 由 code-behind 预留） -->
                 <WrapPanel x:Name="CardPanel" Margin="0,0,6,8"/>
             </ScrollViewer>
 
-            <Grid Grid.Column="2">
+            <Grid x:Name="SidePanel" Grid.Row="0" Grid.Column="2">
                 <Grid.RowDefinitions>
                     <!-- 预览与详情按比例分配高度；上下限都放低，窗口压到最小时也不会把详情挤出屏幕 -->
                     <RowDefinition Height="2*" MinHeight="120"/>

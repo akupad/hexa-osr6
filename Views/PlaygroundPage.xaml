@@ -6,7 +6,7 @@
       Background="{StaticResource Bg}" Title="游玩">
     <ScrollViewer VerticalScrollBarVisibility="Auto">
         <!-- 最大化时限制内容宽度并居中：否则滑块会拉成横跨整屏的长条，右侧/底部大片空白 -->
-        <StackPanel Margin="24,18,24,26" MaxWidth="1280" HorizontalAlignment="Stretch">
+        <StackPanel Margin="24,16,24,24" MaxWidth="1440" HorizontalAlignment="Stretch">
 
             <!-- 标题 -->
             <TextBlock Text="🎮 游玩" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,3"/>
@@ -102,11 +102,46 @@
                               Checked="LovenseUnlimited_Changed" Unchecked="LovenseUnlimited_Changed"
                               ToolTip="勾上＝游戏发什么就跑什么，不再按舒缓/沉浸/动感削速度；不勾＝按你选的档位限速"/>
 
+                    <Grid Margin="0,4,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="LovenseLocalOnlyCheck" Content="仅本机连接（127.0.0.1）"
+                                  FontSize="11" VerticalAlignment="Center"
+                                  Checked="LovenseLocalOnly_Changed" Unchecked="LovenseLocalOnly_Changed"
+                                  ToolTip="默认关（0.0.0.0，手机/VR 能连）。勾上后只监听 127.0.0.1，手机端会连不上"/>
+                        <CheckBox x:Name="LovenseExtraRotateToyCheck" Grid.Column="1" Content="额外报一个会旋转的玩具（nora → R0）"
+                                  FontSize="11" VerticalAlignment="Center" Margin="16,0,0,0"
+                                  Checked="LovenseExtraRotateToy_Changed" Unchecked="LovenseExtraRotateToy_Changed"
+                                  ToolTip="让游戏也发 Rotate。默认关：多报一台玩具可能改变游戏的能力判断"/>
+                    </Grid>
+
+                    <Grid Margin="0,2,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <CheckBox x:Name="AutoTwistCheck" Content="自动扭转（R0 跟 L0 联动）" FontSize="11"
+                                  VerticalAlignment="Center"
+                                  ToolTip="近 2 秒没有显式旋转命令时，R0 跟着 L0 走：插入转一边、拔出转回"/>
+                        <TextBlock Grid.Column="1" Text="幅度" FontSize="11" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="12,0,8,0"/>
+                        <Slider x:Name="AutoTwistSlider" Grid.Column="2" Minimum="0" Maximum="60" SmallChange="1"
+                                Value="25" VerticalAlignment="Center" 
+                                ToolTip="联动幅度：R0 = 50 ± 幅度 × (L0 偏离中心的比例)，再夹进上面旋转条的两端"/>
+                        <TextBlock x:Name="AutoTwistText" Grid.Column="3" Text="25%" FontSize="11" FontFamily="Consolas"
+                                   Foreground="{StaticResource Muted}" MinWidth="40" TextAlignment="Right"
+                                   VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </Grid>
+
                     <TextBlock x:Name="LovenseLiveText" Text="现在 L0 — · R0 —" FontSize="11" FontFamily="Consolas"
-                               Foreground="{StaticResource Accent}" Margin="0,6,0,0"/>
+                               Foreground="{StaticResource Accent}" Margin="0,3,0,0"/>
 
                     <TextBlock x:Name="LovenseAddressText" Text="" FontSize="11" Foreground="{StaticResource Muted}"
-                               Margin="0,4,0,0" TextWrapping="Wrap" LineHeight="17"/>
+                               Margin="0,2,0,0" TextWrapping="Wrap" LineHeight="17"/>
                 </StackPanel>
             </Border>
 
@@ -164,9 +199,9 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition x:Name="LeftCol" Width="344"/>
+                    <ColumnDefinition x:Name="LeftCol" Width="2*" MinWidth="344" MaxWidth="420"/>
                     <ColumnDefinition x:Name="GapCol" Width="14"/>
-                    <ColumnDefinition x:Name="RightCol" Width="*" MinWidth="260"/>
+                    <ColumnDefinition x:Name="RightCol" Width="3*" MinWidth="260"/>
                 </Grid.ColumnDefinitions>
 
                 <!-- 左列：自动模式 + 游戏手柄 -->

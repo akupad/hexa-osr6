@@ -41,7 +41,7 @@
     </Page.Resources>
     <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
         <!-- 标题固定在最上面，卡片按窗口宽度分栏（宽=两栏、窄=一栏，见 code-behind）。 -->
-        <StackPanel Margin="20,16,20,24" HorizontalAlignment="Stretch">
+        <StackPanel Margin="24,16,24,24" HorizontalAlignment="Stretch">
             <!-- 标题和界面语言并排一行：语言是全局偏好，改完立刻对当前窗口生效
                  （见 LanguageCombo_SelectionChanged），不需要重启；两个选项各自用本语言书写。
                  它以前单独占一整行，只为了放一个 150 宽的下拉，白吃 40px 高度。 -->
@@ -69,7 +69,7 @@
         <!-- 宽窗口两栏、窄窗口一栏（见 code-behind ApplySettingsLayout）：设置页卡片多、
              每张都不到 520px 宽，单列限宽在 1280 窗口下左右各空 380px 而且要滚很久。
              分两栏后每栏约 570px，滑杆/按钮照样不超过 420px 的横条红线。 -->
-        <Grid x:Name="SettingsColumns" MaxWidth="1160" HorizontalAlignment="Stretch">
+        <Grid x:Name="SettingsColumns" MaxWidth="1440" HorizontalAlignment="Stretch">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition x:Name="SettingsLeftCol" Width="1*"/>
                 <ColumnDefinition x:Name="SettingsGapCol" Width="16"/>
@@ -98,17 +98,31 @@
                             </StackPanel>
                         </Grid>
 
-                        <!-- 模拟设备状态条：仅当 Serial.IsSimulation=true 时显示（Visibility 由 code-behind 控制）。
-                             设置页已按用户要求移除「模拟设备」开关，所以这是退出模拟的唯一入口。 -->
-                        <Border x:Name="SimulationBanner" Visibility="Collapsed"
-                                Background="{StaticResource WarningSoft}"
-                                BorderBrush="{StaticResource Warning}" BorderThickness="1"
-                                CornerRadius="6" Padding="10,8" Margin="0,0,0,12"
-                                Cursor="Hand" ToolTip="退出模拟设备，回到真实串口连接"
-                                MouseLeftButtonUp="ExitSimulation_Click">
-                            <TextBlock Text="当前是模拟设备（未连接真实硬件）· 点这里退出模拟"
-                                       FontSize="12" FontWeight="SemiBold"
-                                       Foreground="{StaticResource Warning}" TextWrapping="Wrap"/>
+                        <!-- 模拟设备开关（从测试台 ④ 卡片搬到串口区）：设备没插也能试所有玩法，指令只记录不发设备。
+                             常显一格，不再是「只在模拟时出现」的状态条 —— 进入/退出都在这一个按钮上。 -->
+                        <Border x:Name="SimulationPanel"
+                                Background="{StaticResource Surface}"
+                                BorderBrush="{StaticResource Border}" BorderThickness="1"
+                                CornerRadius="6" Padding="10,8" Margin="0,0,0,12">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,10,0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="SimStatusText" Text="没在模拟：走的是真实串口"
+                                               FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                                    <TextBlock x:Name="SimHintText" Text="设备没插也能试所有玩法，指令只记录不发设备。"
+                                               Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                    <TextBlock x:Name="SimCountText" Text="还没记录到指令"
+                                               Style="{StaticResource Hint}" Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <Button x:Name="SimToggleBtn" Grid.Column="1" Content="进入模拟设备"
+                                        Style="{StaticResource BtnSecondary}" Width="120" Height="32"
+                                        VerticalAlignment="Center" Click="SimToggle_Click"
+                                        ToolTip="设备没插也能试所有玩法，指令只记录不发设备"/>
+                            </Grid>
                         </Border>
 
                         <Grid Margin="0,0,0,8">
@@ -126,7 +140,7 @@
                                  （SelectionBoxItem 拿到的是整个对象，会显示 record 的 ToString 并撑破布局），
                                  所以这里用 ItemTemplate 同时管住下拉项和选择框。 -->
                             <ComboBox x:Name="PortCombo" Grid.Column="1" FontSize="12"
-                                  MaxWidth="420" HorizontalAlignment="Left">
+                                  MinWidth="240" MaxWidth="420" HorizontalAlignment="Left">
                                 <ComboBox.ItemTemplate>
                                     <DataTemplate>
                                         <TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis"/>
@@ -136,7 +150,7 @@
                             <TextBlock Grid.Row="1" Text="备用通道" FontSize="12" Foreground="{StaticResource Muted}"
                                        VerticalAlignment="Center" Margin="0,8,10,0"/>
                             <ComboBox x:Name="FallbackPortCombo" Grid.Row="1" Grid.Column="1" FontSize="12"
-                                  MaxWidth="420" HorizontalAlignment="Left"
+                                  MinWidth="240" MaxWidth="420" HorizontalAlignment="Left"
                                       Margin="0,8,0,0" ToolTip="主通道连不上时自动改连这个口，可以留空">
                                 <ComboBox.ItemTemplate>
                                     <DataTemplate>
@@ -180,7 +194,7 @@
                 </Border>
 
                 <!-- ══ 2. 轴限位（默认收起：默认值就是全程 0–9999，不需要限位的用户不该被它占一屏）════ -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
                         <Button x:Name="LimitsFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
@@ -201,6 +215,11 @@
                         <StackPanel x:Name="LimitsFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
                         <TextBlock Text="限定每个轴能走的最大范围，六个轴都生效、所有页面共用。范围收得越小，机器能到的位置越靠中间。"
                                    Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
+
+                        <CheckBox x:Name="AxisLimitsEnabledCheck" Content="启用轴限位" FontSize="13" FontWeight="SemiBold"
+                                  Margin="0,0,0,4" ToolTip="关着时设备走全程，下面的范围只是存着；勾上才按范围限制"/>
+                        <TextBlock x:Name="AxisLimitsEnabledText" FontSize="11" Foreground="{StaticResource Muted}"
+                                   TextWrapping="Wrap" Margin="0,0,0,10"/>
 
                         <!-- 安全闸：默认不勾选，拖动限位只改数值；勾选后才实时驱动设备。
                              勾选后整块变红（颜色由 code-behind 换），避免用户忘了自己开过。 -->
@@ -295,7 +314,7 @@
                 <!-- 固件设置（进阶）：TCodeESP32 的 #setting / $save / #restart 串口命令。
                      默认收起 —— 舵机零点这类改错会让机器反向或顶死，属于"知道自己在干什么再用"；
                      而且只有固件支持这套协议才可用（读不到列表就直说，不假装能改）。 -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
                         <Button x:Name="FirmwareFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
@@ -353,7 +372,7 @@
                 </Border>
 
                 <!-- 日志查看 -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
@@ -384,11 +403,11 @@
                         </Grid>
                         <CheckBox x:Name="AutoRefreshLogCheck" Content="自动刷新（每 2 秒，排查问题时开着更方便）"
                                   FontSize="11" Margin="0,0,0,8"/>
-                        <!-- 隐私开关：默认关。关着时「画面观察」的日志只写进程名（chrome (标题已隐藏)），
+                        <!-- 隐私开关：默认关。关着时「画面同步」的日志只写进程名（chrome (标题已隐藏)），
                              因为窗口标题会暴露用户在看什么。改动立即写进设置，下次开始观察时生效。 -->
                         <CheckBox x:Name="LogWindowTitlesCheck" Content="日志里记录窗口标题（默认关：标题会暴露你在看什么）"
                                   FontSize="11" Margin="0,0,0,8"
-                                  ToolTip="关着的时候，日志只记进程名，例如「画面观察已启动：chrome (标题已隐藏)」；下次开始「画面观察」时生效"/>
+                                  ToolTip="关着的时候，日志只记进程名，例如「画面同步已启动：chrome (标题已隐藏)」；下次开始「画面同步」时生效"/>
                         <!-- 折行显示：日志行很长，横向滚动才能看全的后半段以前是要滚的。 -->
                         <ListBox x:Name="LogList" Height="130"
                                  Background="{StaticResource Surface}" BorderBrush="{StaticResource Border}"
@@ -449,7 +468,7 @@
                 </Border>
 
                 <!-- ══ 4. 全局热键 ═════════════════════════════════════════ -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
                         <Grid Margin="0,0,0,6">
                             <Grid.ColumnDefinitions>
@@ -472,7 +491,7 @@
                 </Border>
 
                 <!-- ══ 5. AI 助手 ══════════════════════════════════════════ -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
                         <TextBlock Text="🤖 AI 助手（API Key）" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,4"/>
                         <TextBlock Text="填好这三项，「AI 助手」页就能对话并让它控制设备。三个都留空 = AI 功能关闭。这串字符只存在本机，不会上传，也不会写进代码。"
@@ -518,7 +537,7 @@
                 </Border>
 
                 <!-- ══ 分组：其它设置 ══════════════════════════════════════ -->
-                <Grid Margin="0,18,0,8">
+                <Grid Margin="0,16,0,8">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="*"/>
@@ -529,7 +548,7 @@
                 </Grid>
 
                 <!-- 存储位置 -->
-                <Border Style="{StaticResource Card}">
+                <Border Style="{StaticResource Card}" Margin="0,8,0,0">
                     <StackPanel>
                         <Button x:Name="StorageFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
@@ -604,7 +623,7 @@
                 </Border>
 
                 <!-- 外部程序控制接口（默认关闭；给脚本/别的软件用的 HTTP 插座） -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -653,8 +672,20 @@
                     </StackPanel>
                 </Border>
 
+                <!-- 姿态识别（YOLO）已搬到 实验台 → 画面同步（2026-11）：这里只留一行指引，免得回设置页找不着 -->
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Text="🧍 姿态识别（YOLO）已移到「实验台 → 画面同步」。"
+                                   FontSize="12" VerticalAlignment="Center"/>
+                        <Button x:Name="PoseMovedGoBtn" Content="去实验台" Width="76" Height="26" FontSize="11"
+                                Margin="10,0,0,0" Padding="0" Style="{StaticResource BtnSecondary}"
+                                Click="PoseMovedGo_Click"
+                                ToolTip="跳到实验台页；姿态识别的开关和模型下载在「🖥 画面同步」那张卡里"/>
+                    </StackPanel>
+                </Border>
+
                 <!-- ══ 关于与维护（页面最下方） ══════════════════════════════ -->
-                <Border Style="{StaticResource Card}" Margin="0,12,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
                     <StackPanel>
                         <Button x:Name="AboutFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"

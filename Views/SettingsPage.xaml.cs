@@ -109,6 +109,7 @@ public partial class SettingsPage : Page
         WebApiLanCheck.Checked       += (_, _) => { _vm.WebApiAllowLan = true;  UpdateWebApiUi(); };
         WebApiLanCheck.Unchecked     += (_, _) => { _vm.WebApiAllowLan = false; UpdateWebApiUi(); };
         UpdateWebApiUi();
+
         UpdatePortState();
         InitLanguageSetting();
         Focusable = true;
@@ -126,8 +127,15 @@ public partial class SettingsPage : Page
             RestoreLimitHint();
         };
 
-        // 限位实时驱动安全闸：默认未勾选 = 只改限位数值，绝不发串口指令。
-        _liveLimitDriveEnabled = App.Settings.LimitSliderDriveDevice;
+        AxisLimitsEnabledCheck.IsChecked = App.Settings.AxisLimitsEnabled;
+        AxisLimitsEnabledCheck.Checked += (_, _) => SetAxisLimitsEnabled(true);
+        AxisLimitsEnabledCheck.Unchecked += (_, _) => SetAxisLimitsEnabled(false);
+        UpdateAxisLimitsEnabledText();
+
+        // 限位实时驱动：按用户要求常开，开关面板隐藏。
+        App.Settings.LimitSliderDriveDevice = true;      // 拖限位滑块直接驱动设备，不再要先勾一下
+        _liveLimitDriveEnabled = true;
+        LimitDriveGatePanel.Visibility = Visibility.Collapsed;
         LiveLimitDriveCheck.IsChecked = _liveLimitDriveEnabled;
         LiveLimitDriveCheck.Checked += (_, _) =>
         {
@@ -198,7 +206,7 @@ public partial class SettingsPage : Page
             UpdateFirmwareSummary();
             RefreshPortHogs();
             UpdateOverlayStatus();
-            UpdateSimulationBanner();
+            UpdateSimulatorPanel();
             RefreshFoldSummaries();   // 折叠块的摘要在显示时就填好（以前只在点标题后才填）
         };
 
@@ -448,7 +456,7 @@ public partial class SettingsPage : Page
     // ── 日志查看 ────────────────────────────────────────────────────
     /// <summary>
     /// 「日志里记不记窗口标题」（默认关＝只记进程名）。回填在挂事件之前，
-    /// 所以回填本身不会触发保存；改动立即落盘，下次开始「画面观察」时生效。
+    /// 所以回填本身不会触发保存；改动立即落盘，下次开始「画面同步」时生效。
     /// </summary>
     private void InitLogSettings()
     {
@@ -770,7 +778,7 @@ public partial class SettingsPage : Page
         StatusLabel.Text = _vm.ConnectionStatus;
         StatusLabel.ToolTip = _vm.ConnectionStatus;   // 文字被截断时鼠标停一下能看全
         UpdateConnectButton();
-        UpdateSimulationBanner();
+        UpdateSimulatorPanel();
         RefreshPortHogs();
     }
 
@@ -843,6 +851,23 @@ public partial class SettingsPage : Page
         UpdateStorageSummary();
     }
 
+    private void SetAxisLimitsEnabled(bool enabled)
+    {
+        if (App.Settings.AxisLimitsEnabled == enabled) return;
+        App.Settings.AxisLimitsEnabled = enabled;
+        SaveSettingsOrWarn("轴限位开关");
+        UpdateAxisLimitsEnabledText();
+        UpdateLimitsSummary();
+    }
+
+    private void UpdateAxisLimitsEnabledText()
+    {
+        if (AxisLimitsEnabledText is null) return;
+        AxisLimitsEnabledText.Text = App.Settings.AxisLimitsEnabled
+            ? "已开：所有动作都只在下面的范围里走（马上生效）。"
+            : "已关：设备走全程，下面的范围只是先存着，勾上才生效。点「保存限位」会自动打开。";
+    }
+
     private void UpdateLimitsSummary()
     {
         if (LimitsFoldSummary is null) return;
@@ -856,8 +881,9 @@ public partial class SettingsPage : Page
             if (min != 0 || max != 9999) allFull = false;
             parts.Add($"{axis} {min}–{max}");
         }
-        string drive = App.Settings.LimitSliderDriveDevice ? "    ⚠ 拖动即驱动设备：已开" : "";
-        LimitsFoldSummary.Text = (allFull ? "六轴都是全程 0–9999（不限位）" : string.Join(" · ", parts)) + drive;
+        string drive = "";
+        string range = allFull ? "六轴都是全程 0–9999" : string.Join(" · ", parts);
+        LimitsFoldSummary.Text = (cfg.AxisLimitsEnabled ? "已开 · " + range : "已关（走全程）· 存着 " + range) + drive;
     }
 
     private void FirmwareFold_Click(object sender, RoutedEventArgs e)
@@ -1154,17 +1180,31 @@ public partial class SettingsPage : Page
     }
 
     /// <summary>
-    /// 「模拟设备」状态条：只在 Serial.IsSimulation=true 时显示。
-    /// 设置页已按用户要求移除模拟开关，所以这是 settings.json 里 SimulationMode=true 时唯一的退出入口。
+    /// 「模拟设备」那一格（串口区）：当前状态 + 已记录指令数 + 按钮文案（进入 / 退出）。
+    /// 这一格是从测试台 ④ 卡片搬来的；进入/退出都走 SettingsViewModel（内部就是 SerialService + AppSettings 那套调用）。
     /// </summary>
-    private void UpdateSimulationBanner() =>
-        SimulationBanner.Visibility = App.Serial.IsSimulation ? Visibility.Visible : Visibility.Collapsed;
-
-    /// <summary>点「模拟设备」状态条：退出模拟（复用 SettingsViewModel.ExitSimulation 的既有逻辑）。</summary>
-    private void ExitSimulation_Click(object sender, MouseButtonEventArgs e)
+    private void UpdateSimulatorPanel()
     {
-        if (!_vm.ExitSimulation()) SaveSettingsOrWarn("退出模拟设备");
-        UpdateStatus();
+        bool sim = App.Serial.IsSimulation;
+        SimStatusText.Text = sim
+            ? "模拟中：Hexa 以为连着一台设备，指令只记录、不下发，机器不会动"
+            : (App.Serial.IsOpen ? $"没在模拟：已连接 {App.Serial.PortName}" : "没在模拟：走的是真实串口");
+        SimStatusText.Foreground = (Brush)FindResource(sim ? "Accent" : "Muted");
+        SimToggleBtn.Content = sim ? "退出模拟设备" : "进入模拟设备";
+
+        int count = App.Serial.SimulationCommands.Count;
+        SimCountText.Text = count == 0 ? "还没记录到指令" : $"已记录 {count} 条指令";
+    }
+
+    /// <summary>进入/退出模拟设备：没插设备也能把整条链路走一遍（指令只记录、不下发）。</summary>
+    private void SimToggle_Click(object sender, RoutedEventArgs e)
+    {
+        // 退出走 ExitSimulation（勾了「启动时自动连接」就顺手去连真机），进入走 EnterSimulation（真串口先断开）。
+        bool saved = App.Serial.IsSimulation
+            ? _vm.ExitSimulation()
+            : _vm.EnterSimulation();
+        if (!saved) SaveSettingsOrWarn(App.Serial.IsSimulation ? "进入模拟设备" : "退出模拟设备");
+        UpdateStatus();       // 连接状态行 + 断开/连接按钮 + 这一格
         UpdatePortState();
     }
 
@@ -1500,6 +1540,13 @@ public partial class SettingsPage : Page
         WebApiStatusText.Text = "已换新令牌，旧的立刻失效 —— 正在用的外部程序要跟着改，否则会被拒绝（403）。";
     }
 
+    /// <summary>姿态识别（YOLO）卡已搬到「实验台 → 画面同步」（2026-11）：这里只留一行指引 + 跳转按钮。</summary>
+    private void PoseMovedGo_Click(object sender, RoutedEventArgs e)
+    {
+        if (System.Windows.Application.Current?.MainWindow is MainWindow win)
+            win.NavigateTo("testlab");
+    }
+
     private void ScriptFolderReset_Click(object sender, RoutedEventArgs e) =>
         ApplyStorageFolder("", scriptFolder: true);
 
@@ -1640,6 +1687,9 @@ public partial class SettingsPage : Page
         _vm.R0Min = (int)Math.Round(_limitSliders[3].LowerValue); _vm.R1Min = (int)Math.Round(_limitSliders[4].LowerValue); _vm.R2Min = (int)Math.Round(_limitSliders[5].LowerValue);
         _vm.L0Max = (int)Math.Round(_limitSliders[0].UpperValue); _vm.L1Max = (int)Math.Round(_limitSliders[1].UpperValue); _vm.L2Max = (int)Math.Round(_limitSliders[2].UpperValue);
         _vm.R0Max = (int)Math.Round(_limitSliders[3].UpperValue); _vm.R1Max = (int)Math.Round(_limitSliders[4].UpperValue); _vm.R2Max = (int)Math.Round(_limitSliders[5].UpperValue);
+        App.Settings.AxisLimitsEnabled = true;          // 保存限位＝想用它，顺手打开总开关
+        AxisLimitsEnabledCheck.IsChecked = true;
+        UpdateAxisLimitsEnabledText();
         _vm.SaveAxisLimitsCommand.Execute(null);
         // SaveAxisLimits 现在会把 _cfg.Save() 的结果放到 LimitSaveFailed 上：
         // 失败 → 提示行变红 + 弹窗；成功 → 显示 2 秒的 ✅ 摘要。

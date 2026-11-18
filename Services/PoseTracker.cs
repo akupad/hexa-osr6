@@ -50,20 +50,35 @@ public readonly record struct PoseSubject(
     public bool IsUsable => Width >= 0.03 && Height >= 0.03;
 }
 
+/// <summary>一个人的一个关键点：<b>原图像素坐标</b>（左上角为原点）+ 置信度 0–1。</summary>
+public readonly record struct PosePoint(double X, double Y, double Confidence);
+
+/// <summary>
+/// 一次检测到的人：分数、包围盒、17 个 COCO 关键点，坐标都是<b>原图像素</b>。
+/// 分数是 sigmoid 之后的 0–1（原始头给的是 logit，<see cref="PoseTracker.Detect"/> 已经转换过）。
+/// </summary>
+public sealed record PosePerson(
+    double Score,
+    double X1, double Y1, double X2, double Y2,
+    PosePoint[] Keypoints);
+
 /// <summary>
 /// 本地姿态定位：Xenova/yolov8n-pose 的 ONNX（YOLOv8n-pose，COCO 17 关键点，约 13MB，AGPL-3.0 上游 / 模型卡 MIT）。
 ///
 /// <b>为什么需要它</b>：现在的运动量是在整幅画面上算的，镜头一晃、背景里的树叶一动，数字就上去了。
 /// 先用姿态把「人在这幅画面的哪一块」找出来，再只在这一块里算运动量与节奏，镜头晃动的干扰就小得多。
 ///
-/// <b>模型接口（2026-09 实测，别凭印象改）</b>：
+/// <b>模型接口（2026-11 实测，别凭印象改）</b>：
+///   来源 AXERA-TECH/YOLOv8-Pose 的 <c>yolov8n-pose_640x640.onnx</c>，是<b>未融合的原始头</b>
+///   （和 Xenova 那个 56×8400 的融合头不是同一种导出，别照抄旧写法）：
 ///   输入名 <c>images</c>，形状 <b>[1,3,640,640] float32</b>；预处理 = letterbox 到 640×640（补 114 灰）
 ///   + <b>只除以 255</b>（RGB，NCHW）—— 这个导出<b>没有</b> ImageNet 标准化，别照抄分类模型那套 mean/std；
-///   输出名 <c>output0</c>，形状 <b>[1,56,8400]</b>，即 8400 个候选框，每个 56 个数 =
-///   <c>[cx, cy, w, h, 置信度, 17 × (x, y, 置信度)]</c>，坐标都在 640 画布像素上、置信度<b>已经过 sigmoid</b>
-///   （实测：给一张有人的照片，最高置信度 0.88，关键点全部落在人物框内且横纵范围与框一致；
-///    给纯灰图最高 0.001、给噪声图 0.015 —— 所以 0.35 当「有没有人」的门槛是安全的）。
-///   <b>没有</b> NMS：这里只取置信度最高的那一个框，单主体场景够用，也省掉一整套后处理。
+///   输出<b>9 个张量</b> = 三层（80/40/20 格）× 三个分支：
+///     <c>(H,W,64)</c> 四边 × 16 bin 的 DFL 分布、<c>(H,W,1)</c> 置信度 logit、<c>(H,W,51)</c> 17 个关键点 × (x, y, 置信度 logit)。
+///   所以解码要自己算 DFL 的 softmax 期望再乘 stride 还原到 640 坐标（<see cref="Decode"/>）；关键点的置信度
+///   也<b>要自己过 sigmoid</b>。这套解码已和 python 参考实现对齐：bus.jpg 上 bbox 与 17 点误差 &lt; 0.4px，
+///   逐项比对见 <c>tools/PoseCheck</c>。真人照片最高框分 0.88、纯灰 0.001、噪声 0.015 —— 0.35 当门槛是安全的。
+///   <b>没有</b> NMS：只取分数最高的那一个框，单主体场景够用，也省掉一整套后处理。
 ///
 /// <b>四条硬规矩（改这个类的人请一并守住）</b>：
 /// ① <b>绝不偷偷下载</b>：<see cref="DownloadAsync"/> 只在用户点了界面上的「下载姿态模型」并确认之后才会被调用。
@@ -87,11 +102,20 @@ public static class PoseTracker
     /// <summary>至少要有这么多关键点才认为「定位到了」——少于 6 个说明只露了个头或误检。</summary>
     public const int MinValidKeypoints = 6;
 
-    /// <summary>每个候选框的长度：4 框 + 1 置信度 + 17 × 3 关键点。</summary>
-    private const int Attributes = 5 + KeypointCount * 3;      // = 56
+    /// <summary>三层检测头：(格子边长, stride)。80×8 + 40×16 + 20×32 覆盖 8–640 像素的人。</summary>
+    private static readonly (int Size, int Stride)[] Levels = [(80, 8), (40, 16), (20, 32)];
+
+    /// <summary>边框分支的通道数：四条边 × 16 个 DFL bin。</summary>
+    private const int DflChannels = 16 * 4;
+
+    /// <summary>关键点分支的通道数：17 × (x, y, 置信度 logit)。</summary>
+    private const int KeypointChannels = KeypointCount * 3;
 
     /// <summary>「画面里有个人」的门槛（实测：纯灰 0.001、噪声 0.015、真人照片 0.88）。</summary>
     private const float PersonConfidence = 0.35f;
+
+    /// <summary>letterbox 补边色 114 的浮点值（按字节预处理时没有 GDI 帮忙刷底，自己填）。</summary>
+    private const float PadValue = 114f / 255f;
 
     /// <summary>单个关键点的置信度门槛：低于它的点不参与包围盒（遮挡/出画的手脚会被排掉）。</summary>
     private const float KeypointConfidence = 0.30f;
@@ -119,11 +143,11 @@ public static class PoseTracker
     };
 
     // ── 模型文件 ──────────────────────────────────────────────────────
-    private const string HubRepo = "Xenova/yolov8n-pose";
-    private const string HubPath = "onnx/model.onnx";
-    private const string LocalFileName = "yolov8n-pose.onnx";
-    /// <summary>实测的精确字节数（curl 下下来就是这么多），下载校验用它。</summary>
-    private const long ExpectedBytes = 13_484_153L;
+    private const string ModelRepo = "AXERA-TECH/YOLOv8-Pose";
+    private const string HubFileName = "yolov8n-pose_640x640.onnx";
+    private const string LocalFileName = "yolov8n-pose_640.onnx";
+    /// <summary>实测的精确字节数（下下来就是这么多），下载校验用它。</summary>
+    private const long ExpectedBytes = 13_231_214L;
     /// <summary>完整性下限：小于它一律当成半截文件。</summary>
     private const long MinCompleteBytes = 12L * 1024 * 1024;
 
@@ -139,8 +163,8 @@ public static class PoseTracker
     public static string ModelPath => Path.Combine(ModelFolder, LocalFileName);
 
     private static string PartPath => ModelPath + ".part";
-    private static string Mirror => $"https://hf-mirror.com/{HubRepo}/resolve/main/{HubPath}";
-    private static string Official => $"https://huggingface.co/{HubRepo}/resolve/main/{HubPath}";
+    private static string Mirror => $"https://hf-mirror.com/{ModelRepo}/resolve/main/{HubFileName}";
+    private static string Official => $"https://huggingface.co/{ModelRepo}/resolve/main/{HubFileName}";
 
     // ── 状态（抓帧线程 / 姿态线程 / 界面线程都读，一律走 Volatile）─────
     private static readonly Lock Gate = new();            // 会话的创建/释放（慢操作）
@@ -151,7 +175,6 @@ public static class PoseTracker
     private static InferenceSession? _session;
     private static DenseTensor<float>? _tensor;
     private static string _inputName = "images";
-    private static string _outputName = "output0";
 
     private static string _loadError = "";        // 加载/推理失败原因（空 = 没失败过）
     private static bool _loadFailed;              // 试过且失败了：不再每次重试
@@ -195,7 +218,7 @@ public static class PoseTracker
             string over = Volatile.Read(ref _statusOverride);
             if (over.Length > 0) return over;
             if (IsReady) return $"姿态模型已加载（{SizeText}）";
-            if (IsInstalled) return $"姿态模型已下载（{SizeText}），开启观察后自动加载";
+            if (IsInstalled) return $"姿态模型已下载（{SizeText}），开启同步后自动加载";
             return $"没下载姿态模型（{SizeText}，点「下载姿态模型」）";
         }
     }
@@ -396,7 +419,43 @@ public static class PoseTracker
         subject = default;
         if (canvas is null || canvas.Width != InputSize || canvas.Height != InputSize) return false;
 
-        lock (InferenceGate)     // 同一时刻只允许一次推理：会话和张量都是复用的
+        LetterboxMap local = map;                       // in 参数不能被 lambda 捕获，先拷一份
+        PosePerson? person = InferWithGuard(() => FillInputFromCanvas(canvas), PersonConfidence);
+        return person is not null && TryBuildSubject(person.Keypoints, local, out subject);
+    }
+
+    /// <summary>
+    /// 直接在 BGRA32 像素上跑一帧，返回分数最高的那个人（坐标是<b>原图像素</b>）；画面里没人则 null。
+    ///
+    /// 和 <see cref="TryLocate"/> 的差别只有预处理：这边吃 raw 像素、自己做双线性 letterbox
+    /// （抓帧线程手上已经有一块 160×90 的 BGRA，不必再倒一手 GDI）；会话、解码、失败处理完全是同一套，
+    /// 所以两个入口永远不可能各跑一份模型。
+    /// </summary>
+    /// <param name="bgra">BGRA32 像素（屏幕抓帧直接就是这个格式）。</param>
+    /// <param name="minScore">「画面里有个人」的门槛，默认 <see cref="PersonConfidence"/>。</param>
+    public static PosePerson? Detect(byte[] bgra, int width, int height, float minScore = PersonConfidence)
+    {
+        if (bgra is null || width <= 0 || height <= 0 || bgra.LongLength < (long)width * height * 4) return null;
+
+        FitBox box = FitBox.Fit(width, height);
+        PosePerson? person = InferWithGuard(() => FillInputFromBytes(bgra, width, height, box), minScore);
+        if (person is null) return null;
+
+        var points = new PosePoint[person.Keypoints.Length];
+        for (int i = 0; i < points.Length; i++) points[i] = Unletterbox(person.Keypoints[i], box);
+        return new PosePerson(person.Score,
+            UnletterboxX(person.X1, box), UnletterboxY(person.Y1, box),
+            UnletterboxX(person.X2, box), UnletterboxY(person.Y2, box), points);
+    }
+
+    /// <summary>
+    /// 所有推理的唯一入口：拿会话 → 填输入 → 跑 9 个输出 → 解出分数最高的那个框。
+    /// <b>失败一律返回 null</b>（没装模型 / 模型坏了 / 推理异常），原因只记一次，绝不每帧刷日志、绝不抛给调用方。
+    /// </summary>
+    /// <param name="fillInput">把像素写进复用的 <see cref="InputBuffer"/>（两种预处理共用的唯一差别）。</param>
+    private static PosePerson? InferWithGuard(Action fillInput, float minScore)
+    {
+        lock (InferenceGate)     // 同一时刻只允许一次推理：会话和输入缓冲都是复用的
         {
             try
             {
@@ -404,24 +463,16 @@ public static class PoseTracker
                 if (session is null)
                 {
                     session = LoadSessionLocked();
-                    if (session is null) return false;    // 原因已经写在 Status 里
+                    if (session is null) return null;    // 原因已经写在 Status 里
                 }
 
-                DenseTensor<float> tensor = EnsureTensor();
                 var watch = Stopwatch.StartNew();
-                FillInput(canvas);                        // 只除以 255 → NCHW，全写进复用的 InputBuffer
+                fillInput();                             // 只除以 255 → NCHW，全写进复用的 InputBuffer
                 using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results =
-                    session.Run(new[] { NamedOnnxValue.CreateFromTensor(_inputName, tensor) }, new[] { _outputName });
+                    session.Run(new[] { NamedOnnxValue.CreateFromTensor(_inputName, EnsureTensor()) });
                 watch.Stop();
                 Interlocked.Exchange(ref _lastInferenceMs, watch.ElapsedMilliseconds);
-
-                foreach (DisposableNamedOnnxValue value in results)
-                {
-                    // ToArray() 会分配一块 1.8MB 的输出数组 —— 4 次/秒，换来的是「绝不猜 API」。
-                    // （想省掉它要先确认 DenseTensor.Buffer 这个 API，不能编译的场合不值得赌。）
-                    return Parse(value.AsTensor<float>().ToArray(), map, out subject);
-                }
-                return false;
+                return Decode(results, minScore);
             }
             catch (Exception ex)
             {
@@ -431,36 +482,100 @@ public static class PoseTracker
                     Volatile.Write(ref _loadError, DescribeInference(ex));
                     AppLogger.Warn($"姿态模型：推理失败（退回整幅画面）—— {ex.Message}");
                 }
-                return false;
+                return null;
             }
         }
     }
 
     /// <summary>
-    /// 从输出张量里挑出「最像人的那一个候选框」，把关键点换算成窗口内的相对坐标，再围出主体框。
+    /// 从 9 个输出张量里解出<b>分数最高的那一个人</b>（坐标还在 640 画布上）。
     ///
-    /// 为什么只取置信度最高的一个：模型没做 NMS，同一个人会有好几个高分框；画面里同时有两个人时，
-    /// 取最高的那个至少是稳定的（不会在两帧之间来回跳），而且这个信号的用途是「别让镜头晃动污染运动量」，
-    /// 多主体跟踪是另一个量级的工程。
+    /// <b>单目标语义</b>：这个模型的输出没做 NMS，同一个人会落在好几个相邻格点上；但这里只返回一个框，
+    /// 抑制别的框对返回值本来就没有任何影响（旧实现那圈 IoU 抑制是白算的）。所以这里只保留
+    /// 「分数比当前最高分高才解」——解出来的框唯一，语义也就唯一，还省掉了整张候选表。
+    /// 画面里有两个人时取分数高的那个：至少帧与帧之间是稳定的，而多主体跟踪是另一个量级的工程。
     /// </summary>
-    private static bool Parse(ReadOnlySpan<float> data, in LetterboxMap map, out PoseSubject subject)
+    private static PosePerson? Decode(IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results, float minScore)
+    {
+        PosePerson? best = null;
+        foreach ((int size, int stride) in Levels)
+        {
+            // 原始头的三层各出三个张量：按（格子边长, 通道数）认出这一组。
+            Tensor<float>? dfl = null, cls = null, kpts = null;
+            foreach (DisposableNamedOnnxValue value in results)
+            {
+                if (value.Value is not Tensor<float> tensor || tensor.Dimensions.Length != 4) continue;
+                if (tensor.Dimensions[1] != size || tensor.Dimensions[2] != size) continue;
+                switch (tensor.Dimensions[3])
+                {
+                    case DflChannels: dfl ??= tensor; break;
+                    case 1: cls ??= tensor; break;
+                    case KeypointChannels: kpts ??= tensor; break;
+                }
+            }
+            if (dfl is null || cls is null || kpts is null) continue;   // 缺分支就跳过这一层，绝不猜布局
+
+            for (int gy = 0; gy < size; gy++)
+            {
+                for (int gx = 0; gx < size; gx++)
+                {
+                    float score = (float)Sigmoid(cls[0, gy, gx, 0]);
+                    if (score < minScore) continue;                  // 这一格不是人
+                    if (best is not null && score <= best.Score) continue;   // 不如手上那个：连 DFL 都不算
+                    best = DecodeOne(dfl, kpts, gx, gy, stride, score);
+                }
+            }
+        }
+        return best;
+    }
+
+    /// <summary>解一个格点：DFL 期望 × stride 还原四条边，关键点 = (2 × 偏移 + 格点) × stride。</summary>
+    private static PosePerson DecodeOne(
+        Tensor<float> dfl, Tensor<float> kpts, int gx, int gy, int stride, double score)
+    {
+        double cx = (gx + 0.5) * stride, cy = (gy + 0.5) * stride;
+        double left = Dfl(dfl, gy, gx, 0) * stride;
+        double top = Dfl(dfl, gy, gx, 16) * stride;
+        double right = Dfl(dfl, gy, gx, 32) * stride;
+        double bottom = Dfl(dfl, gy, gx, 48) * stride;
+
+        var points = new PosePoint[KeypointCount];
+        for (int i = 0; i < KeypointCount; i++)
+        {
+            points[i] = new PosePoint(
+                (kpts[0, gy, gx, i * 3 + 0] * 2 + gx) * stride,
+                (kpts[0, gy, gx, i * 3 + 1] * 2 + gy) * stride,
+                Sigmoid(kpts[0, gy, gx, i * 3 + 2]));
+        }
+        return new PosePerson(score, cx - left, cy - top, cx + right, cy + bottom, points);
+    }
+
+    /// <summary>DFL：16 个 bin 做 softmax 后取期望（× stride 就是像素距离）。</summary>
+    private static double Dfl(Tensor<float> tensor, int gy, int gx, int offset)
+    {
+        double max = double.MinValue;
+        for (int b = 0; b < 16; b++) max = Math.Max(max, tensor[0, gy, gx, offset + b]);
+        double sum = 0, weighted = 0;
+        for (int b = 0; b < 16; b++)
+        {
+            double e = Math.Exp(tensor[0, gy, gx, offset + b] - max);
+            sum += e;
+            weighted += e * b;
+        }
+        return sum <= 0 ? 0 : weighted / sum;
+    }
+
+    private static double Sigmoid(double value) => 1.0 / (1.0 + Math.Exp(-value));
+
+    /// <summary>
+    /// 关键点（640 画布像素）→ 主体包围盒（窗口内 0–1）。只认躯干/四肢点（脸不参与，只拍到脸时框没意义），
+    /// 外扩 20% 补上手腕脚踝之外的部分，有效点少于 <see cref="MinValidKeypoints"/> 就当没定位到。
+    /// </summary>
+    private static bool TryBuildSubject(PosePoint[] keypoints, in LetterboxMap map, out PoseSubject subject)
     {
         subject = default;
-        if (data.Length < Attributes) return false;
-        int anchors = data.Length / Attributes;          // 实测 8400
-        if (anchors <= 0) return false;
+        if (keypoints is null || keypoints.Length < KeypointCount) return false;
 
-        int best = -1;
-        float bestConfidence = PersonConfidence;
-        for (int i = 0; i < anchors; i++)
-        {
-            float confidence = data[4 * anchors + i];
-            if (confidence > bestConfidence) { bestConfidence = confidence; best = i; }
-        }
-        if (best < 0) return false;                      // 这一帧里没有人
-
-        // 关键点：通道下标 = 5 + 3k + {0=x,1=y,2=置信度}，每个通道长 anchors。
-        int offset = 5 * anchors + best;
         int valid = 0;
         double sumConfidence = 0;
         double bodyMinX = double.MaxValue, bodyMinY = double.MaxValue;
@@ -470,21 +585,17 @@ public static class PoseTracker
 
         for (int k = 0; k < KeypointCount; k++)
         {
-            int at = offset + k * anchors;
-            if (at + 2 * anchors >= data.Length) break;
-            float confidence = data[at + 2 * anchors];
-            if (confidence < KeypointConfidence) continue;
-            float x = data[at];
-            float y = data[at + anchors];
-            if (!float.IsFinite(x) || !float.IsFinite(y)) continue;
+            PosePoint point = keypoints[k];
+            if (point.Confidence < KeypointConfidence) continue;
+            if (!double.IsFinite(point.X) || !double.IsFinite(point.Y)) continue;
 
             valid++;
-            sumConfidence += confidence;
-            anyMinX = Math.Min(anyMinX, x); anyMaxX = Math.Max(anyMaxX, x);
-            anyMinY = Math.Min(anyMinY, y); anyMaxY = Math.Max(anyMaxY, y);
+            sumConfidence += point.Confidence;
+            anyMinX = Math.Min(anyMinX, point.X); anyMaxX = Math.Max(anyMaxX, point.X);
+            anyMinY = Math.Min(anyMinY, point.Y); anyMaxY = Math.Max(anyMaxY, point.Y);
             if (!IsBodyKeypoint(k)) continue;
-            bodyMinX = Math.Min(bodyMinX, x); bodyMaxX = Math.Max(bodyMaxX, x);
-            bodyMinY = Math.Min(bodyMinY, y); bodyMaxY = Math.Max(bodyMaxY, y);
+            bodyMinX = Math.Min(bodyMinX, point.X); bodyMaxX = Math.Max(bodyMaxX, point.X);
+            bodyMinY = Math.Min(bodyMinY, point.Y); bodyMaxY = Math.Max(bodyMaxY, point.Y);
         }
 
         if (valid < MinValidKeypoints) return false;     // 只露了个头 / 误检：不给 ROI
@@ -532,7 +643,7 @@ public static class PoseTracker
                     GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL,
                     ExecutionMode = ExecutionMode.ORT_SEQUENTIAL,
                     // 640×640 比分类模型大得多，多给几个核；但**不占满** ——
-                    // 抓帧（13fps）、识别模型、串口通信都要留核，画面跟随绝不能把设备通信饿死。
+                    // 抓帧（13fps）、识别模型、串口通信都要留核，画面同步绝不能把设备通信饿死。
                     IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount - 2, 1, 6),
                     InterOpNumThreads = 1,
                 };
@@ -541,12 +652,11 @@ public static class PoseTracker
                 watch.Stop();
 
                 // 输入/输出名字以模型元数据为准（实测是 images / output0），拿不到就用实测值兜底。
-                _inputName = FirstKey(session.InputMetadata.Keys) ?? "images";
-                _outputName = FirstKey(session.OutputMetadata.Keys) ?? "output0";
+                _inputName = FirstKey(session.InputMetadata.Keys) ?? "images";   // 输出按形状配对，不记名字
 
                 Volatile.Write(ref _session, session);
                 Volatile.Write(ref _lastOperationFailed, false);
-                AppLogger.Info($"姿态模型：已加载（{watch.ElapsedMilliseconds}ms，输入 {_inputName}，输出 {_outputName}）");
+                AppLogger.Info($"姿态模型：已加载（{watch.ElapsedMilliseconds}ms，输入 {_inputName}，输出 {session.OutputMetadata.Count} 个）");
                 return session;
             }
             catch (Exception ex)
@@ -584,7 +694,7 @@ public static class PoseTracker
     /// 归一化只有 /255 —— 这个导出<b>没有</b> ImageNet 的 mean/std，加了反而全错。
     /// 一次 LockBits + 逐行 Marshal.Copy，绝不在循环里 GetPixel。
     /// </summary>
-    private static void FillInput(System.Drawing.Bitmap canvas)
+    private static void FillInputFromCanvas(System.Drawing.Bitmap canvas)
     {
         const int plane = InputSize * InputSize;
         System.Drawing.Imaging.BitmapData data = canvas.LockBits(
@@ -613,6 +723,82 @@ public static class PoseTracker
             canvas.UnlockBits(data);   // GDI+ 的锁必须还回去，否则这块位图以后再用就抛异常
         }
     }
+
+    /// <summary>
+    /// 把一块 BGRA32 像素按 letterbox 几何填进张量：画内用<b>双线性</b>采样（cv2.INTER_LINEAR 的
+    /// half-pixel 约定：目标像素中心 → 源像素中心），画外一律填 114 灰。
+    ///
+    /// 为什么不能只用最近邻：160×90 → 640×360 是 4 倍放大，最近邻会带来 1–4px 的系统性关键点偏移，
+    /// 髋/踝这种要算深度的点直接被这个偏移吃掉。
+    /// </summary>
+    private static void FillInputFromBytes(byte[] bgra, int width, int height, in FitBox box)
+    {
+        const int plane = InputSize * InputSize;
+        // 采样用「源/贴入尺寸」的比例（和贴图那一步严格互逆）；换算回原图时才用 box.Scale，
+        // 两者差的是取整误差（<0.5%），和 python 参考实现保持一致。
+        double stepX = width / (double)box.Width;
+        double stepY = height / (double)box.Height;
+
+        for (int y = 0; y < InputSize; y++)
+        {
+            int rowBase = y * InputSize;
+            bool rowInside = y >= box.PadY && y < box.PadY + box.Height;
+            for (int x = 0; x < InputSize; x++)
+            {
+                float r = PadValue, g = PadValue, b = PadValue;
+                if (rowInside && x >= box.PadX && x < box.PadX + box.Width)
+                {
+                    double fx = (x - box.PadX + 0.5) * stepX - 0.5;
+                    double fy = (y - box.PadY + 0.5) * stepY - 0.5;
+                    b = SampleBilinear(bgra, width, height, fx, fy, 0);   // BGRA 内存序
+                    g = SampleBilinear(bgra, width, height, fx, fy, 1);
+                    r = SampleBilinear(bgra, width, height, fx, fy, 2);
+                }
+                int i = rowBase + x;
+                InputBuffer[i] = r;
+                InputBuffer[plane + i] = g;
+                InputBuffer[2 * plane + i] = b;
+            }
+        }
+    }
+
+    /// <summary>双线性采样一个通道（channel = BGRA 里的字节偏移），越界夹到边缘。</summary>
+    private static float SampleBilinear(byte[] bgra, int width, int height, double fx, double fy, int channel)
+    {
+        int x0 = (int)Math.Floor(fx), y0 = (int)Math.Floor(fy);
+        double ax = fx - x0, ay = fy - y0;
+        x0 = Math.Clamp(x0, 0, width - 1);
+        y0 = Math.Clamp(y0, 0, height - 1);
+        int x1 = Math.Min(x0 + 1, width - 1), y1 = Math.Min(y0 + 1, height - 1);
+        double v00 = bgra[(y0 * width + x0) * 4 + channel];
+        double v01 = bgra[(y0 * width + x1) * 4 + channel];
+        double v10 = bgra[(y1 * width + x0) * 4 + channel];
+        double v11 = bgra[(y1 * width + x1) * 4 + channel];
+        double top = v00 + (v01 - v00) * ax;
+        double bottom = v10 + (v11 - v10) * ax;
+        return (float)((top + (bottom - top) * ay) / 255.0);
+    }
+
+    /// <summary>一次 letterbox 的像素几何（字节路径用）：缩放比、贴进去的宽高、左上角灰边。</summary>
+    private readonly record struct FitBox(double Scale, int Width, int Height, int PadX, int PadY)
+    {
+        /// <summary>等比缩放并居中，和 <see cref="DrawLetterbox"/> 同一套算法（那边走 GDI，这边只算数）。</summary>
+        public static FitBox Fit(int sourceWidth, int sourceHeight)
+        {
+            double scale = Math.Min(
+                InputSize / (double)Math.Max(1, sourceWidth),
+                InputSize / (double)Math.Max(1, sourceHeight));
+            int width = Math.Clamp((int)Math.Round(sourceWidth * scale), 1, InputSize);
+            int height = Math.Clamp((int)Math.Round(sourceHeight * scale), 1, InputSize);
+            return new FitBox(scale, width, height, (InputSize - width) / 2, (InputSize - height) / 2);
+        }
+    }
+
+    private static double UnletterboxX(double canvasX, in FitBox box) => (canvasX - box.PadX) / box.Scale;
+    private static double UnletterboxY(double canvasY, in FitBox box) => (canvasY - box.PadY) / box.Scale;
+
+    private static PosePoint Unletterbox(in PosePoint point, in FitBox box) =>
+        new(UnletterboxX(point.X, box), UnletterboxY(point.Y, box), point.Confidence);
 
     // ── 小工具 ────────────────────────────────────────────────────────
 

@@ -48,7 +48,7 @@ public partial class TestLabPage : Page
     // P0：一键停止后，游戏伴随状态栏要持续提示“切回游戏不会自动启动”。
     private bool _autoFollowStoppedByEmergency;
 
-    // ── 画面信号（观察模式 / 画面跟随）────────────────────────────────
+    // ── 画面同步（观察模式 / 画面同步）────────────────────────────────
     // 归属：这条信号是「游戏伴随」的一个动作来源（画面内容），不是声音那一路的附属。
     // 默认只测量：只有用户在伴随里把来源选成「画面内容」、绑定的程序在前台、场景强度过线，
     // 三条同时成立时服务才会下发动作（服务自己管设备，这一页只显示状态 + 改设置）。
@@ -56,7 +56,7 @@ public partial class TestLabPage : Page
     // 而抓取线程只该有一个。懒建（字段初始化时机不受页面构造顺序影响）。
     private static ScreenWatchService? _screenWatchShared;
     /// <summary>
-    /// 画面信号的服务实例：<b>全进程只有一个</b>，所以先问服务自己的登记口
+    /// 画面同步的服务实例：<b>全进程只有一个</b>，所以先问服务自己的登记口
     /// （<see cref="ScreenWatchService.Current"/>）—— 伴随那边在开机直接进游戏时也会自动把它开起来，
     /// 这里要是各建一个，就会出现「两个实例各抓一份画面、各下一次指令」，设备会乱抖。
     /// 一个都没有时才新建（构造函数会把自己登记进去，之后 Current 就认得它了）。
@@ -136,6 +136,22 @@ public partial class TestLabPage : Page
         ActionLinkCheck.Checked += (_, _) => { if (!_loadingUi) SaveAutoFollow(); };
         AmbientOverlayCheck.Checked += (_, _) => { if (!_loadingUi) { SyncAmbientUi(); SaveAmbient(); } };
         AmbientOverlayCheck.Unchecked += (_, _) => { if (!_loadingUi) { SyncAmbientUi(); SaveAmbient(); } };
+        AutoFollowScreenCheck.Checked += (_, _) => { if (!_loadingUi) ApplyAutoFollowScreen(true); };
+        AutoFollowScreenCheck.Unchecked += (_, _) => { if (!_loadingUi) ApplyAutoFollowScreen(false); };
+        ScreenPoseEnableCheck.Checked += (_, _) =>
+        {
+            if (_loadingUi) return;
+            App.Settings.PoseVisionEnabled = true;
+            App.Settings.Save();
+            UpdatePoseRow();
+        };
+        ScreenPoseEnableCheck.Unchecked += (_, _) =>
+        {
+            if (_loadingUi) return;
+            App.Settings.PoseVisionEnabled = false;
+            App.Settings.Save();
+            UpdatePoseRow();
+        };
         AmbientOverlaySlider.ValueChanged += (_, e) =>
         {
             AmbientOverlayLabel.Text = $"±{(int)Math.Round(e.NewValue)}%";
@@ -161,7 +177,7 @@ public partial class TestLabPage : Page
             else _uiTimer.Stop();
         };
 
-        // 画面观察的开关是记住的：上次开着，回到这一页就继续（它平时只读画面不动设备，
+        // 画面同步的开关是记住的：上次开着，回到这一页就继续（它平时只读画面不动设备，
         // 只有「动作来源 = 画面内容」且目标在前台、场景强度过线时才会下发动作；
         // 代价只是每秒十几帧的一点点 CPU）。
         IsVisibleChanged += (_, _) =>
@@ -634,6 +650,8 @@ public partial class TestLabPage : Page
         SyncAmbientUi();
         AudioEventCheck.IsChecked = App.Settings.AudioEventMotion;
         MultiAxisCheck.IsChecked = App.Settings.MotionMultiAxis;
+        ScreenPoseEnableCheck.IsChecked = App.Settings.PoseVisionEnabled;
+        AutoFollowScreenCheck.IsChecked = App.Settings.AutoFollowScreen;
         AlignmentSlider.Value = Math.Clamp(App.Settings.MotionCalibrationMs, -200, 200);
         AlignmentLabel.Text = $"{App.Settings.MotionCalibrationMs:+#;-#;0} ms";
         _loadingUi = false;
@@ -894,7 +912,7 @@ public partial class TestLabPage : Page
         UpdateCompanionPanels();
         RefreshCompanionBoard();
         RefreshGameProfileText();
-        RefreshScreenWatch();    // 画面信号卡里那句「现在这条信号会不会驱动设备」跟着来源变
+        RefreshScreenWatch();    // 画面同步卡里那句「现在这条信号会不会驱动设备」跟着来源变
     }
 
     /// <summary>刷新「动作来源」下方那句白话解释、伴随开关文案，以及共用的专属配置说明。</summary>
@@ -907,7 +925,7 @@ public partial class TestLabPage : Page
                 "sound" => "只按声音来：底色动作照跑，声音变大才加强；游戏发来的画面数据一律不看。",
                 "telemetry" => "只认游戏发来的数据（装过游戏桥接插件的游戏选它）：收不到就完全不动 —— 后台再吵也不会突然动起来。",
                 "screen" => "跟着画面里那个节奏走：绑定的程序在前台、看的窗口也是它的窗口、画面里场景强度过线时才动；"
-                    + "画面里没事发生就缓降回中停着。要先到「测试台 · 画面信号」里开启观察并挑好窗口。",
+                    + "画面里没事发生就缓降回中停着。要先到「测试台 · 画面同步」里开启同步并挑好窗口。",
                 _ => "推荐：游戏给动作就跟游戏（最精确）；游戏没给就看画面内容（过线才动）；画面里也没事发生才用声音兜底。",
             };
         }
@@ -987,8 +1005,6 @@ public partial class TestLabPage : Page
             ("AudioCard", AudioCard),
             ("CompanionCard", CompanionCard),
             ("ScreenCard", ScreenCard),
-            ("SimulatorCard", SimulatorCard),
-            ("AyvaCard", AyvaCard),
             ("FanoutCard", FanoutCard),
         };
         if (!cards.Any(card => card.Name == cardName)) cardName = cards[0].Name;
@@ -998,105 +1014,10 @@ public partial class TestLabPage : Page
             card.Visibility = name == cardName ? Visibility.Visible : Visibility.Collapsed;
 
         foreach (Button btn in FeatureSwitchGrid.Children.OfType<Button>())
-            btn.Style = (Style)FindResource((btn.Tag as string) == cardName ? "BtnPrimary" : "BtnGhost");
+            btn.Style = (Style)FindResource((btn.Tag as string) == cardName ? "FeatureBtnOn" : "FeatureBtnOff");
 
         // 切过来立刻刷一次：否则最多 150ms 显示的是上一块卡片的旧文案。
         RefreshStatus();
-    }
-
-    /// <summary>进入/退出模拟设备：没插设备也能把整条链路走一遍（指令只记录、不下发）。</summary>
-    private void SimToggle_Click(object sender, RoutedEventArgs e)
-    {
-        if (App.Serial.IsSimulation)
-        {
-            App.Settings.SimulationMode = false;
-            App.Serial.SetSimulationMode(false);
-            App.Settings.Save();
-            // 退出模拟后按自动连接的设置去连真机（没设备时它会自己失败，不弹错）
-            if (App.Settings.AutoConnect && App.Settings.Port.Length > 0)
-                _ = App.Serial.ConnectAsync(App.Settings.Port, App.Settings.FallbackPort);
-        }
-        else
-        {
-            // 真串口如果开着先断开，免得两条输出路径打架
-            if (App.Serial.IsOpen) App.Serial.Disconnect();
-            App.Settings.SimulationMode = true;
-            App.Settings.Save();
-            App.Serial.SetSimulationMode(true);
-        }
-        RefreshSimulatorCard();
-    }
-
-    /// <summary>模拟器那一格：状态 + 指令计数 + 最后几条指令（只在这一格可见时刷新）。</summary>
-    private void RefreshSimulatorCard()
-    {
-        if (SimulatorCard.Visibility != Visibility.Visible) return;
-
-        bool sim = App.Serial.IsSimulation;
-        SimStatusBar.Background = (System.Windows.Media.Brush)FindResource(sim ? "Accent" : "Muted");
-        SimStatusText.Text = sim
-            ? "模拟中：Hexa 以为连着一台设备，指令只记录、不下发，机器不会动"
-            : (App.Serial.IsOpen
-                ? $"没在模拟：已连接 {App.Serial.PortName}"
-                : "没在模拟，但设备还没连上（去「设置」页连）");
-        SimToggleBtn.Content = sim ? "退出模拟设备" : "进入模拟设备";
-
-        IReadOnlyList<string> cmds = App.Serial.SimulationCommands;
-        SimCountText.Text = cmds.Count == 0 ? "还没记录到指令" : $"已记录 {cmds.Count} 条指令";
-        int take = Math.Min(8, cmds.Count);
-        SimLogText.Text = cmds.Count == 0
-            ? "（还没收到指令）"
-            : string.Join("\n", cmds.Skip(cmds.Count - take));
-    }
-
-    /// <summary>网页入口那一格：开关 Ayva 的 WebSocket 服务（端口写在界面上，网页照着填）。</summary>
-    private void AyvaToggle_Click(object sender, RoutedEventArgs e)
-    {
-        if (App.AyvaWeb.IsRunning)
-        {
-            App.AyvaWeb.Stop();
-            App.Settings.AyvaWebSocketEnabled = false;
-        }
-        else
-        {
-            App.AyvaWeb.Start();
-            App.Settings.AyvaWebSocketEnabled = App.AyvaWeb.IsRunning;
-        }
-        App.Settings.Save();
-        RefreshAyvaCard();
-    }
-
-    /// <summary>网页入口卡片：服务状态 + 连上的网页数 + 收到的指令数（只在这一格可见时刷新）。</summary>
-    private void RefreshAyvaCard()
-    {
-        if (AyvaCard.Visibility != Visibility.Visible) return;
-
-        bool running = App.AyvaWeb.IsRunning;
-        AyvaStatusBar.Background = (System.Windows.Media.Brush)FindResource(running ? "Accent" : "Muted");
-        AyvaToggleBtn.Content = running ? "关闭网页入口" : "开启网页入口";
-        if (!running)
-        {
-            AyvaStatusText.Text = App.AyvaWeb.LastError.Length > 0
-                ? "没开（上次启动失败：" + App.AyvaWeb.LastError + "）"
-                : "没开：网页连不上来";
-        }
-        else
-        {
-            AyvaStatusText.Text = App.AyvaWeb.Clients > 0
-                ? $"已连上 {App.AyvaWeb.Clients} 个网页 · 正在 {App.AyvaWeb.Url} 收动作"
-                : $"在 {App.AyvaWeb.Url} 等着网页连上来";
-        }
-        // RuntimeNote 是"网页命令被让位/客户端断开"这类运行期说明，以前只写日志、界面看不到
-        // （用户看到的是"已连上 N 个网页"但设备不动，毫无解释）。
-        string ayvaNote = App.AyvaWeb.RuntimeNote ?? "";
-        string ayvaFrames = App.AyvaWeb.Frames == 0
-            ? "还没收到指令"
-            : $"已收到 {App.AyvaWeb.Frames} 条指令";
-        AyvaCountText.Text = (ayvaNote.Length > 0 ? ayvaNote + " · " : "") + ayvaFrames;
-        AyvaLastCmdText.Text = App.AyvaWeb.LastCommand.Length == 0 ? "（还没有）" : App.AyvaWeb.LastCommand;
-        AyvaHintText.Text = $"网页里填：主机 localhost、端口 {App.AyvaWeb.ActivePort}"
-            + (App.AyvaWeb.ActivePort == 80 ? "（Ayva 的默认值就是这个，不用改）" : "（80 没抢到才用这个，要手改一下）")
-            + "。主机名必须是 localhost —— 填 IP 它会走加密连接，Hexa 没有证书，连不上。";
     }
 
     private bool _fanoutLoading;
@@ -1197,8 +1118,6 @@ public partial class TestLabPage : Page
         RefreshAudioState();
         RefreshAudioEventLabel();
         RefreshAudioTempoLabel();
-        RefreshSimulatorCard();
-        RefreshAyvaCard();
         RefreshFanoutCard();
 
         string foreground = ReadForegroundProcessNameCached();
@@ -1209,7 +1128,7 @@ public partial class TestLabPage : Page
         RefreshScreenWatch();
     }
 
-    // ══ 画面信号（观察模式）═══════════════════════════════════════════
+    // ══ 画面同步（观察模式）═══════════════════════════════════════════
     // 这一块只跟 ScreenWatchService 打交道：读它算出来的几个数，画成条和数字。
     // 这里没有任何设备调用 —— 设备怎么动只由上面几张卡（声音响应 / 游戏伴随 / 游戏桥）决定。
 
@@ -1263,6 +1182,8 @@ public partial class TestLabPage : Page
             ScreenSensitivitySlider.Value = Math.Clamp(App.Settings.ScreenWatchSensitivity,
                 ScreenWatchService.SensitivityMin, ScreenWatchService.SensitivityMax);
             ScreenFollowLockSlider.Value = Math.Clamp(App.Settings.ScreenPhaseLock, 0, 1);
+            ScreenSyncInvertCheck.IsChecked = App.Settings.ScreenSyncInvertDirection;
+            ScreenSyncTiltCheck.IsChecked = App.Settings.ScreenSyncTiltEnabled;
             SelectModelTier(App.Settings.NsfwModelTier);   // 档位下拉选回上次那一档
         }
         finally { _loadingScreenUi = false; }
@@ -1332,7 +1253,7 @@ public partial class TestLabPage : Page
         RefreshScreenWatch();
     }
 
-    /// <summary>「开启观察 / 关闭观察」——只控制看不看画面，不碰设备（这里没有任何设备调用）。</summary>
+    /// <summary>「开启同步 / 关闭同步」——只控制看不看画面，不碰设备（这里没有任何设备调用）。</summary>
     private void ScreenWatchToggle_Click(object sender, RoutedEventArgs e)
     {
         if (ScreenWatch.IsRunning)
@@ -1386,12 +1307,30 @@ public partial class TestLabPage : Page
         RefreshScreenWatch();
     }
 
+    /// <summary>方向反转：画面里哪边算「插入」无法自动判断，默认不反转。</summary>
+    private void ScreenSyncInvert_Changed(object sender, RoutedEventArgs e)
+    {
+        if (ScreenSyncInvertCheck is null || _loadingScreenUi) return;
+        App.Settings.ScreenSyncInvertDirection = ScreenSyncInvertCheck.IsChecked == true;
+        ScheduleSave();
+        RefreshScreenWatch();
+    }
+
+    /// <summary>倾斜同步（近似，默认关）：2D 画面只能近似，左右较准，前后靠画面上下分量推测。</summary>
+    private void ScreenSyncTilt_Changed(object sender, RoutedEventArgs e)
+    {
+        if (ScreenSyncTiltCheck is null || _loadingScreenUi) return;
+        App.Settings.ScreenSyncTiltEnabled = ScreenSyncTiltCheck.IsChecked == true;
+        ScheduleSave();
+        RefreshScreenWatch();
+    }
+
     private void UpdateScreenToggle()
     {
         bool running = ScreenWatch.IsRunning;
         if (running == _lastScreenToggleState) return;
         _lastScreenToggleState = running;
-        ScreenWatchToggleBtn.Content = running ? "关闭观察" : "开启观察";
+        ScreenWatchToggleBtn.Content = running ? "关闭同步" : "开启同步";
         ScreenWatchToggleBtn.Style = (Style)FindResource(running ? "BtnDanger" : "BtnSecondary");
     }
 
@@ -1483,7 +1422,7 @@ public partial class TestLabPage : Page
         if (CompanionSource == "screen")
         {
             note = "现在的来源是「画面内容」：跟着画面里那个节奏走；画面里没事发生时就缓降回中、停着不动。"
-                + "要让这条信号生效，上面的「开启观察」必须是开着的，而且绑定的程序得在前台。";
+                + "要让这条信号生效，上面的「开启同步」必须是开着的，而且绑定的程序得在前台。";
         }
         else if (CompanionSource == "auto")
         {
@@ -1539,11 +1478,40 @@ public partial class TestLabPage : Page
     /// 姿态模型那一小节：状态 + 进度 + 按钮可用性。和识别模型同一套做法 ——
     /// 状态每一帧都从服务现读，不靠「点了才更新」；下载中把按钮置灰、进度条露出来。
     /// </summary>
+    /// <summary>
+    /// 「跟着当前窗口自动动」——一键把这条链路配齐：画面同步开着 + 规则引擎开着 + 动作来源 = 画面内容
+    /// （缺一条设备就不动，见 RuleEngine.ScreenWatchIfNeeded / ScreenSourceAllowed）；姿态模型装了就把姿态也开上。
+    /// 目标窗口和绑定程序由 ScreenWatchService.TryAutoBindForeground 每半秒跟前台窗口自动改 ——
+    /// 「明明开着却不动」最常见的原因就是窗口没挑对、或绑定程序跟窗口对不上，这一步专门把它消掉。
+    /// 关掉时只停这个模式，其它开关保持原样（不偷偷改用户的设置）。
+    /// </summary>
+    private void ApplyAutoFollowScreen(bool on)
+    {
+        App.Settings.AutoFollowScreen = on;
+        if (on)
+        {
+            App.Settings.ScreenWatchEnabled = true;
+            App.Settings.RuleEngineEnabled = true;
+            App.Settings.CompanionSource = "screen";
+            if (Hexa.Services.PoseTracker.IsInstalled) App.Settings.PoseVisionEnabled = true;
+        }
+        App.Settings.Save();
+        if (on)
+        {
+            ScreenWatch.Refresh();      // 先把窗口列表对一遍，再开
+            ScreenWatch.Start();
+        }
+        LoadScreenWatchUi();
+        RefreshGameProfileText();
+    }
+
     private void UpdatePoseRow()
     {
         if (ScreenPoseStatusText is null) return;
 
-        ScreenPoseStatusText.Text = ScreenWatch.PoseModelStatus;
+        string poseMode = !App.Settings.PoseVisionEnabled ? " · 开关没开，不会用"
+            : ScreenWatch.PoseModelInstalled ? " · 已启用" : " · 开了但没模型，先按整幅画面算";
+        ScreenPoseStatusText.Text = ScreenWatch.PoseModelStatus + poseMode;
         ScreenPoseStatusText.Foreground = (Brush)FindResource(
             _poseDownloading ? "Primary"
             : ScreenWatch.PoseModelFailed ? "Warning"
@@ -1602,7 +1570,7 @@ public partial class TestLabPage : Page
         }
         catch (Exception ex)
         {
-            AppLogger.Warn($"画面观察：下载姿态模型时出错 —— {ex.Message}");
+            AppLogger.Warn($"画面同步：下载姿态模型时出错 —— {ex.Message}");
         }
         finally
         {
@@ -1688,7 +1656,7 @@ public partial class TestLabPage : Page
         ScreenWatch.SetModelTier(tier);      // 服务转发给分类器：旧档会话会被释放，模型分归零
 
         ScreenModelHint.Text = ScreenWatch.ModelInstalled
-            ? $"已换成{ScreenWatch.ModelTierName}：本机已经有这一档的模型，开启观察就直接用它。"
+            ? $"已换成{ScreenWatch.ModelTierName}：本机已经有这一档的模型，开启同步就直接用它。"
             : $"已换成{ScreenWatch.ModelTierName}：本机还没有这一档的模型文件，点「下载模型」下这一份"
               + $"（{ScreenWatch.ModelSizeText}）。原来那一档的文件还留在磁盘上，"
               + "可以在「删除模型」里一起清掉。";
@@ -1735,7 +1703,7 @@ public partial class TestLabPage : Page
         }
         catch (Exception ex)
         {
-            AppLogger.Warn($"画面观察：下载识别模型时出错 —— {ex.Message}");
+            AppLogger.Warn($"画面同步：下载识别模型时出错 —— {ex.Message}");
         }
         finally
         {
@@ -1750,7 +1718,7 @@ public partial class TestLabPage : Page
         if (ok)
         {
             ScreenModelHint.Text = $"「{ScreenWatch.ModelTierName}」模型已就绪：下面「模型分（内容判定）」会开始跟着画面走，"
-                + "它现在是主判据（模型分 70% + 手工特征 30%）。开启观察后约 1 秒内就能看到数。";
+                + "它现在是主判据（模型分 70% + 手工特征 30%）。开启同步后约 1 秒内就能看到数。";
         }
         else
         {
@@ -1903,7 +1871,7 @@ public partial class TestLabPage : Page
         {
             line2 = _rules.YieldedForScreen
                 ? "动作来源：画面内容 · 正在跟着画面里的动作走"
-                : "动作来源：画面内容 —— 画面里有事发生时才动（要走画面，先去「测试台 · 画面信号」开启观察并挑好窗口）";
+                : "动作来源：画面内容 —— 画面里有事发生时才动（要走画面，先去「测试台 · 画面同步」开启同步并挑好窗口）";
             brush2 = _rules.YieldedForScreen ? "Success" : "Muted";
         }
         else if (source == "sound")
@@ -2005,15 +1973,6 @@ public partial class TestLabPage : Page
 
     private void StopBtn_Click(object sender, RoutedEventArgs e)
     {
-        // 全域急停也要停掉网页入口：否则解锁之后远端网页立刻又能驱动设备，而按钮上写着"这条链路上的一切都停"。
-        // 多输出**不关**：它是转发通道，急停时 DSTOP 会照常镜像过去，网络那头也一起停。
-        if (App.AyvaWeb.IsRunning)
-        {
-            App.AyvaWeb.Stop();
-            App.Settings.AyvaWebSocketEnabled = false;
-            App.Settings.Save();
-            RefreshAyvaCard();
-        }
         // P0：先关闭自动跟随/操作联动。否则用户解锁后切回目标游戏，ForegroundWatcher.Tick
         // 看到 CompanionAuto=true 会再次 StartAuto，设备重新运动。
         _loadingUi = true;
@@ -2036,7 +1995,7 @@ public partial class TestLabPage : Page
         App.Settings.RuleEngineEnabled = false;
         App.Settings.AudioReactiveEnabled = false;
         App.Settings.GameBridgeEnabled = false;
-        // 画面观察也一起关：它可能正在驱动设备（来源选「画面内容」时），Stop 里会缓降回中并交还控制权；
+        // 画面同步也一起关：它可能正在驱动设备（来源选「画面内容」时），Stop 里会缓降回中并交还控制权；
         // 而且「全部停止」之后还留一个抓画面的线程在跑，用户会以为"不是全停了吗"。
         App.Settings.ScreenWatchEnabled = false;
         ScreenWatch.Stop();

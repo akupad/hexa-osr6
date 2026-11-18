@@ -150,8 +150,7 @@ public partial class SettingsViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 退出「模拟设备」。设置页按用户要求移除了模拟开关，但 settings.json 里
-    /// SimulationMode=true 时界面上必须留一个出口，这就是那个出口。
+    /// 退出「模拟设备」（设置页连接卡上那个开关的退出半边，2026-11-18 从测试台 ④ 卡片搬来）。
     /// 复用 OnSimulationModeChanged 的既有逻辑：落盘 + SetSimulationMode(false) 让 Serial 真正退出模拟；
     /// 勾了「启动时自动连接」时顺手去连真机（reconnectIfAutoConnect=false 则不连，用于「断开连接」）。
     /// 返回 false = settings.json 写盘失败（内存值已改，本次运行已生效）。
@@ -166,6 +165,21 @@ public partial class SettingsViewModel : ObservableObject
         }
         _cfg.SimulationMode = false;
         _serial.SetSimulationMode(false);     // 兜底（幂等）：属性原本就是 false 时也确保 Serial 退出模拟
+        SyncConnectionState();
+        return _cfg.Save();
+    }
+
+    /// <summary>
+    /// 进入「模拟设备」（设置页连接卡上的开关；原来在测试台的 ④ 卡片里，动作原样搬过来）：
+    /// 真串口开着就先断开（免得两条输出路径打架），然后走 OnSimulationModeChanged 落盘 + SetSimulationMode(true)。
+    /// 返回 false = settings.json 写盘失败（内存值已改，本次运行已生效）。
+    /// </summary>
+    public bool EnterSimulation()
+    {
+        if (_serial.IsOpen && !_serial.IsSimulation) _serial.Disconnect();
+        SimulationMode = true;              // 触发 OnSimulationModeChanged：SetSimulationMode(true) + Save
+        _cfg.SimulationMode = true;
+        _serial.SetSimulationMode(true);    // 兜底（幂等）
         SyncConnectionState();
         return _cfg.Save();
     }

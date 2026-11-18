@@ -10,7 +10,7 @@ namespace Hexa.CoreTests;
 
 /// <summary>
 /// 开发期探针：把 SR6 模型用 WPF 的 RenderTargetBitmap 离屏渲染成 PNG，
-/// 用来肉眼确认模型朝向/装配是否正确（只在设置 HELIX_SR6_RENDER 环境变量时运行）。
+/// 用来肉眼确认模型朝向/装配是否正确（只在设置 HEXA_SR6_RENDER 环境变量时运行）。
 /// </summary>
 internal static class Sr6RenderProbe
 {

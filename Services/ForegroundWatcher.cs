@@ -85,10 +85,10 @@ public sealed class ForegroundWatcher : IDisposable
             // 规则引擎接管输出时不要自动切换，避免打架。
             if (_engine.RuleEngineActive) return;
 
-            // 「动作来源 = 画面内容」时也一律让开：那条路由画面信号独占驱动，
+            // 「动作来源 = 画面内容」时也一律让开：那条路由画面同步独占驱动，
             // 而它**刻意不置 RuleEngineActive**（置了它会被判成"别人独占接管"、永远拿不到下发权）。
             // 所以这里必须单独挡一次，否则 CompanionAuto 还勾着的话，进游戏时这边会抢先起底色动作，
-            // 和画面跟随抢同一根轴 —— 表现就是设备乱抖。
+            // 和画面同步抢同一根轴 —— 表现就是设备乱抖。
             if (_cfg.RuleEngineEnabled
                 && string.Equals(_cfg.CompanionSource?.Trim(), "screen", StringComparison.OrdinalIgnoreCase))
                 return;

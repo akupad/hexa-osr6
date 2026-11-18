@@ -14,7 +14,7 @@
 - **脚本播放**：funscript 载入/播放/暂停/定位、A-B 循环、章节跳转、倍率、媒体同步（mpv / MPC-HC / VLC 时间码跟随）。
 - **脚本制作**：编排（拖动作段到时间轴）＋ 微调波形（逐轴关键帧、波形生成、撤销栈）。
 - **声音响应**：按音量/律动驱动，带节拍检测与事件化动作。
-- **画面跟随**：屏幕内容识别（可选本机 ONNX 模型），把画面信号映射成动作强度。
+- **画面同步**：屏幕内容识别（可选本机 ONNX 模型），把画面同步映射成动作强度。
 - **手动动轴 + 正弦摆动**：默认关的安全闸，勾上才动；六轴滑杆与幅度/速度发生器。
 - **AI 助手**：接 DeepSeek/硅基流动等 OpenAI 兼容接口，用自然语言下动作指令（下发前有二次确认）。
 - **安全设计**：急停一键可达；所有运动只经唯一的限速输出出口；每个驱动源（脚本/桥/声音/手柄/编排/AI）必须认领「控制权」，界面永远显示**谁在驱动设备**。
@@ -45,6 +45,8 @@ $env:HEXA_SELFTEST="$env:TEMP\hexa-selftest.txt"; dotnet run --project Hexa.cspr
 2. 想玩游戏：**游玩 → 🌉 游戏桥** 打开桥，把游戏里的 Buttplug/Intiface 地址填成 `ws://127.0.0.1:12345`。**顺序是先开 Hexa、再开游戏。**
 3. 想直接玩：**脚本库**载入一个 funscript 播放，或 **手动动轴**页勾上安全闸自己拉滑杆。
 
+> **备选连法**：如果 Hexa 自己的串口一直连不上，也可以装 **Intiface Central v3.2.2 或更高版本**，在它里面添加「TCode 串口设备」直接连设备，让游戏走 Intiface 那一路（不走 Hexa 的游戏桥）。这是备用方案，跟 Hexa 的游戏桥二选一，别两边同时开。
+
 ## 常见故障（先看这三条）
 
 | 现象 | 处置 |
@@ -53,9 +55,9 @@ $env:HEXA_SELFTEST="$env:TEMP\hexa-selftest.txt"; dotnet run --project Hexa.cspr
 | 界面写「输出已锁定」 | 同上：点侧栏「⬆ 全部归中」（会先问一次），它会解除急停并重新使能输出 |
 | 游戏连上了但设备不动 | 见「游玩 → 游戏桥」面板的指令监视：如果游戏只发 VibrateCmd，本机没有振动附件；换成发 LinearCmd/RotateCmd 的内容，或到测试台开「接收原始 TCode」走 OSR-TCode |
 
-## 画面跟随要先下模型
+## 画面同步要先下模型
 
-「画面跟随」用的是本机 ONNX 推理，**仓库里不含模型**：第一次用得在「测试台 → 画面信号」里点「下载模型」（识别模型与姿态模型分别下，几 MB～几十 MB）。没下模型时它会退化成手工特征判断，不是坏了。
+「画面同步」用的是本机 ONNX 推理，**仓库里不含模型**：第一次用得在「测试台 → 画面同步」里点「下载模型」（识别模型与姿态模型分别下，几 MB～几十 MB）。没下模型时它会退化成手工特征判断，不是坏了。
 
 ⚠️ **许可提醒**：姿态模型用的是 `Xenova/yolov8n-pose`，其上游（Ultralytics YOLOv8）权重默认 **AGPL-3.0**；本项目不随仓库分发该权重，由你在界面上按需下载，用于闭源/商业场景请自行替换。详见 `THIRD-PARTY-LICENSES.md`。
 
@@ -141,6 +143,8 @@ dotnet run --project tests/Hexa.CoreTests  # unit tests (262 checks)
 1. Open Hexa -> **Settings** -> pick the serial port -> Connect. If it fails, hit Refresh devices to see whether another program holds the port.
 2. To play a game: **Playground -> Game bridge** -> enable it, then point the game's Buttplug/Intiface address at `ws://127.0.0.1:12345`. **Start Hexa first, then the game.**
 3. To play directly: load a funscript in the **Script library**, or enable the safety switch on the **Manual axes** page and drag the sliders.
+
+> **Backup path**: if Hexa's own serial connection keeps failing, install **Intiface Central v3.2.2 or newer** and add the device there as a native **TCode serial device** — games then connect through Intiface instead of Hexa's game bridge. Pick one or the other; do not run both at the same time.
 
 ### Troubleshooting
 

@@ -49,7 +49,7 @@ SOFTWARE.
 
 | 模型 | 用途 | 许可 | 说明 |
 |---|---|---|---|
-| `Xenova/yolov8n-pose`（ONNX 量化版） | 「画面跟随」的姿态检测 | **AGPL-3.0**（上游 Ultralytics YOLOv8 训练权重） | 本仓库**不包含**该权重，程序在你点「下载」时从 Hugging Face 镜像取回；**AGPL 的义务随使用者对模型的使用方式而定**。若你要在闭源/商业场景使用姿态功能，请自行替换为许可更宽松的模型 |
+| `Xenova/yolov8n-pose`（ONNX 量化版） | 「画面同步」的姿态检测 | **AGPL-3.0**（上游 Ultralytics YOLOv8 训练权重） | 本仓库**不包含**该权重，程序在你点「下载」时从 Hugging Face 镜像取回；**AGPL 的义务随使用者对模型的使用方式而定**。若你要在闭源/商业场景使用姿态功能，请自行替换为许可更宽松的模型 |
 | `OwenElliott/image-safety-classifier-{s,m,l}` | 画面内容分类（可选） | 以模型页标注为准（作者注释称 MIT，请以 Hugging Face 模型卡为准） | 同上，不随仓库分发 |
 
 ## 四、协议与规范

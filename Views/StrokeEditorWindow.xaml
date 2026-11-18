@@ -16,7 +16,7 @@
 
         <!-- 标题：一句话说清「这是什么」和「按保存会发生什么」 -->
         <StackPanel Grid.Row="0" Margin="0,0,0,12">
-            <TextBlock Text="🎛 动作编辑器" FontSize="21" FontWeight="SemiBold"/>
+            <TextBlock Text="🎛 动作编辑器" FontSize="21" FontWeight="SemiBold" Foreground="{StaticResource Text}"/>
             <TextBlock Foreground="{StaticResource Muted}" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"
                        Text="调好要用哪几条轴、怎么动，下面的图会跟着动。保存后立刻能在动作页里用，关掉程序也还在。"/>
         </StackPanel>
@@ -63,7 +63,8 @@
                                      ToolTip="动作列表、播放卡片上显示的名字，可以写中文，例如「向下前推」。留空就用上面的英文名。"/>
                             <TextBlock Grid.Row="1" Grid.Column="2" Text="列表里显示的名字，可留空"
                                        Foreground="{StaticResource Faint}" FontSize="10"
-                                       VerticalAlignment="Center" Margin="10,8,0,0"/>
+                                       VerticalAlignment="Center" Margin="10,8,0,0"
+                                       TextWrapping="Wrap" MaxWidth="220"/>
 
                             <!-- 分类：决定在动作库里按哪个分类筛选 -->
                             <TextBlock Grid.Row="2" Text="分类" Foreground="{StaticResource Muted}" FontSize="12"
@@ -74,7 +75,8 @@
                             <TextBlock Grid.Row="2" Grid.Column="2"
                                        Text="只影响动作库里的归类"
                                        Foreground="{StaticResource Faint}" FontSize="10"
-                                       VerticalAlignment="Center" Margin="10,8,0,0"/>
+                                       VerticalAlignment="Center" Margin="10,8,0,0"
+                                       TextWrapping="Wrap" MaxWidth="220"/>
                         </Grid>
                     </StackPanel>
                 </Border>
