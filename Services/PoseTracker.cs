@@ -647,6 +647,11 @@ public static class PoseTracker
                     IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount - 2, 1, 6),
                     InterOpNumThreads = 1,
                 };
+                // 关掉 ORT 的线程自旋（默认开）：推理一完线程就进忙等，等下一次推理的那 80ms 里
+                // 这几个核仍然 100% 空转。实测 6 个核被吃满、任务管理器里 Hexa 常驻 5.8 核，
+                // 而真正在算的时间不到一成。关掉之后每帧多几百微秒，换来整机安静。
+                options.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
+                options.AddSessionConfigEntry("session.inter_op.allow_spinning", "0");
                 var watch = Stopwatch.StartNew();
                 var session = new InferenceSession(ModelPath, options);
                 watch.Stop();

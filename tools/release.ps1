@@ -20,6 +20,9 @@
   ASCII only on purpose: PowerShell 5.1 decodes BOM-less script files as ANSI (GBK on this
   machine), so Chinese text here would turn into garbage and break parsing.
 #>
+# -SkipChecks skips every self-check (Debug build, unit tests, Debug self-test, published
+# self-test) but STILL runs publish + verify + swap, so ..\dist_hexa is always produced.
+# -ChecksOnly runs the checks and exits before publishing (dist_hexa is not touched).
 param(
     [switch]$SkipChecks,
     [switch]$ChecksOnly

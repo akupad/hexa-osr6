@@ -144,10 +144,6 @@
                 <TextBlock x:Name="BridgeLinkLabel" Grid.Column="2" Text="25%" Width="52" FontSize="11"
                            Foreground="{StaticResource Muted}" VerticalAlignment="Center" TextAlignment="Right"/>
             </Grid>
-            <CheckBox x:Name="BridgeComfortCheck" FontSize="12"
-                      ToolTip="「舒适档」是全局速度上限（在「设置」页选的那一档）。关掉它，游戏桥就不再受这个上限约束，动作会更快更冲 —— 确定受得了再关。默认开着。">
-                <TextBlock Style="{StaticResource WrapText}" Text="也遵守「舒适档」限速（推荐）"/>
-            </CheckBox>
         </StackPanel>
 
         <!-- ── 少见情况：延迟补偿 / 振动 / 局域网 ───────────── -->

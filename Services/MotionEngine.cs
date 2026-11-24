@@ -72,6 +72,54 @@ public sealed class MotionEngine : IDisposable
         get => _speed;
         set => _speed = Math.Clamp(double.IsFinite(value) ? value : 1.0, 0.1, 3.0);
     }
+    // 可选「挣扎连点」：只对当前自动/伴随动作加速加深，不换招（见 StruggleAccelerator）。
+    private readonly StruggleAccelerator _struggle = new();
+    // 切窗降级（伴随底色用）：进程还在只是不在前台 → 平滑降到慢速小幅继续；真退出才缓降回中。
+    // 与画面同步那边的 _degradeBlend 是同一套口径（FollowContinuityPolicy），只是各管各的路径。
+    private double _backgroundDegradeTarget;
+    private double _backgroundDegradeBlend;
+    /// <summary>最近一次算出来的挣扎等级 0..1（界面/测试可读）。</summary>
+    public double StruggleLevel => _struggle.Level;
+    public int StruggleTapCount => _struggle.TapCount;
+
+    /// <summary>挣扎带来的节奏倍数（1 = 没加成）。画面那条路也用它，保证两路口径一致。</summary>
+    public double StruggleSpeedScale => 1.0 + 0.55 * _struggle.Level * Math.Clamp(_struggle.Feedback, 0, 1.5);
+
+    /// <summary>挣扎带来的深度加成（0 = 没加成）；只加在当前动作上，不换招。</summary>
+    public double StruggleDepthBoost => 0.35 * _struggle.Level * Math.Clamp(_struggle.Feedback, 0, 1.5);
+
+    /// <summary>每游戏（或全局）刷新一次挣扎参数；关掉时立刻清零，不留残余加成。</summary>
+    public void ConfigureStruggle(bool enabled, string? sensitivity, double feedback)
+    {
+        _struggle.Enabled = enabled;
+        _struggle.Sensitivity = CompanionPlayPolicy.NormalizeSensitivity(sensitivity);
+        _struggle.Feedback = double.IsFinite(feedback) ? Math.Clamp(feedback, 0, 1.5) : 1.0;
+        if (!enabled) _struggle.Reset();
+    }
+
+    /// <summary>按键边沿（由 GameKeyPoller 调用）。只在绑定游戏前台且真的快速连按时计点。</summary>
+    public bool FeedStruggleKey(int virtualKey, bool down, double nowSeconds, bool foreground, bool injected)
+        => _struggle.OnKeyEdge(virtualKey, down, nowSeconds, foreground, injected);
+
+    /// <summary>前台切换：切回绑定游戏时，把「此刻还按着的键」记下来，它们的下一次边沿不算新点。</summary>
+    public void SetStruggleForeground(bool foreground, IReadOnlyList<int>? heldKeys)
+        => _struggle.SetForeground(foreground, heldKeys);
+
+    /// <summary>推进挣扎等级（每拍由自动节拍调用）；返回 0..1。</summary>
+    public double AdvanceStruggle(double nowSeconds) => _struggle.Advance(nowSeconds);
+
+    private long _autoStartAt = Stopwatch.GetTimestamp();
+    /// <summary>本游戏的节奏档：GameProfiles 里有就优先，否则用全局。</summary>
+    public static string CompanionPaceFor(string? process)
+    {
+        var cfg = App.Settings;
+        if (cfg is not null && process is { Length: > 0 }
+            && cfg.GameProfiles.TryGetValue(process, out var profile)
+            && !string.IsNullOrWhiteSpace(profile.Pace))
+            return profile.Pace;
+        return cfg?.CompanionPace ?? CompanionPlayPolicy.Medium;
+    }
+
     private double _scriptSpeed = 1.0;
     public double ScriptSpeed
     {
@@ -150,7 +198,19 @@ public sealed class MotionEngine : IDisposable
     public bool IsArmed { get; private set; } = true;
     public bool IsHoming { get; private set; }
     public bool EmergencyStopped { get; private set; }
-    public bool CanRun => !IsHoming && !EmergencyStopped && _transport.IsOpen;
+
+    /// <summary>
+    /// 用户主动停过（暂停 / 停止自动 / 急停）。置位后切窗回来自动接续**不许**把它偷偷重启，
+    /// 必须等他再明确按一次开始；任何明确的启动都会清掉它。
+    /// </summary>
+    public bool UserStopLatched { get; private set; }
+
+    /// <summary>标记「这次停是用户要的」（内部自动让路不要调它）。</summary>
+    public void LatchUserStop() => UserStopLatched = true;
+    // 输出闸门（OutputEnabled）关着时，串口层 SendAxes 会**静默丢弃**所有帧，设备不会动：
+    // 如果 CanRun 不把闸门算进去，播放按钮会亮着、StartStroke 也成功，结果就是「点了没反应」。
+    // TryMoveCalibrationAxis 早就单独拦了这一层，这里从根上统一成四件事：没在归中、没急停、串口开着、输出解锁。
+    public bool CanRun => !IsHoming && !EmergencyStopped && _transport.IsOpen && _transport.OutputEnabled;
     public bool IsRunning => AutoRunning || StrokeRunning || CustomRunning || TelemetryRunning || _burstRunning || TeasingMode;
 
     /// <summary>
@@ -514,6 +574,8 @@ public sealed class MotionEngine : IDisposable
 
     public void EmergencyStop()
     {
+        // 急停是用户意志：切窗 / 按键 / 来信号都不许把它唤醒，只有明确的「开始 / 全部归中」才解除。
+        UserStopLatched = true;
         // 先停、后收拾：不进 _dispatchLock，别的线程正占着调度锁（脚本/游戏桥/归中）也不用等。
         // 锁存和输出闸门先落下，后面任何还在路上的帧都会被串口层丢掉；DSTOP 立刻发出去。
         EmergencyStopped = true;
@@ -677,6 +739,46 @@ public sealed class MotionEngine : IDisposable
     }
 
     /// <summary>
+    /// 全局热键「节奏 ±」：只改速度倍率（1.08 / 0.93 一档，指数式所以来回对称），绝不改强度。
+    /// 停止状态只更新偏好，不会把动作唤醒（不 Start、不重置相位）。
+    /// </summary>
+    public void AdjustTempo(int direction)
+    {
+        double factor = direction >= 0 ? 1.08 : 1.0 / 1.08;
+        Speed = Math.Clamp(Speed * factor, 0.1, 3.0);
+        _cfg.Speed = Speed;
+        _cfg.Save();
+        NotifyStateChanged();
+    }
+
+    /// <summary>
+    /// 手动换招（设置页 / 热键）：立刻生效，并在保护期内不被下一拍自动换招盖过。
+    /// 停止状态下只记偏好，不唤醒动作。
+    /// </summary>
+    public bool SelectionHoldActive => _autoSequencer.SelectionHoldActive;
+
+    /// <summary>伴随底色当前是否处于「切窗降级」：慢速小幅继续，不是退出。</summary>
+    public bool IsBackgroundDegraded => _backgroundDegradeTarget > 0.5;
+
+    /// <summary>
+    /// 切窗/切回时调用：true = 目标进程还在但不在前台（降级继续），false = 恢复正常或目标已退出。
+    /// 混合系数在 AutoTick 里平滑逼近，所以掉下来和接上去都不跳变。
+    /// </summary>
+    public void SetBackgroundDegraded(bool degraded) => _backgroundDegradeTarget = degraded ? 1.0 : 0.0;
+
+    public void SelectCompanionAction(string pattern, double holdSeconds = 8)
+    {
+        if (string.IsNullOrWhiteSpace(pattern)) return;
+        // 手动换招是临时调整：只改本次运行，不写回设置（保存底色由设置页的「保存本游戏」负责）。
+        string id = pattern.Trim().ToLowerInvariant();
+        AutoPattern = id;
+        if (!AutoRunning) { NotifyStateChanged(); return; }
+        _autoSequencer.SetSelection(id);
+        _autoSequencer.HoldSelection(holdSeconds);
+        NotifyStateChanged();
+    }
+
+    /// <summary>
     /// 由手柄轮询上报活跃度（0..1），映射为强度弱 ramp（见 EffectiveIntensity）。
     /// 伴随接管时照样收：伴随是背景层，用户的操作用来「带动机器」正是它该有的反应之一
     /// （见 EffectiveIntensity 的说明）。只有被遥测 / 用户自定义规则独占时才记都不记。
@@ -763,8 +865,7 @@ public sealed class MotionEngine : IDisposable
         if (safe.Length < 6) return false;
         long generation = Interlocked.Read(ref _generation);
         double deltaSeconds = SecondsSinceLastOutput(0.06);
-        // ambientOverlay：精确动作（脚本/遥测/游戏桥）之上允许叠一层很轻的氛围微动（见 ApplyAmbientOverlay）。
-        return TryDispatchAxes(safe, deltaSeconds, generation, changedOnly: true, ambientOverlay: true);
+        return TryDispatchAxes(safe, deltaSeconds, generation, changedOnly: true);
     }
 
     /// <summary>
@@ -779,7 +880,7 @@ public sealed class MotionEngine : IDisposable
         if (safe.Length < 6) return false;
         long generation = Interlocked.Read(ref _generation);
         return TryDispatchAxes(safe, Math.Clamp(interpolationSeconds, 0.02, 9.0), generation,
-            changedOnly: true, ambientOverlay: true);
+            changedOnly: true);
     }
 
     // ── 沉浸感：姿态混合 / 优雅停止 / 多轴语汇 ─────────────────────
@@ -1129,6 +1230,10 @@ public sealed class MotionEngine : IDisposable
             ActiveMode = MotionMode.Auto;
             AutoPattern = pattern;
             _autoLastTick = Stopwatch.GetTimestamp();
+            _autoStartAt = Stopwatch.GetTimestamp();
+            _backgroundDegradeTarget = 0;
+            _backgroundDegradeBlend = 0;
+            UserStopLatched = false;                // 明确的启动：解除「用户停过」的锁
             _arousal = 30;
             AutoRunning = true;
             _autoFromCompanion = fromCompanion;
@@ -1147,6 +1252,8 @@ public sealed class MotionEngine : IDisposable
 
     public void StopAuto()
     {
+        // 用户点了「停下」：这不是「丢了信号」，切窗回来自动接续必须等他再按开始。
+        UserStopLatched = true;
         lock (_dispatchLock)
         {
             lock (_stateLock)
@@ -1154,6 +1261,8 @@ public sealed class MotionEngine : IDisposable
                 _generation++;
                 AutoRunning = false;
                 _autoFromCompanion = false;
+                _backgroundDegradeTarget = 0;
+                _backgroundDegradeBlend = 0;
                 _silenceHold = false;
                 DisposeTimer(ref _autoTimer);
             }
@@ -1442,6 +1551,7 @@ public sealed class MotionEngine : IDisposable
         if (IsPaused) return true;
         if (!CanRun || !IsRunning) return false;   // 本来就没在动，没什么可暂停
         IsPaused = true;
+        UserStopLatched = true;                     // 暂停是用户要的：别在切窗边界替他继续
         Volatile.Write(ref _lastSchedulerTickAt, Stopwatch.GetTimestamp());
         AppLogger.Info("已暂停：设备停在原地，点「继续」接着走");
         NotifyStateChanged();
@@ -1452,6 +1562,7 @@ public sealed class MotionEngine : IDisposable
     {
         if (!IsPaused) return true;
         IsPaused = false;
+        UserStopLatched = false;                    // 用户按了「继续」：之后切窗回来自动接续可以正常发生
         // 继续的那一拍把时间戳重置，否则 dt 会把整段暂停时长算进去（虽然已被夹到 0.1s，
         // 但夹到 0.1s 等于一帧走 100ms 的位移，会看到一次小跳）。
         Volatile.Write(ref _lastSchedulerTickAt, Stopwatch.GetTimestamp());
@@ -1537,6 +1648,9 @@ public sealed class MotionEngine : IDisposable
     private const double AmbientSilenceLevel = 0.05;
 
     /// <summary>氛围叠加层一个完整来回的时长（秒）：慢，才像"呼吸"而不是"抖动"。</summary>
+    /// <summary>声音节奏分类的取样口（App 启动后接到 AudioReactiveService）；为空时退回裸音频特征。</summary>
+    public AudioReactiveService? AudioSource { get; set; }
+
     private const double AmbientPeriodSeconds = 2.6;
 
     /// <summary>安静持续多久才停住（毫秒）：太短会被句子停顿切断，太长又显得迟钝。</summary>
@@ -1587,16 +1701,45 @@ public sealed class MotionEngine : IDisposable
         }
 
         _autoSequencer.SetSelection(AutoPattern);
+        // 节奏档（慢/中/快）与挣扎只乘在速度上；稳定/自然起伏只乘在深度上，强度上限仍由舒适档管。
+        double elapsedAuto = Math.Max(0, Stopwatch.GetElapsedTime(_autoStartAt).TotalSeconds);
+        if (_cfg.CompanionStruggleEnabled) AdvanceStruggle(elapsedAuto);
+        else if (_autoFromCompanion) _struggle.Reset();
+        double baseSpeed = _autoFromCompanion
+            ? Speed * CompanionPlayPolicy.PaceScale(CompanionPaceFor(_cfg.CompanionProcess))
+            : Speed;
+        baseSpeed *= StruggleSpeedScale;
+        double depthScale = _autoFromCompanion
+            ? CompanionPlayPolicy.VariationDepthScale(_cfg.CompanionVariation, elapsedAuto)
+            : 1.0;
+        double intensity = EffectiveIntensity;
+        if (_autoFromCompanion)
+        {
+            intensity = Math.Clamp(intensity * depthScale + StruggleDepthBoost, 0.1, 2.0);
+            intensity = Math.Min(intensity, Math.Max(0.1, profile.MaxIntensity));
+        }
+        // 切窗降级：只降速度与深度，仍然是「有信号继续」，不是缓降退出。
+        _backgroundDegradeBlend = FollowContinuityPolicy.Smooth(_backgroundDegradeBlend, _backgroundDegradeTarget, deltaSeconds);
+        if (_autoFromCompanion && _backgroundDegradeBlend > 0.0005)
+        {
+            baseSpeed *= 1 - _backgroundDegradeBlend * (1 - FollowContinuityPolicy.DegradedSpeedScale);
+            intensity *= 1 - _backgroundDegradeBlend * (1 - FollowContinuityPolicy.DegradedDepthScale);
+        }
+        // 不盲从鼓点：配乐很快、主体（人声 / 撞击）很慢时，把音频那点节奏推动压下来。
+        // 只在游戏伴随这条路上生效——用户自己按的「开始自动」还是照旧吃音频特征。
+        double beatWeight = 1.0;
+        if (_autoFromCompanion && AudioSource is { } audioSource)
+            beatWeight = AudioRhythmPolicy.BeatDamping(audioSource.GetRhythmHint(), audioSource.MusicTempoBpm / 60.0);
         AutoBehaviorFrame frame = _autoSequencer.Step(
             deltaSeconds,
-            Speed,
+            baseSpeed,
             _axisAmp,
-            EffectiveIntensity,
+            intensity,
             _arousal,
             profile,
             Volatile.Read(ref _audioEnergy),
             Volatile.Read(ref _audioBass),
-            Volatile.Read(ref _audioBeat));
+            Volatile.Read(ref _audioBeat) * beatWeight);
         CurrentAutoPattern = frame.Pattern;
         CurrentAutoPatternLabel = frame.PatternLabel;
         CurrentAutoBpm = frame.Bpm;
@@ -1978,8 +2121,7 @@ public sealed class MotionEngine : IDisposable
         double deltaSeconds,
         long generation,
         bool changedOnly = true,
-        double? interpolationSeconds = null,
-        bool ambientOverlay = false)
+        double? interpolationSeconds = null)
     {
         if (target.Count < 6) return false;
         lock (_dispatchLock)
@@ -1988,9 +2130,12 @@ public sealed class MotionEngine : IDisposable
             double[] output;
             lock (_outputLock)
             {
-                // 氛围叠加必须在「多轴门控」之前：用户关掉「多轴动作」时，次要轴要照样被钉回中位，
+                // 氛围叠加是「全局」的：手动 / 自动 / 脚本 / 游戏桥 / 伴随 / 遥测 / 手柄 —— 所有玩法
+                // 都从这一个出口下山，叠在这里就一视同仁，不用每条路径各背一个开关，
+                // 也不会出现「换个玩法微动就没了」。
+                // 位置仍必须在「多轴门控」之前：关掉「多轴动作」时次要轴要照样被钉回中位，
                 // 不能被氛围层偷偷又抬起来。
-                IReadOnlyList<double> staged = ambientOverlay ? ApplyAmbientOverlay(target, deltaSeconds) : target;
+                IReadOnlyList<double> staged = ApplyAmbientOverlay(target, deltaSeconds);
                 // 不再按舒适档削速度/加速度：目标原样下发，只夹到 0–100。
                 IReadOnlyList<double> gated = ApplyMultiAxisGate(staged);
                 output = new double[6];

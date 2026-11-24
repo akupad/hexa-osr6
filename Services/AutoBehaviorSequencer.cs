@@ -152,6 +152,65 @@ public sealed class AutoBehaviorSequencer
         _enabledPatternsProvider = provider;
 
     /// <summary>
+    /// 取样池的<b>整体替换</b>（null / 空 = 不替换，回到「勾选池」的老逻辑）。
+    /// 游戏伴随的「动作池」走这条路：用户在伴随卡里挑了一组动作页动作，伴随就只在这组里轮播，
+    /// 不去动「参与随机的动作」那份全局勾选（那是动作页/游玩页自动模式自己在用的）。
+    /// 元素是完整池子 Id，自建动作带 <see cref="CustomStrokePrefix"/> 前缀。
+    /// </summary>
+    private static volatile string[]? _poolOverride;
+    /// <summary>池子按勾选顺序轮流（false = 旧的加权抽样）。</summary>
+    private static volatile bool _poolOrdered;
+
+    public static void SetPoolOverride(IReadOnlyList<string>? ids, bool rotation = false)
+    {
+        if (ids is null || ids.Count == 0)
+        {
+            _poolOverride = null;
+            _poolOrdered = false;
+            return;
+        }
+        var list = new List<string>(ids.Count);
+        foreach (string? raw in ids)
+        {
+            string id = (raw ?? "").Trim().ToLowerInvariant();
+            if (id.Length == 0 || list.Contains(id)) continue;
+            list.Add(id);
+        }
+        _poolOverride = list.Count == 0 ? null : list.ToArray();
+        // 轮流：按用户勾选的顺序首尾循环，不加权、不随机插招。
+        _poolOrdered = rotation && _poolOverride is { Length: > 0 };
+    }
+
+    public static IReadOnlyList<string> PoolOverride => _poolOverride ?? Array.Empty<string>();
+
+    /// <summary>当前是否按池子顺序轮流（而不是加权抽样）。</summary>
+    public static bool PoolRotation => _poolOrdered;
+
+    /// <summary>
+    /// 轮流：从当前动作往后找池子里的下一个，走到末尾绕回开头；当前不在池子里就从第一条开始。
+    /// 「轻柔」档跳过的很快动作照样跳过，找不到就交回加权抽样。
+    /// </summary>
+    private static string? NextOrdered(string? current, ComfortProfile profile)
+    {
+        string[] order = _poolOverride ?? Array.Empty<string>();
+        if (order.Length == 0) return null;
+        var byId = AllPatterns.ToDictionary(item => item.Id, StringComparer.OrdinalIgnoreCase);
+        int start = -1;
+        for (int i = 0; i < order.Length; i++)
+        {
+            if (string.Equals(order[i], current, StringComparison.OrdinalIgnoreCase)) { start = i; break; }
+        }
+        for (int step = 1; step <= order.Length; step++)
+        {
+            string id = order[(start + step) % order.Length];
+            if (!byId.TryGetValue(id, out AutoPlayPattern? item)) continue;
+            if (profile.Id == "gentle" && IsAggressive(item)) continue;
+            return item.Id;
+        }
+        return null;
+    }
+
+    /// <summary>
     /// 取一份启用动作 Id 快照：去空白、转小写、去重。UI 线程写入与音频线程读取可能并发，
     /// 这里复制一份数组并兜底异常，保证取样永不因集合被改写而抛错。
     /// </summary>
@@ -406,6 +465,12 @@ public sealed class AutoBehaviorSequencer
     private AutoPlayParameters _lastParameters = AutoPlayParameters.Default;
     private bool _holdCurrent;
     private double _temporaryRemaining;
+    // 手动换招保护期：用户在设置页/热键刚选的这个动作，先钉住几拍，别被下一拍的自动换招盖掉。
+    private double _manualHoldRemaining;
+
+    /// <summary>手动选中的动作还剩多少秒保护期（0 = 没有保护）。</summary>
+    public double SelectionHoldRemaining => _manualHoldRemaining;
+    public bool SelectionHoldActive => _manualHoldRemaining > 0;
 
     public AutoBehaviorSequencer(int? seed = null)
     {
@@ -439,6 +504,7 @@ public sealed class AutoBehaviorSequencer
         _lastParameters = parameters;
         _holdCurrent = false;
         _temporaryRemaining = 0;
+        _manualHoldRemaining = 0;
         // 跟随状态从中位起步：自动动作刚开的时候，副轴也该是「被带起来」而不是一上来就满幅。
         _follow.Reset();
         RememberPattern(_current);
@@ -470,6 +536,11 @@ public sealed class AutoBehaviorSequencer
         string normalizedSelection = NormalizeSelection(_selection);
         if (normalizedSelection != _selection) _selection = normalizedSelection;
 
+        if (_manualHoldRemaining > 0)
+        {
+            _manualHoldRemaining = Math.Max(0, _manualHoldRemaining - dt);
+            _behaviorElapsed = 0;             // 保护期内不按时长自动换招
+        }
         _behaviorElapsed += dt;
         _transitionElapsed += dt;
         _tempoTargetElapsed += dt;
@@ -481,7 +552,10 @@ public sealed class AutoBehaviorSequencer
                 BeginTransition(PickNext(_current, profile), profile);
         }
 
-        if (_temporaryRemaining <= 0 && !_holdCurrent
+        // 保护期（_manualHoldRemaining > 0）里两条自动换招分支都不走：
+        // 用户在动作池里选的这一招既不会被时长换招盖掉，也不会被 free_play 的随机抽签插队；
+        // 保护期一过，_selection 仍是他选的那个，自动节奏再从这里接着跑。
+        if (_manualHoldRemaining <= 0 && _temporaryRemaining <= 0 && !_holdCurrent
             && _selection == "free_play" && _behaviorElapsed >= _behaviorDuration)
             BeginTransition(PickNext(_current, profile), profile);
         else if (_temporaryRemaining <= 0 && _selection != "free_play" && _current != _selection)
@@ -563,6 +637,13 @@ public sealed class AutoBehaviorSequencer
 
         double bpm = BaseFrequencyOf(_current) * _tempo * audioTempo * 60;
         return new AutoBehaviorFrame(values, _current, _currentLabel, bpm, transition);
+    }
+
+    /// <summary>用户手动换招：立刻生效，并在 seconds 秒内不被自动换招 / 下一拍覆盖。</summary>
+    public void HoldSelection(double seconds)
+    {
+        _manualHoldRemaining = Math.Clamp(seconds, 0, 60);
+        _behaviorElapsed = 0;
     }
 
     public void SetSelection(string selection) => _selection = NormalizeSelection(selection);
@@ -658,6 +739,23 @@ public sealed class AutoBehaviorSequencer
         AutoPlayPattern[] pool = enabled.Length == 0
             ? builtinOnly
             : all.Where(item => Array.IndexOf(enabled, item.Id) >= 0).ToArray();
+        // 伴随的「动作池」：整体替换勾选池，但只认池子里真实存在的动作。
+        // 全被删光（或全是未知 Id）时保持勾选池的结果 —— 用户的池子空了不该让伴随变成不动。
+        string[] poolOverride = _poolOverride ?? Array.Empty<string>();
+        // 轮流模式：严格按勾选顺序走，下一个就是池子里的下一个（首尾循环），不参与加权抽样。
+        if (_poolOrdered && poolOverride.Length > 0)
+        {
+            string? ordered = NextOrdered(except ?? _current, profile);
+            if (ordered is not null) return ordered;
+        }
+        if (poolOverride.Length > 0)
+        {
+            // 大小写不敏感：设置里存的是小写 Id，动作库里的 Id 由用户/文件来，大小写不可控。
+            var picked = all.Where(item => Array.Exists(poolOverride,
+                id => string.Equals(id, item.Id, StringComparison.OrdinalIgnoreCase))).ToArray();
+            if (picked.Length > 0) pool = picked;
+        }
+
         // 勾选项全部失效（例如旧配置残留未知 Id、自建动作已被删掉）时退回内置波形，避免取样池为空
         if (pool.Length == 0) pool = builtinOnly;
 

@@ -7,12 +7,30 @@
          页头 / 工具条 / 设备提示都是 Auto 行，卡片墙和右栏吃剩下的高度。
          工具条里的分类、搜索、速度、播放全部用 WrapPanel 排 —— 宽度不够时换行，不会被裁掉。
          右栏宽度和卡片宽度由 code-behind 按窗口实算（SideColumn / _cardWidth），不写死像素。 -->
-    <Grid Margin="24,16,24,24" MaxWidth="1440" HorizontalAlignment="Stretch">
+    <!-- 动作 / 脚本库 合一（2026-11-24：「脚本库」不再是左侧独立入口，改成这一页顶上的按钮） -->
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶上一行按钮：🎯 动作 ←→ 📚 脚本库，一次只显示一个面板 -->
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="24,14,24,0">
+            <Button x:Name="TabStrokesBtn" Content="🎯 动作" Height="30" Padding="14,0"
+                    Style="{StaticResource BtnPrimary}" Click="TabStrokes_Click"
+                    ToolTip="动作这一栏（卡片墙 + 预览 / 详情）"/>
+            <Button x:Name="TabLibraryBtn" Content="📚 脚本库" Height="30" Padding="14,0" Margin="8,0,0,0"
+                    Style="{StaticResource BtnSecondary}" Click="TabLibrary_Click"
+                    ToolTip="脚本库：库里的脚本直接播放（会驱动设备）、导入导出、手机上看。左边导航不再单列一项"/>
+        </StackPanel>
+
+        <Grid x:Name="StrokePane" Grid.Row="1" Margin="24,10,24,24" MaxWidth="1440" HorizontalAlignment="Stretch">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>  <!-- 0 页头 -->
             <RowDefinition Height="Auto"/>  <!-- 1 工具条：分类 / 搜索 / 速度 / 播放 -->
-            <RowDefinition Height="Auto"/>  <!-- 2 设备状态提示（没连上 / 急停时才出现） -->
-            <RowDefinition Height="*"/>     <!-- 3 主体：动作卡片墙 + 预览 / 详情 -->
+            <RowDefinition Height="Auto"/>  <!-- 2 脚本架：脚本库里的脚本（导入的也列在这儿） -->
+            <RowDefinition Height="Auto"/>  <!-- 3 设备状态提示（没连上 / 急停时才出现） -->
+            <RowDefinition Height="*"/>     <!-- 4 主体：动作卡片墙 + 预览 / 详情 -->
         </Grid.RowDefinitions>
 
         <!-- ══ 0 页头 ══════════════════════════════════════════════════
@@ -103,16 +121,46 @@
                 </Grid>
             </StackPanel>
         </Border>
+        <!-- ══ 2 脚本架：脚本库里的脚本（导入的也列在这一排），点一下切到「📚 脚本库」选中它 ═════ -->
+        <Border x:Name="ScriptShelf" Grid.Row="2" Style="{StaticResource Card}" Padding="12,8" Margin="0,0,0,10">
+            <StackPanel>
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock x:Name="ShelfTitle" Text="▾  📚 脚本库脚本（0）" FontSize="12" FontWeight="SemiBold"
+                               VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="ShelfHeader_MouseUp"
+                               ToolTip="点这一行收起 / 展开；这一排就是脚本库里的脚本，导入的也在这儿"/>
+                    <TextBlock x:Name="ShelfHint" Grid.Column="1" Margin="10,0,10,0" FontSize="10"
+                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                               TextWrapping="Wrap" Text=""/>
+                    <WrapPanel Grid.Column="2" Orientation="Horizontal">
+                        <Button x:Name="ShelfRefreshBtn" Content="↻ 刷新" Style="{StaticResource BtnSecondary}"
+                                Height="26" Padding="8,0" FontSize="11" Click="ShelfRefresh_Click"
+                                ToolTip="重新读一遍脚本库目录"/>
+                        <Button x:Name="ShelfImportBtn" Content="📥 导入脚本…" Style="{StaticResource BtnSecondary}"
+                                Height="26" Padding="8,0" FontSize="11" Margin="6,0,0,0" Click="ShelfImport_Click"
+                                ToolTip="把电脑里的 .funscript 复制进脚本库（可多选）；导入完这一排马上就有"/>
+                    </WrapPanel>
+                </Grid>
+                <ScrollViewer x:Name="ShelfScroll" MaxHeight="88" VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
+                    <WrapPanel x:Name="ShelfPanel"/>
+                </ScrollViewer>
+            </StackPanel>
+        </Border>
 
-        <!-- ══ 2 设备状态提示：只有「不能播放」的时候才出现，平时不占地方 ══ -->
-        <Border x:Name="DeviceHintBar" Grid.Row="2" Background="{StaticResource WarningSoft}"
+
+        <!-- ══ 3 设备状态提示：只有「不能播放」的时候才出现，平时不占地方 ══ -->
+        <Border x:Name="DeviceHintBar" Grid.Row="3" Background="{StaticResource WarningSoft}"
                 CornerRadius="6" Padding="10,7" Margin="0,0,0,10" Visibility="Collapsed">
             <TextBlock x:Name="DeviceHintText" FontSize="11" Foreground="{StaticResource Warning}"
                        TextWrapping="Wrap" Text=""/>
         </Border>
 
-        <!-- ══ 3 主体：左＝动作卡片墙，右＝3D 预览 + 选中动作详情 ═════════ -->
-        <Grid Grid.Row="3">
+        <!-- ══ 4 主体：左＝动作卡片墙，右＝3D 预览 + 选中动作详情 ═════════ -->
+        <Grid Grid.Row="4">
             <Grid.RowDefinitions>
                 <RowDefinition Height="*"/>
                 <RowDefinition Height="Auto"/>
@@ -168,4 +216,11 @@
             </Grid>
         </Grid>
     </Grid>
+
+        <!-- 脚本库面板：ScriptLibraryPage 仍是 Page（自检里按 Page 类型断言），这里用 Frame 承载 -->
+        <Frame x:Name="LibraryHost" Grid.Row="1" Visibility="Collapsed" NavigationUIVisibility="Hidden"
+               Background="{StaticResource Bg}"/>
+
+    </Grid>
+
 </Page>

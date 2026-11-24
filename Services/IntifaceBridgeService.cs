@@ -46,9 +46,9 @@ public sealed class IntifaceBridgeService : IDisposable
     private long _shapeLastTick;
     private bool _shapeLinkActive;
 
-    /// <summary>整形管线是否生效（三个开关全关 = 回到「原样透传」，方便随时退回旧行为）。</summary>
+    /// <summary>整形管线是否生效（两个开关全关 = 回到「原样透传」，方便随时退回旧行为）。</summary>
     private bool ShapingActive =>
-        _cfg.BridgeInputSmoothing || _cfg.BridgeAxisLink || _cfg.BridgeUseComfortLimits;
+        _cfg.BridgeInputSmoothing || _cfg.BridgeAxisLink;
     private int _clientCount;
     /// <summary>连接短号自增；只用于追踪文件里区分同名客户端的多条连接。</summary>
     private int _sessionSerial;
@@ -1116,10 +1116,9 @@ public sealed class IntifaceBridgeService : IDisposable
         }
 
         var cfg = _cfg;
-        var profile = ComfortProfile.Resolve(cfg.ComfortProfile);
-        double maxSpeed = cfg.BridgeUseComfortLimits
-            ? profile.MaxAxisSpeedPerSecond
-            : BridgeMotionShaper.LegacyMaxSpeedPerSecond;
+        // 桥不再按「舒适档」削速度：恒用旧行为的 60ms 上限。用户明确不要这层限制，
+        // 游戏桥只守设置页的轴限位与急停（去抖开关仍在，那是手感不是限制）。
+        double maxSpeed = BridgeMotionShaper.LegacyMaxSpeedPerSecond;
         double smoothingMs = cfg.BridgeInputSmoothing ? cfg.BridgeSmoothingMs : 0;
 
         var values = new double[6];

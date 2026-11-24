@@ -39,6 +39,12 @@ dotnet run --project tests/Hexa.CoreTests  # 单元测试（257+ 项）
 $env:HEXA_SELFTEST="$env:TEMP\hexa-selftest.txt"; dotnet run --project Hexa.csproj -c Debug
 ```
 
+## 开发热更与预览
+
+- 热更：`pwsh -File tools\hot.ps1` 盯住 `.cs`/`.xaml`，存盘即自动编译并重启 Hexa（详见 `docs\热更与预览.md`）。
+- 画面预览：测试台「画面同步」有预览区，显示正在跟的目标窗口，以及抓到的那块画面。
+- 声音响应：作用范围和触发门槛在测试台「① 声音响应」里直接拖滑杆就能调。
+
 ## 上手三步
 
 1. 打开 Hexa → **设置** 页选串口 → 点「立即连接」（连接不上先点「刷新设备」看串口有没有被别的程序占用）。

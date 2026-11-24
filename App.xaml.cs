@@ -38,6 +38,27 @@ public partial class App : System.Windows.Application
 
     public static WebApiService    WebApi   { get; private set; } = null!;
     public static NotifyIcon?      TrayIcon { get; private set; }
+
+    // ── 诊断自动留档（DiagnosticReport.Create 的挂钩）────────────────
+    // 同一标签 5 分钟内只打一次包，避免断开重连风暴时反复压 zip。
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _autoArchiveLast = new();
+    private const long AutoArchiveIntervalMs = 5 * 60 * 1000L;
+    private static bool _lastEStopState;   // 急停状态上一次快照（StateChanged 翻转检测用）
+
+    // ── 设置热加载 ────────────────────────────────────────────────
+    // 用处：手改 settings.json（或别的工具写它）之后不用关程序重开，1 秒内就生效。
+    // 界面里改的设置本来就即时生效，这里补的是「从文件外面改」的那条路。
+    private static System.IO.FileSystemWatcher? _settingsWatcher;
+    private static System.Windows.Threading.DispatcherTimer? _settingsReloadTimer;
+
+    /// <summary>设置从文件热加载完成后触发（界面可用它刷新显示）。</summary>
+    public static event Action? SettingsReloaded;
+
+    /// <summary>
+    /// 悬浮窗显示/隐藏（点小窗上的 ✕、托盘菜单、快捷键、设置页按钮都会走到这里）。
+    /// 参数 = 现在是不是显示着。设置页靠它同步按钮文案，并把「🪟 悬浮窗」那块顺手收起。
+    /// </summary>
+    public static event Action<bool>? OverlayVisibilityChanged;
     private static CompactOverlay? _overlay;
 
     // ── 托盘菜单引用（只构建一次，状态变化时由 SyncTrayMenu 刷新）────
@@ -104,6 +125,7 @@ public partial class App : System.Windows.Application
         DispatcherUnhandledException += (_, args) =>
         {
             AppLogger.Error("界面线程未处理异常", args.Exception);
+            AutoArchiveSync("unhandled-exception");
 
             // 唯一一种"记完日志就放行会白死"的异常：在 WPF 布局 / 应用模板的过程中弹了模态框
             // （MessageBox.Show 内部会 PushFrame），WPF 自己的消息回调里抛
@@ -144,10 +166,12 @@ public partial class App : System.Windows.Application
         {
             AppLogger.Error("未处理异常（进程即将结束）" + (args.IsTerminating ? "（终止）" : ""),
                 args.ExceptionObject as Exception);
+            AutoArchiveSync("unhandled-exception");
         };
         TaskScheduler.UnobservedTaskException += (_, args) =>
         {
             AppLogger.Error("被丢弃的任务异常（未 await）", args.Exception);
+            AutoArchiveSync("unhandled-exception");
             args.SetObserved();   // 已记录，不必再让进程崩
         };
 
@@ -192,7 +216,21 @@ public partial class App : System.Windows.Application
         // 改名 Helix → Hexa：先把旧目录的数据复制过来（只复制、不删除、不覆盖新数据）
         AppSettings.MigrateLegacyDataIfNeeded();
         Settings = AppSettings.Load();
+
+        // 画面同步：每次启动一律默认关，只有用户在测试台亲手点「开始同步」才跟。
+        // 不这么做的话，上次点过的「开」会被存盘带回来，开机就自己跟着画面动 —— 用户 2026-11-23 明确否掉。
+        // 测试/排查时可以用 HEXA_KEEP_SCREENWATCH=1 保留上次的开关（正常启动不受影响）。
+        bool keepScreenWatchOnStart = Environment.GetEnvironmentVariable("HEXA_KEEP_SCREENWATCH") is { Length: > 0 };
+        if (Settings.ScreenWatchEnabled && !keepScreenWatchOnStart)
+        {
+            Settings.ScreenWatchEnabled = false;
+            AppLogger.Info("画面同步：启动时默认关闭（上次是开着的，按要求不自动恢复）");
+        }
+        if (keepScreenWatchOnStart)
+            AppLogger.Info("画面同步：HEXA_KEEP_SCREENWATCH=1，保留上次的开关状态（测试用）");
+
         Settings.Save();
+        StartSettingsWatcher();
         // 界面语言：必须赶在 MainWindow 之前定下来，否则首屏会先按中文渲染一遍。
         // （Normalize 已保证这里只有 zh / en，写坏的值回落中文。）
         Hexa.Services.LocalizationService.UiLanguage = Settings.UiLanguage;
@@ -214,6 +252,8 @@ public partial class App : System.Windows.Application
         }
 
         AudioReactive = new AudioReactiveService(Engine, Settings);
+        // 底色/伴随这条路的「不盲从鼓点」要用声音分类，把取样口交给引擎。
+        Engine.AudioSource = AudioReactive;
         GameTelemetry = new GameTelemetryService(
             Settings.GameTelemetryPort,
             Settings.GameTelemetryToken,
@@ -233,7 +273,6 @@ public partial class App : System.Windows.Application
             ToyName = Settings.LovenseToyName,
             StrokeTopPercent = Settings.LovenseStrokeTopPercent,
             StrokeDeepPercent = Settings.LovenseStrokeDeepPercent,
-            Unlimited = Settings.LovenseUnlimited,
             RotateTopPercent = Settings.LovenseRotateTopPercent,
             RotateDeepPercent = Settings.LovenseRotateDeepPercent,
             LocalOnly = Settings.LovenseLocalOnly,
@@ -270,6 +309,14 @@ public partial class App : System.Windows.Application
         }
 
         SetupTrayIcon();
+
+        // ── 诊断自动留档 + 停顿检测挂钩（只加事件/调用，不改被诊断的服务本身）──
+        // 串口三信号（断开/重连失败/板子重启）由 SerialService.Incident 统一送出；
+        // 急停由 Engine.StateChanged 翻转检测；未处理异常在开头三个钩子里各留档一次。
+        Serial.Incident += OnSerialIncident;
+        Engine.StateChanged += OnEngineStateChangedForEStop;
+        _lastEStopState = Engine.EmergencyStopped;
+        Hexa.Diagnostics.StallDetector.Start();
 
         // 存储位置：把设置里的自定义目录套到两个静态仓库上（空 = 默认目录）
         Hexa.Models.CompositionStore.CustomDirectory = Settings.CompositionFolder;
@@ -324,6 +371,7 @@ public partial class App : System.Windows.Application
         Settings.OverlayVisible = true;
         Settings.Save();
         SyncTrayMenu();
+        OverlayVisibilityChanged?.Invoke(true);
     }
 
     public static void HideOverlay()
@@ -332,6 +380,7 @@ public partial class App : System.Windows.Application
         Settings.OverlayVisible = false;
         Settings.Save();
         SyncTrayMenu();
+        OverlayVisibilityChanged?.Invoke(false);
     }
 
     public static void ToggleOverlay()
@@ -674,9 +723,76 @@ public partial class App : System.Windows.Application
         }
     }
 
+    /// <summary>
+    /// 盯住 settings.json：文件一变就把设置读回内存，界面和引擎立刻跟着变，不用重启。
+    /// 连续写盘（保存十项设置）靠 600ms 防抖收成一次；自己刚写出去的那份用 LastSaveUtc 跳过。
+    /// </summary>
+    private static void StartSettingsWatcher()
+    {
+        try
+        {
+            string dir = AppSettings.DataDirectory;
+            Directory.CreateDirectory(dir);
+            _settingsReloadTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(600),
+            };
+            _settingsReloadTimer.Tick += (_, _) =>
+            {
+                _settingsReloadTimer!.Stop();
+                if (!AppSettings.ReloadInto(Settings)) return;
+                SettingsReloaded?.Invoke();
+                // 「开着同步」这个开关改了要当场生效：外面把 ScreenWatchEnabled 改成 true 就真的开始跟，
+                // 改成 false 就停 —— 否则热加载只改了数字，行为还得重启才变。
+                try
+                {
+                    if (Settings.ScreenWatchEnabled)
+                    {
+                        var svc = ScreenWatchService.Current ?? new ScreenWatchService(Settings);
+                        if (!svc.IsRunning) svc.Start();
+                        AppLogger.Info("设置热加载：画面同步已开始");
+                    }
+                    else
+                    {
+                        ScreenWatchService.Current?.Stop();
+                    }
+                }
+                catch (Exception ex) { AppLogger.Warn("热加载后启停画面同步失败：" + ex.Message); }
+            };
+
+            _settingsWatcher = new System.IO.FileSystemWatcher(dir, "settings.json")
+            {
+                NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.Size | System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.CreationTime,
+                EnableRaisingEvents = true,
+            };
+            _settingsWatcher.Changed += (_, _) => QueueSettingsReload();
+            _settingsWatcher.Created += (_, _) => QueueSettingsReload();
+            _settingsWatcher.Renamed += (_, _) => QueueSettingsReload();
+            AppLogger.Info($"设置热加载已启用：{AppSettings.SettingsFilePath}");
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("设置热加载没起来（不影响正常使用，只是改文件后要重启才生效）：" + ex.Message);
+        }
+    }
+
+    private static void QueueSettingsReload()
+    {
+        // 自己 Save 出来的变动不算：否则「界面里拖滑条 → 存盘 → 重读 → 把拖动中的值顶回去」
+        if ((DateTime.UtcNow - AppSettings.LastSaveUtc).TotalSeconds < 2) return;
+        var dispatcher = Current?.Dispatcher;
+        if (dispatcher is null) return;
+        dispatcher.BeginInvoke(() =>
+        {
+            _settingsReloadTimer?.Stop();
+            _settingsReloadTimer?.Start();
+        });
+    }
+
     protected override void OnExit(ExitEventArgs e)
     {
         _shuttingDown = true;   // 退出中：窗口关闭会触发 IsVisibleChanged，不要再弹气泡
+        try { if (_settingsWatcher is not null) { _settingsWatcher.EnableRaisingEvents = false; _settingsWatcher.Dispose(); } } catch { }
 
         // 退出前把「微调波形」页的手画波形存成草稿，下次启动自动恢复。
         // 控制点 + 一圈时长 + 六轴启用状态 + 平滑插值都要存，缺一项恢复出来的播放状态就是错的。
@@ -743,5 +859,60 @@ public partial class App : System.Windows.Application
     {
         try { a(); }
         catch (Exception ex) { AppLogger.Error("UI 投递回调异常", ex); }
+    }
+
+    // ── 诊断自动留档 ─────────────────────────────────────────────────
+    private static void OnSerialIncident(string kind) => AutoArchive(kind);
+
+    private static void OnEngineStateChangedForEStop()
+    {
+        bool estop = Engine.EmergencyStopped;
+        bool wasEstop = _lastEStopState;
+        _lastEStopState = estop;
+        if (estop && !wasEstop)
+            AutoArchive("estop");
+    }
+
+    /// <summary>限频闸门：同一标签 5 分钟内只打一次包。先占位再后台打包。</summary>
+    private static bool TryReserveArchive(string tag)
+    {
+        long now = Environment.TickCount64;
+        if (_autoArchiveLast.TryGetValue(tag, out long last) && now - last < AutoArchiveIntervalMs)
+            return false;
+        _autoArchiveLast[tag] = now;
+        return true;
+    }
+
+    /// <summary>串口事件/急停用：后台打包，绝不堵调用线程（可能是串口读线程）。</summary>
+    private static void AutoArchive(string tag)
+    {
+        if (!TryReserveArchive(tag)) return;
+        _ = Task.Run(() => DoArchive(tag));
+    }
+
+    /// <summary>未处理异常用：同步打包（进程可能马上结束，后台线程来不及跑）。</summary>
+    private static void AutoArchiveSync(string tag)
+    {
+        if (!TryReserveArchive(tag)) return;
+        try { DoArchive(tag); } catch { }
+    }
+
+    private static void DoArchive(string tag)
+    {
+        try
+        {
+            string path = Hexa.Diagnostics.DiagnosticReport.Create(tag);
+            if (path.Length == 0) return;
+            AppLogger.Info("诊断报告已留存：" + path);
+            try
+            {
+                Dispatch(() => TrayIcon?.ShowBalloonTip(5000, "诊断报告已留存", path, ToolTipIcon.Info));
+            }
+            catch { }
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("诊断自动留档失败：" + ex.Message);
+        }
     }
 }

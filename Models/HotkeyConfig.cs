@@ -10,6 +10,8 @@ public sealed class HotkeyConfig
     public const string IntensityUp = "intensity_up";
     public const string IntensityDown = "intensity_down";
     public const string ToggleOverlay = "toggle_overlay";
+    public const string TempoUp = "tempo_up";
+    public const string TempoDown = "tempo_down";
 
     public Dictionary<string, string> Bindings { get; set; } = CreateDefaults();
 
@@ -23,6 +25,8 @@ public sealed class HotkeyConfig
         (IntensityUp, "强度 +10%"),
         (IntensityDown, "强度 -10%"),
         (ToggleOverlay, "显示 / 隐藏悬浮窗"),
+        (TempoUp, "节奏 +（加速，不加深）"),
+        (TempoDown, "节奏 -（减速）"),
     ];
 
     public void Normalize()
@@ -56,5 +60,7 @@ public sealed class HotkeyConfig
         [IntensityUp] = "Ctrl+Alt+PageUp",
         [IntensityDown] = "Ctrl+Alt+PageDown",
         [ToggleOverlay] = "Ctrl+Alt+O",
+        [TempoUp] = "Ctrl+Alt+Right",
+        [TempoDown] = "Ctrl+Alt+Left",
     };
 }

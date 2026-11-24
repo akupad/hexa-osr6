@@ -64,81 +64,32 @@
         <!-- ══ 1 播放 + 播放增强 + 从音频生成：一张卡，三段用分隔线和标题分开 ══ -->
         <Border Grid.Row="1" Style="{StaticResource Card}" Padding="12,10" Margin="0,0,0,10">
             <StackPanel>
-
-                <!-- ── 第 1 段：播放（在放哪个 / 放到哪 / 怎么停） ─────────── -->
-                <!-- WrapPanel：按钮总宽超过窗口时自动换行，不会把最右边的按钮挤出可视区 -->
-                <WrapPanel Margin="0,0,0,6">
-                    <TextBlock Text="▶ 播放" FontSize="13" FontWeight="SemiBold"
-                               VerticalAlignment="Center" Margin="0,0,10,0"/>
-
-                    <Button x:Name="PlayBtn" Content="▶ 载入并播放" MinWidth="112" Height="32" FontSize="12"
-                            Style="{StaticResource BtnPrimary}" Margin="0,0,8,0" Click="Play_Click"
-                            ToolTip="载入列表里选中的脚本，从头开始播放（会让设备动起来）"/>
-                    <Button x:Name="PauseResumeBtn" Content="⏸ 暂停" Width="84" Height="32" FontSize="12"
-                            Style="{StaticResource BtnSecondary}" Margin="0,0,8,0" Click="PauseResume_Click"
-                            ToolTip="暂停 / 继续当前脚本；暂停保留进度，点「继续」从原处接着播"/>
-                    <Button x:Name="StopBtn" Content="⏹ 停止" Width="78" Height="32" FontSize="12"
-                            Style="{StaticResource BtnSecondary}" Margin="0,0,12,0" Click="Stop_Click"
-                            ToolTip="立刻停下设备，并把播放位置退回脚本开头（不会把设备推到脚本的起始姿态）"/>
-
-                    <TextBlock Text="脚本倍率" FontSize="11" Foreground="{StaticResource Faint}"
-                               VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <Button x:Name="RateMinusBtn" Content="−" Width="26" Height="26" Padding="0" FontSize="14"
-                            Style="{StaticResource BtnSecondary}" VerticalAlignment="Center" Margin="0,0,4,0"
-                            Click="RateMinus_Click" ToolTip="脚本播放倍率 −0.05x（下限 0.25x，慢放）"/>
-                    <TextBlock x:Name="RateLabel" Text="1.00x" Width="46" FontSize="12" TextAlignment="Center"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                               ToolTip="脚本播放倍率：和「脚本制作 → 微调波形」的「脚本倍率」是同一个设置，这里能直接微调"/>
-                    <Button x:Name="RatePlusBtn" Content="+" Width="26" Height="26" Padding="0" FontSize="14"
-                            Style="{StaticResource BtnSecondary}" VerticalAlignment="Center"
-                            Click="RatePlus_Click" ToolTip="脚本播放倍率 +0.05x（上限 2.00x，快放）"/>
-                </WrapPanel>
-
-                <!-- 状态徽章 + 当前脚本 + 进度 + 时间 收在一行：省下的高度全留给下面的列表 -->
-                <Grid>
+                <Grid Margin="0,0,0,8" Background="Transparent" Cursor="Hand"
+                      MouseLeftButtonUp="EnhanceHeader_MouseUp"
+                      ToolTip="点这一行收起 / 展开整张卡；收起来不影响正在播放的脚本">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*" MinWidth="60"/>
-                        <ColumnDefinition Width="*" MinWidth="90" MaxWidth="300"/>
-                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
-                    <Border x:Name="PlayStateBadge" Background="{StaticResource SurfaceRaised}" CornerRadius="4"
-                            Padding="8,3" VerticalAlignment="Center">
-                        <TextBlock x:Name="PlayStateText" Text="未载入脚本" FontSize="11"
-                                   Foreground="{StaticResource Muted}"/>
-                    </Border>
-                    <TextBlock x:Name="NowPlayingText" Grid.Column="1" Text="还没有载入脚本"
-                               FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                               Margin="8,0,10,0" TextTrimming="CharacterEllipsis"/>
-                    <!-- 进度条可拖动：外面套一层 18px 高的透明命中区（8px 的细条根本捏不住）。
-                         拖动期间由 code-behind 让同步循环停手，松手才交还（见 PlaybackScrub_*）。 -->
-                    <Border Grid.Column="2" Background="Transparent" Height="18" Margin="0,0,10,0"
-                            VerticalAlignment="Center" Cursor="Hand"
-                            PreviewMouseLeftButtonDown="PlaybackScrub_Start"
-                            PreviewMouseMove="PlaybackScrub_Move"
-                            PreviewMouseLeftButtonUp="PlaybackScrub_End"
-                            ToolTip="拖动可以直接跳到脚本的任意位置（会让设备动到那里）。开着「跟着播放器走」时，松手后脚本会重新对齐到播放器的位置。">
-                        <ProgressBar x:Name="PlaybackProgress" Height="8" Minimum="0" Maximum="1" Value="0"
-                                     HorizontalAlignment="Stretch" VerticalAlignment="Center"
-                                     IsHitTestVisible="False"/>
-                    </Border>
-                    <TextBlock x:Name="PlaybackTimeText" Grid.Column="3" Text="— / —"
-                               FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                    <Button x:Name="LocateBtn" Grid.Column="4" Content="🔍 在列表中找到它" Height="24" FontSize="11"
-                            Padding="8,0" Margin="10,0,0,0" Style="{StaticResource BtnGhost}" Visibility="Collapsed"
-                            Click="Locate_Click" ToolTip="把列表滚到正在播的那一行并选中它"/>
+                    <TextBlock x:Name="EnhanceHeaderTitle" Text="▾  ▶ 播放 · ✨ 播放增强" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                    <TextBlock x:Name="EnhanceDesc" Grid.Column="1" Margin="10,0,10,0" VerticalAlignment="Center"
+                               FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                               Text="三个开关默认全关，只改播放时的动作、不动脚本文件，勾上才生效。"/>
+                    <Button x:Name="GenerateToggleBtn" Grid.Column="2" Content="🎵 从音频生成…" Height="24" FontSize="11"
+                            Padding="8,0" Style="{StaticResource BtnSecondary}" VerticalAlignment="Center"
+                            Click="GenerateToggle_Click"
+                            ToolTip="用一首音乐或视频自动生成一份 funscript 放进脚本库；点一下在下面展开，再点收起"/>
                 </Grid>
-
+                <StackPanel x:Name="PlayBody">
                 <!-- 播放被拒 / 选中的脚本解析不了 —— 这类「看起来在播其实没动」必须写出来 -->
                 <TextBlock x:Name="PlaybackWarnText" Text="" FontSize="11" Foreground="{StaticResource Warning}"
-                           Margin="0,6,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+                           Margin="0,0,0,6" TextWrapping="Wrap" Visibility="Collapsed"/>
 
                 <!-- ── 第 1.5 段：跟着播放器走（外挂从动）─────────────────────
                      Hexa 不内嵌播放器（要拖进上百 MB 原生依赖，VR 播放器也塞不进来），
                      改成读外部播放器的时间码、让脚本跟着它走。**默认不连**：软件不会自己去连播放器，
                      必须用户点「连接」—— 连上才有可能让设备跟着画面动。 -->
-                <Border Height="1" Background="{StaticResource Border}" Margin="0,8,0,0"/>
                 <Grid Margin="0,8,0,6">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="Auto"/>
@@ -236,86 +187,75 @@
                 <!-- ── 分隔：上半段是「正在播什么」，下半段是「播放时加什么」 ── -->
                 <Border Height="1" Background="{StaticResource Border}" Margin="0,8,0,0"/>
 
+                </StackPanel>
                 <!-- ── 第 2 段：播放增强（只改播放、不动脚本文件；默认全关） ── -->
-                <Grid Margin="0,8,0,7">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="✨ 播放增强" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                    <TextBlock Grid.Column="1" Margin="10,0,10,0" VerticalAlignment="Center"
-                               FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                               Text="三个开关默认全关，只改播放时的动作、不动脚本文件，勾上才生效。"/>
-                    <Button x:Name="GenerateToggleBtn" Grid.Column="2" Content="🎵 从音频生成…" Height="24" FontSize="11"
-                            Padding="8,0" Style="{StaticResource BtnSecondary}" VerticalAlignment="Center"
-                            Click="GenerateToggle_Click"
-                            ToolTip="用一首音乐或视频自动生成一份 funscript 放进脚本库；点一下在下面展开，再点收起"/>
-                </Grid>
 
-                <!-- 多轴联动：一行 [开关][幅度滑杆][读数][说明]，窄窗口下自动换行，绝不横向裁切 -->
-                <WrapPanel Margin="0,0,0,7">
-                    <CheckBox x:Name="LinkCheck" Content="多轴联动" FontSize="12" VerticalAlignment="Center"
-                              Margin="0,0,10,0"
-                              ToolTip="只动脚本自己没写动作的轴：写了的轴是作者的意图，Hexa 不会去改它"/>
-                    <TextBlock Text="联动幅度" FontSize="11" Foreground="{StaticResource Muted}"
-                               VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <Slider x:Name="LinkAmountSlider" Width="150" Minimum="5" Maximum="60" Value="30"
-                            SmallChange="5" TickFrequency="5" IsSnapToTickEnabled="True"
-                            VerticalAlignment="Center"
-                            ToolTip="其他轴最多偏离中位多少（占轴行程的百分比）。越大越明显，30% 左右比较自然"/>
-                    <TextBlock x:Name="LinkAmountLabel" Text="30%" Width="44" FontSize="11"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
-                    <TextBlock Text="脚本没写的其余轴跟着主轴一起动，30% 左右最自然。" FontSize="10"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                </WrapPanel>
-
-                <!-- 空档填缝：这一行参数多，窄窗口下会自动折行（不是被切掉） -->
-                <WrapPanel Margin="0,0,0,7">
-                    <CheckBox x:Name="GapFillCheck" Content="空档填缝" FontSize="12" VerticalAlignment="Center"
-                              Margin="0,0,10,0"
-                              ToolTip="只填「两端位置几乎相同、停着超过一段时间」的段落；要有声音事件才动，安静时保持不动"/>
-                    <TextBlock Text="静止超过" FontSize="11" Foreground="{StaticResource Muted}"
-                               VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <Slider x:Name="GapMinSlider" Width="150" Minimum="0.8" Maximum="6" Value="1.5"
-                            SmallChange="0.1" TickFrequency="0.1" IsSnapToTickEnabled="True"
-                            VerticalAlignment="Center"
-                            ToolTip="连续静止超过这个时长的段落才当作空档。调小会填更多段落，调大只填很长的静止段"/>
-                    <TextBlock x:Name="GapMinLabel" Text="1.5 秒" Width="52" FontSize="11"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
-                    <TextBlock Text="补白幅度" FontSize="11" Foreground="{StaticResource Muted}"
-                               VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <Slider x:Name="GapRangeSlider" Width="150" Minimum="5" Maximum="40" Value="20"
-                            SmallChange="5" TickFrequency="5" IsSnapToTickEnabled="True"
-                            VerticalAlignment="Center"
-                            ToolTip="空档里最多摆动多少（轴行程百分比）。它是补白，默认 20% 比较克制；调大更明显，设备换向时的余摆也更明显"/>
-                    <TextBlock x:Name="GapRangeLabel" Text="±20%" Width="46" FontSize="11"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
-                    <TextBlock Text="长时间不动的段落，有声音时才补小动作。" FontSize="10"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                </WrapPanel>
-
-                <!-- 脚本平滑 -->
-                <WrapPanel>
-                    <CheckBox x:Name="SmoothCheck" Content="脚本平滑" FontSize="12" VerticalAlignment="Center"
-                              Margin="0,0,10,0"
-                              ToolTip="默认关：Hexa 默认完全按作者写的原样播放。开启只影响播放、不改脚本文件；每个动作点照样一个不差地经过，也绝不会冲过脚本写的位置。适合高频抖动类脚本、或觉得机器换向时「咔咔」响"/>
-                    <TextBlock Text="平滑强度" FontSize="11" Foreground="{StaticResource Muted}"
-                               VerticalAlignment="Center" Margin="0,0,6,0"/>
-                    <Slider x:Name="SmoothStrengthSlider" Width="150" Minimum="0" Maximum="100" Value="100"
-                            SmallChange="10" TickFrequency="10" IsSnapToTickEnabled="True"
-                            VerticalAlignment="Center"
-                            ToolTip="100% = 完全平滑；0% = 和以前完全一样（直线插值）。播放中直接拖动就能听出区别"/>
-                    <TextBlock x:Name="SmoothStrengthLabel" Text="100%" Width="46" FontSize="11"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
-                    <TextBlock Text="动作点之间走圆角，换向不再硬折返。" FontSize="10"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                </WrapPanel>
-
-
-                <!-- 状态/提醒：为什么勾了却没效果（总开关是关的 / 声音没在监听） -->
-                <TextBlock x:Name="EnhanceNote" Text="" FontSize="11" Foreground="{StaticResource Warning}"
-                           Margin="0,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+                <!-- 三个开关 + 说明：和上面 PlayBody 一起被标题行收起（用户要的是整张卡只留一行，不是只藏开关） -->
+                <StackPanel x:Name="EnhanceBody">
+                    <!-- 多轴联动：一行 [开关][幅度滑杆][读数][说明]，窄窗口下自动换行，绝不横向裁切 -->
+                    <WrapPanel Margin="0,0,0,7">
+                        <CheckBox x:Name="LinkCheck" Content="多轴联动" FontSize="12" VerticalAlignment="Center"
+                                  Margin="0,0,10,0"
+                                  ToolTip="只动脚本自己没写动作的轴：写了的轴是作者的意图，Hexa 不会去改它"/>
+                        <TextBlock Text="联动幅度" FontSize="11" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Slider x:Name="LinkAmountSlider" Width="150" Minimum="5" Maximum="60" Value="30"
+                                SmallChange="5" TickFrequency="5" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center"
+                                ToolTip="其他轴最多偏离中位多少（占轴行程的百分比）。越大越明显，30% 左右比较自然"/>
+                        <TextBlock x:Name="LinkAmountLabel" Text="30%" Width="44" FontSize="11"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
+                        <TextBlock Text="脚本没写的其余轴跟着主轴一起动，30% 左右最自然。" FontSize="10"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                    </WrapPanel>
+    
+                    <!-- 空档填缝：这一行参数多，窄窗口下会自动折行（不是被切掉） -->
+                    <WrapPanel Margin="0,0,0,7">
+                        <CheckBox x:Name="GapFillCheck" Content="空档填缝" FontSize="12" VerticalAlignment="Center"
+                                  Margin="0,0,10,0"
+                                  ToolTip="只填「两端位置几乎相同、停着超过一段时间」的段落；要有声音事件才动，安静时保持不动"/>
+                        <TextBlock Text="静止超过" FontSize="11" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Slider x:Name="GapMinSlider" Width="150" Minimum="0.8" Maximum="6" Value="1.5"
+                                SmallChange="0.1" TickFrequency="0.1" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center"
+                                ToolTip="连续静止超过这个时长的段落才当作空档。调小会填更多段落，调大只填很长的静止段"/>
+                        <TextBlock x:Name="GapMinLabel" Text="1.5 秒" Width="52" FontSize="11"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
+                        <TextBlock Text="补白幅度" FontSize="11" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Slider x:Name="GapRangeSlider" Width="150" Minimum="5" Maximum="40" Value="20"
+                                SmallChange="5" TickFrequency="5" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center"
+                                ToolTip="空档里最多摆动多少（轴行程百分比）。它是补白，默认 20% 比较克制；调大更明显，设备换向时的余摆也更明显"/>
+                        <TextBlock x:Name="GapRangeLabel" Text="±20%" Width="46" FontSize="11"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
+                        <TextBlock Text="长时间不动的段落，有声音时才补小动作。" FontSize="10"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                    </WrapPanel>
+    
+                    <!-- 脚本平滑 -->
+                    <WrapPanel>
+                        <CheckBox x:Name="SmoothCheck" Content="脚本平滑" FontSize="12" VerticalAlignment="Center"
+                                  Margin="0,0,10,0"
+                                  ToolTip="默认关：Hexa 默认完全按作者写的原样播放。开启只影响播放、不改脚本文件；每个动作点照样一个不差地经过，也绝不会冲过脚本写的位置。适合高频抖动类脚本、或觉得机器换向时「咔咔」响"/>
+                        <TextBlock Text="平滑强度" FontSize="11" Foreground="{StaticResource Muted}"
+                                   VerticalAlignment="Center" Margin="0,0,6,0"/>
+                        <Slider x:Name="SmoothStrengthSlider" Width="150" Minimum="0" Maximum="100" Value="100"
+                                SmallChange="10" TickFrequency="10" IsSnapToTickEnabled="True"
+                                VerticalAlignment="Center"
+                                ToolTip="100% = 完全平滑；0% = 和以前完全一样（直线插值）。播放中直接拖动就能听出区别"/>
+                        <TextBlock x:Name="SmoothStrengthLabel" Text="100%" Width="46" FontSize="11"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center" Margin="6,0,12,0"/>
+                        <TextBlock Text="动作点之间走圆角，换向不再硬折返。" FontSize="10"
+                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                    </WrapPanel>
+    
+    
+                    <!-- 状态/提醒：为什么勾了却没效果（总开关是关的 / 声音没在监听） -->
+                    <TextBlock x:Name="EnhanceNote" Text="" FontSize="11" Foreground="{StaticResource Warning}"
+                               Margin="0,8,0,0" TextWrapping="Wrap" Visibility="Collapsed"/>
+                </StackPanel>
 
                 <!-- ── 第 3 段：从音频 / 视频生成脚本（默认折叠，由上面的按钮展开） ── -->
                 <Border x:Name="GeneratePanel" Visibility="Collapsed" Margin="0,10,0,0"
@@ -527,15 +467,6 @@
                 <Button x:Name="LibraryWebBtn" Content="📱 手机上看" Height="26" FontSize="11" Padding="10,0"
                         Style="{StaticResource BtnSecondary}" Margin="6,0,0,0" Click="LibraryWeb_Click"
                         ToolTip="把脚本库做成一个本机网页（http://localhost:8582/）：手机、平板、头显的浏览器打开就能看到脚本列表，点一下设备就播。只在本机可用，只提供播放和停止。"/>
-                <TextBlock Text="动作预设" FontSize="10" Foreground="{StaticResource Faint}"
-                           VerticalAlignment="Center" Margin="12,0,6,0"
-                           ToolTip="给「动作」页用的动作预设：可以导出成 JSON 备份，也可以从 JSON 导入"/>
-                <Button x:Name="ExportPresetsBtn" Content="⬆ 导出" Height="26" FontSize="11" Padding="10,0"
-                        Style="{StaticResource BtnSecondary}" Click="ExportPresets_Click"
-                        ToolTip="把「动作」页的全部动作预设导出成 JSON 文件（可备份 / 分享）"/>
-                <Button x:Name="ImportPresetsBtn" Content="⬇ 导入" Height="26" FontSize="11" Padding="10,0"
-                        Style="{StaticResource BtnSecondary}" Margin="6,0,0,0" Click="ImportPresets_Click"
-                        ToolTip="从 JSON 文件导入动作预设；重名会自动加 -2 / -3 后缀"/>
             </WrapPanel>
         </Grid>
     </Grid>

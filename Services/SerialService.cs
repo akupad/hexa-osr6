@@ -7,7 +7,7 @@ using System.Text.RegularExpressions;
 
 namespace Hexa.Services;
 
-public sealed class SerialService : ICommandTransport, IDisposable
+public sealed partial class SerialService : ICommandTransport, IDisposable
 {
     private static readonly TimeSpan OpenTimeout = TimeSpan.FromSeconds(7);
     private static readonly TimeSpan IdentityTimeout = TimeSpan.FromMilliseconds(1600);
@@ -63,6 +63,16 @@ public sealed class SerialService : ICommandTransport, IDisposable
     private string _fallbackPortName = "";
     private string _activePortName = "";
     private bool _outputEnabled;
+    /// <summary>断开前输出是开着的：重连成功后自动接回，免得用户为一次板子重启去点「全部归中」。</summary>
+    private bool _resumeOutputAfterReconnect;
+    /// <summary>上一拍真正发出去的目标位置：目标没变时靠它判断「这一拍可以少发」。</summary>
+    private readonly double[] _lastPacedRaw = new double[Osr6DeviceProfile.InstalledAxes.Length];
+    private bool _pacedHasFrame;
+    private int _pacedIdleTicks;
+    /// <summary>空闲降载：目标没变时每 25 拍（约 1 秒）才发一次心跳帧。</summary>
+    private const int IdleFrameDivisor = 25;
+    /// <summary>空闲心跳帧的插值时长：铺满两次心跳之间的空档，避免固件反复重开 40ms 插值。</summary>
+    private const int IdleInterpolationMs = 900;
     private bool _simulationEnabled;
 
     /// <summary>
@@ -125,6 +135,15 @@ public sealed class SerialService : ICommandTransport, IDisposable
 
     /// <summary>黑匣子（最近 800 条 / 约一分钟的现场）。界面「导出故障包」会把它落盘。</summary>
     public BlackBoxRecorder BlackBox { get; } = new();
+
+    /// <summary>最近一次真正把帧写进串口的时刻（Environment.TickCount64 单调毫秒）。停顿检测据此判断「宿主侧停发」。</summary>
+    public long LastWriteAtTicks { get; private set; }
+
+    /// <summary>串口连续失败计数（只读；诊断报告与停顿检测用）。</summary>
+    public int ConsecutiveFailures
+    {
+        get { lock (_lock) return _consecutiveFailures; }
+    }
 
     public bool IsOpen
     {
@@ -230,6 +249,9 @@ public sealed class SerialService : ICommandTransport, IDisposable
 
     public string? LastError { get; private set; }
     public event Action<bool>? ConnectionChanged;
+
+    /// <summary>串口关键事件（供诊断自动留档挂钩）：disconnect / reconnect-failed / board-restart。</summary>
+    public event Action<string>? Incident;
 
     public void EnableAutoDiscovery(bool preferWired)
     {
@@ -355,6 +377,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         }
 
         LastError = ok ? null : EnrichPortError(error);
+        if (!ok) Incident?.Invoke("reconnect-failed");
         if (notify) ConnectionChanged?.Invoke(ok);
         return ok;
     }
@@ -483,6 +506,21 @@ public sealed class SerialService : ICommandTransport, IDisposable
         var ordered = candidates.Where(p => p.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
+        // 打开失败时把系统原话翻成人话：最常见的是「端口被别的程序占着」，
+        // 而占着它的十有八九不是坏掉，是浏览器里某个直接抓串口的网页（Web Serial），
+        // 或者 Intiface / 另一个 Hexa 实例。用户看到 Access is denied 只会去拔线。
+        static string DescribeOpenError(string candidate, string? error)
+        {
+            if (string.IsNullOrWhiteSpace(error)) return candidate;
+            if (error.Contains("denied", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("拒绝", StringComparison.Ordinal))
+                return $"{candidate}: 被别的程序占着（多半是浏览器里直接抓串口的网页，比如 trymosa；也可能是 Intiface 或另一个 Hexa）—— 把那个页面关掉或点断开，它就自己连回来了，不用拔线";
+            if (error.Contains("does not exist", StringComparison.OrdinalIgnoreCase)
+                || error.Contains("不存在", StringComparison.Ordinal))
+                return $"{candidate}: 系统里找不到这个口（usb 线没插好或者板子没上电）";
+            return $"{candidate}: {error}";
+        }
+
         async Task<(bool Ok, string? Error)> AttemptAsync(List<string> names, bool requireIdentity)
         {
         string? lastError = null;
@@ -499,11 +537,12 @@ public sealed class SerialService : ICommandTransport, IDisposable
             var (opened, error) = await TryOpenPortAsync(candidate, generation, requireIdentity).ConfigureAwait(false);
             if (opened == null)
             {
-                lastError = $"{candidate}: {error}";
+                lastError = DescribeOpenError(candidate, error);
                 AppLogger.Warn($"串口连接失败: {lastError}");
                 continue;
             }
 
+            bool resumedOutput = false;
             lock (_lock)
             {
                 if (_disposed || generation != _connectionGeneration)
@@ -523,11 +562,30 @@ public sealed class SerialService : ICommandTransport, IDisposable
                         ?.PortName ?? _fallbackPortName;
                 }
                 _outputEnabled = false;
+                if (_resumeOutputAfterReconnect)
+                {
+                    _resumeOutputAfterReconnect = false;
+                    bool emergency = false;
+                    try { emergency = App.Engine?.EmergencyStopped ?? false; } catch { }
+                    if (!emergency)
+                    {
+                        _outputEnabled = true;
+                        resumedOutput = true;
+                    }
+                }
                 ResetSentAxesLocked();
                 StartReaderLocked(opened);   // 读线程与端口同生命周期：连接即开、关闭即停
             }
-            AppLogger.Info($"串口已连接: {candidate}（输出保持锁定）");
-            BlackBox.Record("state", $"已连接 {candidate}（输出保持锁定）");
+            if (resumedOutput)
+            {
+                AppLogger.Info($"串口已连接: {candidate}（断开前输出是开着的，已自动接回，不用手点归中）");
+                BlackBox.Record("state", $"已连接 {candidate}（自动恢复输出）");
+            }
+            else
+            {
+                AppLogger.Info($"串口已连接: {candidate}（输出保持锁定）");
+                BlackBox.Record("state", $"已连接 {candidate}（输出保持锁定）");
+            }
             return (true, null);
         }
 
@@ -544,7 +602,10 @@ public sealed class SerialService : ICommandTransport, IDisposable
         var wiredOnly = ordered.Where(name =>
             metadata.TryGetValue(name, out PortMetadata info)
             && IsKnownUsbBridgeHardware(info.HardwareId)).ToList();
-        if (wiredOnly.Count > 0 && wiredOnly.Count != ordered.Count)
+        // 只要候选里有「已知 USB 转串口」就试一遍放宽身份的路 ——
+        // 以前还要求「有线口数量 != 候选总数」，结果只有 COM3 一个口时这条路根本不会跑，
+        // 固件一回不过身份查询就永远连不上，用户只能拔插 USB（2026-11 实测）。
+        if (wiredOnly.Count > 0)
         {
             var secondPass = await AttemptAsync(wiredOnly, requireIdentity: false).ConfigureAwait(false);
             if (secondPass.Ok)
@@ -632,6 +693,19 @@ public sealed class SerialService : ICommandTransport, IDisposable
         {
             port.Open();
             if (!cancellationToken.IsCancellationRequested && ProbeTCodeIdentity(port, cancellationToken)) return port;
+            // 身份没回：多半是固件 panic 后正在重启，或者卡在半死状态。
+            // 与其让用户跑去拔插 USB，这里直接拉一下 RTS（接 EN 脚）硬复位，等它起来再问一次。
+            for (int attempt = 0; attempt < 2 && !cancellationToken.IsCancellationRequested; attempt++)
+            {
+                if (!TryPulseResetLine(port)) break;
+                if (cancellationToken.WaitHandle.WaitOne(2200)) break;
+                try { port.DiscardInBuffer(); } catch { }
+                if (ProbeTCodeIdentity(port, cancellationToken))
+                {
+                    AppLogger.Info($"{name}: 硬复位一次后自己回来了（不用拔插 USB）。");
+                    return port;
+                }
+            }
             if (cancellationToken.IsCancellationRequested)
             {
                 port.Close();
@@ -653,6 +727,27 @@ public sealed class SerialService : ICommandTransport, IDisposable
         {
             port.Dispose();
             throw;
+        }
+    }
+
+    /// <summary>
+    /// 用 RTS 给板子来一次硬复位（RTS 接 ESP32 的 EN）：拉高 150ms 再放开，芯片走正常启动、
+    /// 不会进下载模式（DTR 全程保持低）。这是「不用拔插 USB」的那一招。
+    /// </summary>
+    private static bool TryPulseResetLine(SerialPort port)
+    {
+        try
+        {
+            port.DtrEnable = false;
+            port.RtsEnable = true;
+            Thread.Sleep(150);
+            port.RtsEnable = false;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn("硬复位脉冲没发出去：" + ex.Message);
+            return false;
         }
     }
 
@@ -808,7 +903,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         catch (Exception ex)
         {
             failure = ex;
-            lock (_lock) { MarkDisconnectedLocked(ex.Message); }
+            lock (_lock) { MarkDisconnectedLocked(ex.Message, ex); }
         }
 
         if (failure != null)
@@ -911,7 +1006,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             catch (Exception ex)
             {
                 failure = ex;
-                lock (_lock) MarkDisconnectedLocked(ex.Message);
+                lock (_lock) MarkDisconnectedLocked(ex.Message, ex);
             }
             if (failure != null)
             {
@@ -1082,7 +1177,29 @@ public sealed class SerialService : ICommandTransport, IDisposable
                 if (!_lastSentValid[i]) continue;
                 _lastWrittenRaw[i] = _lastSentRaw[i];
             }
-            frame = TCodeFrameFormatter.FormatState(_lastWrittenRaw, _lastSentValid, FrameIntervalMs);
+            // 空闲降载：目标跟上一拍一样就降到每秒一帧心跳，不再拿 25Hz × 6 轴一直喂固件的插值队列。
+            // 依据：板子每次 panic 之前 400 帧全是同一句「居中保持」，说明它最怕的就是这种纯重复流量。
+            bool sameTarget = _pacedHasFrame;
+            if (sameTarget)
+            {
+                for (int i = 0; i < _lastWrittenRaw.Length; i++)
+                {
+                    if (Math.Abs(_lastWrittenRaw[i] - _lastPacedRaw[i]) > 0.5) { sameTarget = false; break; }
+                }
+            }
+            if (sameTarget)
+            {
+                if (++_pacedIdleTicks % IdleFrameDivisor != 0) return;
+                // 心跳帧的插值铺满整秒：固件不用每秒重开 25 次 40ms 插值，执行器也真正闲下来。
+                frame = TCodeFrameFormatter.FormatState(_lastWrittenRaw, _lastSentValid, IdleInterpolationMs);
+            }
+            else
+            {
+                _pacedIdleTicks = 0;
+                Array.Copy(_lastWrittenRaw, _lastPacedRaw, _lastPacedRaw.Length);
+                _pacedHasFrame = true;
+                frame = TCodeFrameFormatter.FormatState(_lastWrittenRaw, _lastSentValid, FrameIntervalMs);
+            }
             if (frame.Length == 0) return;
         }
 
@@ -1097,7 +1214,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
         }
         catch (Exception ex)
         {
-            lock (_lock) { MarkDisconnectedLocked(ex.Message); }
+            lock (_lock) { MarkDisconnectedLocked(ex.Message, ex); }
             AppLogger.Error("串口写入失败，输出已锁定", ex);
             ConnectionChanged?.Invoke(false);
             return;
@@ -1143,7 +1260,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
             catch (Exception ex)
             {
                 failure = ex;
-                lock (_lock) { MarkDisconnectedLocked(ex.Message); }
+                lock (_lock) { MarkDisconnectedLocked(ex.Message, ex); }
             }
         }
         if (failure != null)
@@ -1203,22 +1320,38 @@ public sealed class SerialService : ICommandTransport, IDisposable
         _pacerLastWriteMs = now;
     }
 
-    private void MarkDisconnectedLocked(string error)
+    /// <summary>
+    /// 空闲降载中：目标没变，只按「每秒一帧」的心跳在发。停顿检测必须用这条放宽判据，
+    /// 否则每一秒都会被判一次「发帧线程卡住」——那是降载本身，不是故障。
+    /// </summary>
+    public bool IsIdlePacing
+    {
+        get { lock (_lock) return _pacedHasFrame && _pacedIdleTicks > 0; }
+    }
+
+    private void MarkDisconnectedLocked(string error, Exception? exception = null)
     {
         LastError = error;
+        // 记住断开前输出是开着的：重连成功后自动恢复，别让用户为一次板子重启去点「全部归中」。
+        _resumeOutputAfterReconnect = _outputEnabled;
         _outputEnabled = false;
         ClosePortLocked();
         _consecutiveFailures++;
         _nextReconnectUtc = DateTime.UtcNow.AddSeconds(BackoffSeconds());
         // 写失败是黑匣子最该留下的一条：它能解释"为什么输出突然锁了"。
         BlackBox.Record("state", "写入失败，输出已锁定: " + error);
+        // 断开这一刻把「发过什么、收到什么、设备自己吐了什么」整段落成快照（见 SerialService.Incident.cs），
+        // 诊断包直接取这一份，不会被随后重连的新数据冲掉。
+        StashIncidentTrace("disconnect", error);
+        Incident?.Invoke("disconnect");
     }
 
     /// <summary>
-    /// 重连退避秒数：2^n 指数上升，封顶 60 秒。指数取 6 是因为 2^6=64 才能被 60 截到（取 5 时最大只有 32，
-    /// 上限永远到不了）。失败计数越大越不该再频繁试探端口，所以封顶值是刻意留在这的。
+    /// 重连退避秒数：2^n 指数上升，封顶 12 秒（2,4,8,12,12…）。
     /// </summary>
-    private double BackoffSeconds() => Math.Min(60, Math.Pow(2, Math.Min(_consecutiveFailures, 6)));
+    // 上限从 60 秒收到 12 秒：设备 panic 重启只要 2–3 秒，程序现在还会自己拉 RTS 硬复位，
+    // 退避太久反而变成「明明已经好了却要干等一分钟」。
+    private double BackoffSeconds() => Math.Min(12, Math.Pow(2, Math.Min(_consecutiveFailures, 4)));
 
     private void ClosePortLocked()
     {
@@ -1234,6 +1367,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
     {
         // 重连（含板子自己重启）后设备侧插值参数也回到默认，必须整帧重发一遍。
         Array.Clear(_lastSentValid);
+        _pacedHasFrame = false;
+        _pacedIdleTicks = 0;
         Array.Clear(_lastSentInterval);
     }
 
@@ -1331,6 +1466,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
 
             string chunk = new string(buffer, 0, read);
             LinkMonitor.Feed(chunk);
+            NoteRxTrace(chunk);
             _recentRxChunks.Enqueue(chunk);
             while (_recentRxChunks.Count > 4) _recentRxChunks.Dequeue();
             if (ReserveRecordSlot(ref _lastInRecordMs, InRecordIntervalMs))
@@ -1344,6 +1480,8 @@ public sealed class SerialService : ICommandTransport, IDisposable
     /// 链路状态"变了才记一条日志"。按状态切换（而不是按时间）记录，天然满足"同类消息每秒最多一条"；
     /// 而且这里**只写日志**：绝不锁输出、绝不断线 —— 没回话的误伤比漏报贵得多。
     /// </summary>
+    private long _deadSinceMs;
+
     private void LogLinkTransitionIfNeeded()
     {
         SerialLinkSnapshot snapshot = LinkMonitor.Snapshot();
@@ -1358,10 +1496,28 @@ public sealed class SerialService : ICommandTransport, IDisposable
             AppLogger.Warn($"链路：检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次）。已暂停发帧 2.5 秒并重新接手串口，不必拔插 USB。");
             LogRecentRx("设备重启现场");
             DumpTxRing("设备重启现场");
+            StashIncidentTrace("board-restart", $"检测到设备重启标记（累计 {snapshot.ResetSeenCount} 次），已暂停发帧 2.5 秒");
             RequestRebootRecovery();
+            Incident?.Invoke("board-restart");
         }
 
         long nowMs = Environment.TickCount64;
+        // ① 线上一个字节都没有（设备 panic 后没起来 / CDC 挂了）：光提示没用，直接硬复位。
+        //    这就是「不用拔插」的那一步 —— 以前只靠用户手拔，现在程序自己拉 RTS。
+        if (snapshot.IsDead)
+        {
+            if (_deadSinceMs == 0) _deadSinceMs = nowMs;
+            else if (nowMs - _deadSinceMs > 6000 && nowMs >= _nextHardResetMs)
+            {
+                _nextHardResetMs = nowMs + HardResetCooldownMs;
+                _deadSinceMs = nowMs;
+                AppLogger.Warn(HardResetDevice()
+                    ? "链路：设备一直没回话，已自动硬复位板子（拉 RTS），起来后自己续上，不用拔插。"
+                    : "链路：设备没回话，想硬复位但串口正忙，稍后再试（先别拔线）。");
+            }
+        }
+        else _deadSinceMs = 0;
+
         if (snapshot.IsWedged)
         {
             if (_wedgedSinceMs == 0)
@@ -1369,6 +1525,7 @@ public sealed class SerialService : ICommandTransport, IDisposable
                 _wedgedSinceMs = nowMs;
                 AppLogger.Warn("链路：固件执行器卡住了（看门狗刷屏、心跳已停），4 秒后硬复位板子。");
                 LogRecentRx("卡死现场");
+                StashIncidentTrace("wedged", "看门狗刷屏、执行器心跳已停：" + SerialLinkMonitor.Describe(snapshot));
             }
             else if (nowMs - _wedgedSinceMs > 4000 && nowMs >= _nextHardResetMs)
             {
@@ -1390,8 +1547,9 @@ public sealed class SerialService : ICommandTransport, IDisposable
             _loggedDead = snapshot.IsDead;
             if (snapshot.IsDead)
             {
-                AppLogger.Warn("链路：" + SerialLinkMonitor.Describe(snapshot) + "（仅提示，未锁输出）");
+                AppLogger.Warn(SerialLinkMonitor.Describe(snapshot) + "（仅提示，未锁输出）");
                 LogRecentRx("掉链现场");
+                StashIncidentTrace("link-dead", SerialLinkMonitor.Describe(snapshot));
             }
         }
     }
@@ -1514,7 +1672,9 @@ public sealed class SerialService : ICommandTransport, IDisposable
     /// </summary>
     private void NoteWriteSucceeded(string text, int bytes)
     {
+        LastWriteAtTicks = Environment.TickCount64;
         LinkMonitor.NoteFrameWritten(bytes);
+        NoteTxTrace(text);
         if (ReserveRecordSlot(ref _lastOutRecordMs, OutRecordIntervalMs))
             BlackBox.Record("out", text);
     }

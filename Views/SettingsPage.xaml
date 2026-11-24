@@ -80,8 +80,12 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <StackPanel x:Name="SettingsLeftColumn" Grid.Row="0" Grid.Column="0">
-                <!-- ══ 1. 连接（最常来的一张卡） ══════════════════════════════ -->
-                <Border Style="{StaticResource Card}">
+                <StackPanel Margin="0,12,0,4">
+                    <TextBlock Text="常用设置" FontSize="13" FontWeight="SemiBold"/>
+                    <TextBlock Text="先连设备，再按习惯调整；需要哪项就展开哪项。" FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                </StackPanel>
+
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                     <StackPanel>
                         <Grid Margin="0,0,0,12">
                             <Grid.ColumnDefinitions>
@@ -97,34 +101,11 @@
                                            VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="220"/>
                             </StackPanel>
                         </Grid>
-
+                
                         <!-- 模拟设备开关（从测试台 ④ 卡片搬到串口区）：设备没插也能试所有玩法，指令只记录不发设备。
                              常显一格，不再是「只在模拟时出现」的状态条 —— 进入/退出都在这一个按钮上。 -->
-                        <Border x:Name="SimulationPanel"
-                                Background="{StaticResource Surface}"
-                                BorderBrush="{StaticResource Border}" BorderThickness="1"
-                                CornerRadius="6" Padding="10,8" Margin="0,0,0,12">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <StackPanel Margin="0,0,10,0" VerticalAlignment="Center">
-                                    <TextBlock x:Name="SimStatusText" Text="没在模拟：走的是真实串口"
-                                               FontSize="12" FontWeight="SemiBold"
-                                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-                                    <TextBlock x:Name="SimHintText" Text="设备没插也能试所有玩法，指令只记录不发设备。"
-                                               Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,3,0,0"/>
-                                    <TextBlock x:Name="SimCountText" Text="还没记录到指令"
-                                               Style="{StaticResource Hint}" Margin="0,2,0,0"/>
-                                </StackPanel>
-                                <Button x:Name="SimToggleBtn" Grid.Column="1" Content="进入模拟设备"
-                                        Style="{StaticResource BtnSecondary}" Width="120" Height="32"
-                                        VerticalAlignment="Center" Click="SimToggle_Click"
-                                        ToolTip="设备没插也能试所有玩法，指令只记录不发设备"/>
-                            </Grid>
-                        </Border>
-
+                
+                
                         <Grid Margin="0,0,0,8">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto"/>
@@ -162,7 +143,7 @@
                         <TextBlock Text="主通道连不上时会自动改连备用通道。波特率固定 115200，不用设置。"
                                    FontSize="11" Foreground="{StaticResource Muted}"
                                    TextWrapping="Wrap" Margin="0,0,0,10"/>
-
+                
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
                             <Button x:Name="RefreshBtn" Content="刷新设备" Width="82" Height="32"
                                     FontSize="12" Click="RefreshBtn_Click"
@@ -171,13 +152,13 @@
                                     FontSize="12" Style="{StaticResource BtnPrimary}"
                                     Margin="8,0,0,0" Click="ConnectBtn_Click"/>
                         </StackPanel>
-
+                
                         <CheckBox x:Name="AutoConnectCheck" Content="打开软件时自动连接设备" FontSize="12" Margin="0,0,0,7"
                           HorizontalAlignment="Left"/>
                         <CheckBox x:Name="PreferWiredCheck" Content="优先用有线，蓝牙当备用" FontSize="12"
                           HorizontalAlignment="Left"
                                   ToolTip="插着 USB 线时不用蓝牙，连得更稳"/>
-
+                
                         <!-- 串口占用提示 + 一键关闭 -->
                         <Border x:Name="PortHogPanel" Visibility="Collapsed" Margin="0,12,0,0"
                                 Background="{StaticResource WarningSoft}" CornerRadius="6"
@@ -190,11 +171,34 @@
                                 <WrapPanel x:Name="PortHogButtons" Margin="0,8,0,0"/>
                             </StackPanel>
                         </Border>
+                        <Border x:Name="SimulationPanel"
+                                Background="{StaticResource Surface}"
+                                BorderBrush="{StaticResource Border}" BorderThickness="1"
+                                CornerRadius="6" Padding="10,8" Margin="0,12,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,10,0" VerticalAlignment="Center">
+                                    <TextBlock x:Name="SimStatusText" Text="没在模拟：走的是真实串口"
+                                               FontSize="12" FontWeight="SemiBold"
+                                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                                    <TextBlock x:Name="SimHintText" Text="设备没插也能试所有玩法，指令只记录不发设备。"
+                                               Style="{StaticResource Hint}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                                    <TextBlock x:Name="SimCountText" Text="还没记录到指令"
+                                               Style="{StaticResource Hint}" Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <Button x:Name="SimToggleBtn" Grid.Column="1" Content="进入模拟设备"
+                                        Style="{StaticResource BtnSecondary}" Width="120" Height="32"
+                                        VerticalAlignment="Center" Click="SimToggle_Click"
+                                        ToolTip="设备没插也能试所有玩法，指令只记录不发设备"/>
+                            </Grid>
+                        </Border>
                     </StackPanel>
                 </Border>
 
-                <!-- ══ 2. 轴限位（默认收起：默认值就是全程 0–9999，不需要限位的用户不该被它占一屏）════ -->
-                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                     <StackPanel>
                         <Button x:Name="LimitsFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
@@ -215,12 +219,12 @@
                         <StackPanel x:Name="LimitsFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
                         <TextBlock Text="限定每个轴能走的最大范围，六个轴都生效、所有页面共用。范围收得越小，机器能到的位置越靠中间。"
                                    Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
-
+                
                         <CheckBox x:Name="AxisLimitsEnabledCheck" Content="启用轴限位" FontSize="13" FontWeight="SemiBold"
                                   Margin="0,0,0,4" ToolTip="关着时设备走全程，下面的范围只是存着；勾上才按范围限制"/>
                         <TextBlock x:Name="AxisLimitsEnabledText" FontSize="11" Foreground="{StaticResource Muted}"
                                    TextWrapping="Wrap" Margin="0,0,0,10"/>
-
+                
                         <!-- 安全闸：默认不勾选，拖动限位只改数值；勾选后才实时驱动设备。
                              勾选后整块变红（颜色由 code-behind 换），避免用户忘了自己开过。 -->
                         <Border x:Name="LimitDriveGatePanel" CornerRadius="6" Padding="10,9" Margin="0,0,0,10"
@@ -234,13 +238,13 @@
                                            Text="现在关着：拖动圆点只改数字，机器不会动。想边拖边找位置，再勾上它。"/>
                             </StackPanel>
                         </Border>
-
+                
                         <Grid x:Name="AxisLimitGrid" Margin="0,0,0,8"/>
                         <TextBlock x:Name="LimitDriveHintText"
                                    Text="拖好后点「保存限位」才会记住；不保存就关软件，下次还是原来的范围。"
                                    FontSize="11" Foreground="{StaticResource Muted}"
                                    TextWrapping="Wrap" Margin="0,0,0,10"/>
-
+                
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="SaveLimitsBtn" Content="保存限位" Style="{StaticResource BtnPrimary}"
                                     Width="88" Height="32" FontSize="12" Click="SaveLimitsBtn_Click" Margin="0,0,8,0"
@@ -262,293 +266,100 @@
                     </StackPanel>
                 </Border>
 
-                <!-- ══ 分组：设备与排查 ════════════════════════════════════ -->
-                <Grid Margin="0,18,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="设备与排查" FontSize="11" FontWeight="SemiBold"
-                               Foreground="{StaticResource Muted}" Margin="0,0,8,0"/>
-                    <Border Grid.Column="1" Height="1" Background="{StaticResource Border}" VerticalAlignment="Center"/>
-                </Grid>
-
-                <!-- 设备自检 -->
-                <Border Style="{StaticResource Card}">
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                     <StackPanel>
-                        <TextBlock Text="🔧 设备自检" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                        <TextBlock Text="读一下固件信息，再逐个试轴：点某个轴，机器会小幅动一下，看哪里在动就知道实际装了哪些电机（说明书上写的轴不一定都装了）。测试前会先停掉正在跑的动作。"
-                                   Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
-                        <!-- 链路存活：只看回显，永不因为"没回话"锁输出（误伤比漏报贵）。
-                             文字由 SerialLinkMonitor.Describe 统一产出，界面只负责显示，避免两处措辞说岔。 -->
-                        <TextBlock x:Name="LinkStatusText" Text="链路：未连接" FontSize="11"
-                                   Foreground="{StaticResource Muted}" Margin="0,0,0,8" TextWrapping="Wrap"/>
-                        <!-- 两个按钮并排一行：以前「读取设备信息」自己占一行，左边空出一大片。 -->
-                        <Grid Margin="0,0,0,10">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <Button x:Name="ExportBlackBoxBtn" Content="导出故障包" Height="32" Padding="14,0" FontSize="12"
-                                    Style="{StaticResource BtnSecondary}" Click="ExportBlackBox_Click"/>
-                            <Button x:Name="DeviceInfoBtn" Grid.Column="1" Content="读取设备信息" Height="32" Padding="14,0"
-                                    FontSize="12" Style="{StaticResource BtnSecondary}" Margin="8,0,0,0"
-                                    Click="DeviceInfo_Click"/>
-                            <TextBlock x:Name="ExportBlackBoxHint" Grid.Column="2" Text="还没导出过" FontSize="10"
-                                       Foreground="{StaticResource Faint}" Margin="10,0,0,0"
-                                       VerticalAlignment="Center" TextWrapping="Wrap"/>
-                        </Grid>
-                        <TextBox x:Name="DeviceInfoBox" Margin="0,8,0,12" Height="96" IsReadOnly="True"
-                                 FontFamily="Consolas" FontSize="11" TextWrapping="Wrap" AcceptsReturn="True"
-                                 VerticalScrollBarVisibility="Auto"
-                                 Text="还没读取。先连上设备，再点上面的按钮；如果串口被 MultiFunPlayer / Intiface Central 占着，会读不到。"/>
-                        <TextBlock Text="逐轴测试：点一下会先动到限位范围的 15% 位置再回中，幅度不大，但机器真的会动。"
-                                   FontSize="11" Foreground="{StaticResource Muted}" Margin="0,0,0,6" TextWrapping="Wrap"/>
-                        <WrapPanel x:Name="AxisTestPanel"/>
-                        <TextBlock x:Name="AxisTestHint" Text="" FontSize="10" Foreground="{StaticResource Faint}"
-                                   Margin="0,6,0,0" TextWrapping="Wrap"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- 固件设置（进阶）：TCodeESP32 的 #setting / $save / #restart 串口命令。
-                     默认收起 —— 舵机零点这类改错会让机器反向或顶死，属于"知道自己在干什么再用"；
-                     而且只有固件支持这套协议才可用（读不到列表就直说，不假装能改）。 -->
-                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
-                    <StackPanel>
-                        <Button x:Name="FirmwareFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
-                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                                ToolTip="直接改设备固件里的设置：舵机零点、方向反转、最大角度、蓝牙、设备名…"
-                                Click="FirmwareFold_Click">
+                        <Button x:Name="OverlayFoldBtn" Tag="OverlayFoldBody" Style="{StaticResource BtnGhost}"
+                                Padding="0,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                Click="SettingsSection_Click" AutomationProperties.Name="🪟 悬浮窗" ToolTip="展开或收起🪟 悬浮窗；只改变显示，不开关功能">
                             <Grid>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="20"/>
                                     <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock x:Name="FirmwareFoldTitle" Text="▸ 🧩 固件设置（进阶）" FontSize="14"
-                                           FontWeight="SemiBold" VerticalAlignment="Center"/>
-                                <TextBlock x:Name="FirmwareFoldSummary" Grid.Column="1" Text="" FontSize="10"
-                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                           Margin="12,0,0,0" TextTrimming="CharacterEllipsis"/>
+                                <TextBlock Text="▸" Tag="FoldArrow" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="🪟 悬浮窗" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding Text, ElementName=OverlayStatusText}" FontSize="10" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,3,8,0"/>
+                                </StackPanel>
+                        
                             </Grid>
                         </Button>
-
-                        <StackPanel x:Name="FirmwareFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
-                            <TextBlock FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                                       Margin="0,0,0,10"
-                                       Text="直接改设备固件里的设置（舵机零点、方向反转、最大角度、蓝牙、设备名…）。串口协议读不到设备当前值，所以下面填的是「要改成多少」；填好点「应用改动」，再点「保存到设备」，提示要重启的项还要重启才生效。"/>
-                            <WrapPanel Margin="0,0,0,6">
-                                <Button x:Name="FirmwareReadBtn" Content="读取设置列表" Height="32" FontSize="12"
-                                        Padding="12,0" Margin="0,0,8,8" Style="{StaticResource BtnSecondary}"
-                                        ToolTip="读设备固件当前支持哪些设置项（要固件支持 #list-settings 这套命令）"
-                                        Click="FirmwareRead_Click"/>
-                                <Button x:Name="FirmwareApplyBtn" Content="应用改动" Height="32" FontSize="12"
-                                        Padding="12,0" Margin="0,0,8,8" Style="{StaticResource BtnPrimary}"
-                                        ToolTip="把填了值的项发到设备（这一步还没写进设备的 Flash，断电会丢）"
-                                        Click="FirmwareApply_Click"/>
-                                <Button x:Name="FirmwareSaveBtn" Content="保存到设备" Height="32" FontSize="12"
-                                        Padding="12,0" Margin="0,0,8,8" Style="{StaticResource BtnSecondary}"
-                                        ToolTip="让设备把设置写进自己的 Flash（$save），断电也不丢"
-                                        Click="FirmwareSave_Click"/>
-                                <Button x:Name="FirmwareRestartBtn" Content="重启设备" Height="32" FontSize="12"
-                                        Padding="12,0" Margin="0,0,8,8" Style="{StaticResource BtnSecondary}"
-                                        ToolTip="重启固件（#restart）：串口会断开几秒，之后 Hexa 会自动重连"
-                                        Click="FirmwareRestart_Click"/>
+                        <StackPanel x:Name="OverlayFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
+                            <TextBlock Text="桌面上的小窗，边玩边看状态；按住可以拖到任意位置。点 ✕ 只是收起来，设备照常运行（收起时会弹一次托盘提示）——想找回来，用托盘菜单里的「悬浮窗」，或点下面的按钮。"
+                                       Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/>
+                            
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                                <TextBlock Text="不透明度" Width="96" FontSize="12" Foreground="{StaticResource Muted}"
+                                           VerticalAlignment="Center"/>
+                                <Slider x:Name="OverlayOpacitySlider" Width="260" HorizontalAlignment="Left"
+                                        Minimum="0.2" Maximum="1.0" SmallChange="0.05" LargeChange="0.1"
+                                        VerticalAlignment="Center"
+                                        ToolTip="数字越小越透明，越不挡画面"/>
+                                <TextBlock x:Name="OverlayOpacityLabel" Text="100%" Width="44" FontSize="11"
+                                           Foreground="{StaticResource Muted}" TextAlignment="Right"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                            
+                            <TextBlock Text="小窗上显示哪些内容" FontSize="12" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
+                            <WrapPanel Margin="0,0,0,12">
+                                <CheckBox x:Name="OverlayShowModeCheck" Content="显示模式"
+                                          FontSize="12" Margin="0,0,18,6"/>
+                                <CheckBox x:Name="OverlayShowSpeedCheck" Content="显示速度"
+                                          FontSize="12" Margin="0,0,18,6"/>
+                                <CheckBox x:Name="OverlayShowIntensityCheck" Content="显示强度"
+                                          FontSize="12" Margin="0,0,18,6"/>
+                                <CheckBox x:Name="OverlayShowBpmCheck" Content="显示 BPM"
+                                          FontSize="12" Margin="0,0,18,6"/>
+                                <CheckBox x:Name="OverlayShowConnectionCheck" Content="显示连接状态"
+                                          FontSize="12" Margin="0,0,18,6"/>
                             </WrapPanel>
-                            <TextBlock x:Name="FirmwareStatusText" Text="还没读取。先连上设备，再点「读取设置列表」。"
-                                       FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                                       Margin="0,0,0,10"/>
-
-                            <StackPanel x:Name="FirmwareCommonPanel"/>
-                            <TextBlock x:Name="FirmwareOthersHint" Text="" FontSize="10"
-                                       Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                                       Margin="0,8,0,4" Visibility="Collapsed"/>
-                            <ScrollViewer x:Name="FirmwareOthersScroll" MaxHeight="280"
-                                          VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
-                                <StackPanel x:Name="FirmwareOthersPanel"/>
-                            </ScrollViewer>
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
-
-                <!-- 日志查看 -->
-                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
-                    <StackPanel>
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <StackPanel>
-                                <TextBlock Text="📄 日志查看" FontSize="14" FontWeight="SemiBold"/>
-                                <TextBlock x:Name="LogCountText" Text="最近 0 条" FontSize="11"
-                                           Foreground="{StaticResource Muted}" Margin="0,2,0,0" TextWrapping="Wrap"/>
-                                <!-- 体积和上限：日志写满会自己轮转，这里说清楚上限是多少、旧内容去哪了 -->
-                                <TextBlock x:Name="LogSizeText" FontSize="10"
-                                           Foreground="{StaticResource Faint}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                            
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="OverlayToggleBtn" Content="显示悬浮窗" Width="112" Height="32"
+                                        FontSize="12" Style="{StaticResource BtnPrimary}" Click="OverlayToggleBtn_Click"/>
+                                <TextBlock x:Name="OverlayStatusText" FontSize="11" Foreground="{StaticResource Muted}"
+                                           VerticalAlignment="Center" Margin="12,0,0,0"/>
                             </StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
-                                <Button x:Name="RefreshLogBtn" Content="刷新" Width="60" Height="28" FontSize="11"
-                                        Click="RefreshLog_Click" ToolTip="重新读一遍日志文件"/>
-                                <Button x:Name="CopyLogBtn" Content="复制全部" Width="72" Height="28" FontSize="11"
-                                        Margin="6,0,0,0" Click="CopyLog_Click"
-                                        ToolTip="把最近的日志复制到剪贴板，方便发给别人看"/>
-                                <Button x:Name="OpenLogFileBtn" Content="打开文件" Width="72" Height="28" FontSize="11"
-                                        Margin="6,0,0,0" Click="OpenLogFile_Click"
-                                        ToolTip="用记事本打开完整的日志文件"/>
-                                <Button x:Name="ClearLogBtn" Content="清空" Width="60" Height="28" FontSize="11"
-                                        Margin="6,0,0,0" Click="ClearLog_Click"
-                                        ToolTip="删掉 app.log 和上一代 app.log.1（会先问一次，删了就找不回来了）"/>
-                            </StackPanel>
-                        </Grid>
-                        <CheckBox x:Name="AutoRefreshLogCheck" Content="自动刷新（每 2 秒，排查问题时开着更方便）"
-                                  FontSize="11" Margin="0,0,0,8"/>
-                        <!-- 隐私开关：默认关。关着时「画面同步」的日志只写进程名（chrome (标题已隐藏)），
-                             因为窗口标题会暴露用户在看什么。改动立即写进设置，下次开始观察时生效。 -->
-                        <CheckBox x:Name="LogWindowTitlesCheck" Content="日志里记录窗口标题（默认关：标题会暴露你在看什么）"
-                                  FontSize="11" Margin="0,0,0,8"
-                                  ToolTip="关着的时候，日志只记进程名，例如「画面同步已启动：chrome (标题已隐藏)」；下次开始「画面同步」时生效"/>
-                        <!-- 折行显示：日志行很长，横向滚动才能看全的后半段以前是要滚的。 -->
-                        <ListBox x:Name="LogList" Height="130"
-                                 Background="{StaticResource Surface}" BorderBrush="{StaticResource Border}"
-                                 BorderThickness="1" FontFamily="Consolas" FontSize="11"
-                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                            <ListBox.ItemTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="11"
-                                               TextWrapping="Wrap"/>
-                                </DataTemplate>
-                            </ListBox.ItemTemplate>
-                        </ListBox>
-                    </StackPanel>
-                </Border>
-
-            </StackPanel>
-            <StackPanel x:Name="SettingsRightColumn" Grid.Row="0" Grid.Column="2">
-                <!-- ══ 3. 悬浮窗 ═══════════════════════════════════════════ -->
-                <Border Style="{StaticResource Card}">
-                    <StackPanel>
-                        <TextBlock Text="🪟 悬浮窗" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                        <TextBlock Text="桌面上的小窗，边玩边看状态；按住可以拖到任意位置。点 ✕ 只是收起来，设备照常运行（收起时会弹一次托盘提示）——想找回来，用托盘菜单里的「悬浮窗」，或点下面的按钮。"
-                                   Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/>
-
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
-                            <TextBlock Text="不透明度" Width="96" FontSize="12" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center"/>
-                            <Slider x:Name="OverlayOpacitySlider" Width="260" HorizontalAlignment="Left"
-                                    Minimum="0.2" Maximum="1.0" SmallChange="0.05" LargeChange="0.1"
-                                    VerticalAlignment="Center"
-                                    ToolTip="数字越小越透明，越不挡画面"/>
-                            <TextBlock x:Name="OverlayOpacityLabel" Text="100%" Width="44" FontSize="11"
-                                       Foreground="{StaticResource Muted}" TextAlignment="Right"
-                                       VerticalAlignment="Center"/>
-                        </StackPanel>
-
-                        <TextBlock Text="小窗上显示哪些内容" FontSize="12" Foreground="{StaticResource Muted}" Margin="0,0,0,6"/>
-                        <WrapPanel Margin="0,0,0,12">
-                            <CheckBox x:Name="OverlayShowModeCheck" Content="显示模式"
-                                      FontSize="12" Margin="0,0,18,6"/>
-                            <CheckBox x:Name="OverlayShowSpeedCheck" Content="显示速度"
-                                      FontSize="12" Margin="0,0,18,6"/>
-                            <CheckBox x:Name="OverlayShowIntensityCheck" Content="显示强度"
-                                      FontSize="12" Margin="0,0,18,6"/>
-                            <CheckBox x:Name="OverlayShowBpmCheck" Content="显示 BPM"
-                                      FontSize="12" Margin="0,0,18,6"/>
-                            <CheckBox x:Name="OverlayShowConnectionCheck" Content="显示连接状态"
-                                      FontSize="12" Margin="0,0,18,6"/>
-                        </WrapPanel>
-
-                        <StackPanel Orientation="Horizontal">
-                            <Button x:Name="OverlayToggleBtn" Content="显示悬浮窗" Width="112" Height="32"
-                                    FontSize="12" Style="{StaticResource BtnPrimary}" Click="OverlayToggleBtn_Click"/>
-                            <TextBlock x:Name="OverlayStatusText" FontSize="11" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="12,0,0,0"/>
                         </StackPanel>
                     </StackPanel>
                 </Border>
 
-                <!-- ══ 4. 全局热键 ═════════════════════════════════════════ -->
-                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                     <StackPanel>
-                        <Grid Margin="0,0,0,6">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="⌨️ 全局热键" FontSize="14" FontWeight="SemiBold"/>
-                            <Button Grid.Column="1" Content="恢复默认" Width="76" Height="28" FontSize="11"
-                                    VerticalAlignment="Top" Click="ResetHotkeys_Click"
-                                    ToolTip="七条命令的热键都改回出厂设置"/>
-                        </Grid>
-                        <TextBlock Text="在别的软件里也管用，不用先切回 Hexa。点「录入」→ 直接按下想用的组合键（建议带 Ctrl 或 Alt，免得打字时误触）；按 Esc 取消。「清除」= 这条命令没有热键，页面上的按钮照样能点。"
-                                   FontSize="11" Foreground="{StaticResource Muted}" Margin="0,0,0,12" TextWrapping="Wrap"/>
-
-                        <CheckBox x:Name="GlobalHotkeysCheck" Content="启用全局热键" FontSize="12" Margin="0,0,0,12"/>
-                        <StackPanel x:Name="HotkeyBindingsPanel"/>
-                        <TextBlock x:Name="HotkeyStatusText" FontSize="11" Foreground="{StaticResource Muted}"
-                                   TextWrapping="Wrap" Margin="0,8,0,0"/>
-                    </StackPanel>
-                </Border>
-
-                <!-- ══ 5. AI 助手 ══════════════════════════════════════════ -->
-                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
-                    <StackPanel>
-                        <TextBlock Text="🤖 AI 助手（API Key）" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,4"/>
-                        <TextBlock Text="填好这三项，「AI 助手」页就能对话并让它控制设备。三个都留空 = AI 功能关闭。这串字符只存在本机，不会上传，也不会写进代码。"
-                                   Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/>
-                        <Grid Margin="0,0,0,10">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="96"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="API Key" FontSize="12" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <!-- 密码框：key 是一串能花钱的凭据，别让它明文躺在屏幕上（旁边有人、或截个图就漏了）。
-                                 取值走 AiKeyBox.Password（不再是 .Text），保存逻辑与字段名没变。 -->
-                            <PasswordBox x:Name="AiKeyBox" Grid.Column="1" FontSize="12" Height="30" Margin="0,0,0,8"
-                                         PasswordChanged="AiKey_PasswordChanged"
-                                         ToolTip="从服务商网站复制过来的一长串字符，直接粘贴（Ctrl+V）。出于安全这里不显示明文，粘贴后按「保存 AI 设置」即可。"/>
-                            <TextBlock Grid.Row="1" Text="接口地址" FontSize="12" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="0,0,10,8"/>
-                            <TextBox x:Name="AiBaseBox" Grid.Row="1" Grid.Column="1" FontSize="12" Height="30" Margin="0,0,0,8"
-                                     TextChanged="AiBox_TextChanged"
-                                     ToolTip="默认 https://api.deepseek.com，用别家服务时换成对应的地址"/>
-                            <TextBlock Grid.Row="2" Text="模型" FontSize="12" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <TextBox x:Name="AiModelBox" Grid.Row="2" Grid.Column="1" FontSize="12" Height="30"
-                                     TextChanged="AiBox_TextChanged"
-                                     ToolTip="要用的模型名字，填服务商给的那个名字"/>
-                        </Grid>
-                        <StackPanel Orientation="Horizontal">
-                            <Button x:Name="SaveAiBtn" Content="保存 AI 设置" Style="{StaticResource BtnPrimary}"
-                                    Width="118" Height="32" FontSize="12" Click="SaveAiBtn_Click"/>
-                            <TextBlock x:Name="AiDirtyHint" Text="● 改了还没保存 —— 点「保存 AI 设置」" FontSize="11"
-                                       Foreground="{StaticResource Warning}" VerticalAlignment="Center"
-                                       Margin="10,0,0,0" Visibility="Collapsed"/>
-                            <TextBlock x:Name="AiStatusText" FontSize="11" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="10,0,0,0" TextTrimming="CharacterEllipsis"/>
+                        <Button x:Name="HotkeysFoldBtn" Tag="HotkeysFoldBody" Style="{StaticResource BtnGhost}"
+                                Padding="0,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                Click="SettingsSection_Click" AutomationProperties.Name="⌨️ 全局热键" ToolTip="展开或收起⌨️ 全局热键；只改变显示，不开关功能">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="▸" Tag="FoldArrow" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="⌨️ 全局热键" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="在其它软件里也能启动、停止和调节" FontSize="10" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,3,8,0"/>
+                                </StackPanel>
+                        
+                            </Grid>
+                        </Button>
+                        <StackPanel x:Name="HotkeysFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
+                                <Button Content="恢复默认" Width="76" Height="28" FontSize="11"
+                                        HorizontalAlignment="Left" Margin="0,0,0,10" Click="ResetHotkeys_Click"
+                                        ToolTip="七条命令的热键都改回出厂设置"/>
+                            <TextBlock Text="在别的软件里也管用，不用先切回 Hexa。点「录入」→ 直接按下想用的组合键（建议带 Ctrl 或 Alt，免得打字时误触）；按 Esc 取消。「清除」= 这条命令没有热键，页面上的按钮照样能点。"
+                                       FontSize="11" Foreground="{StaticResource Muted}" Margin="0,0,0,12" TextWrapping="Wrap"/>
+                            
+                            <CheckBox x:Name="GlobalHotkeysCheck" Content="启用全局热键" FontSize="12" Margin="0,0,0,12"/>
+                            <StackPanel x:Name="HotkeyBindingsPanel"/>
+                            <TextBlock x:Name="HotkeyStatusText" FontSize="11" Foreground="{StaticResource Muted}"
+                                       TextWrapping="Wrap" Margin="0,8,0,0"/>
                         </StackPanel>
                     </StackPanel>
                 </Border>
 
-                <!-- ══ 分组：其它设置 ══════════════════════════════════════ -->
-                <Grid Margin="0,16,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock Text="其它设置" FontSize="11" FontWeight="SemiBold"
-                               Foreground="{StaticResource Muted}" Margin="0,0,8,0"/>
-                    <Border Grid.Column="1" Height="1" Background="{StaticResource Border}" VerticalAlignment="Center"/>
-                </Grid>
-
-                <!-- 存储位置 -->
-                <Border Style="{StaticResource Card}" Margin="0,8,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                     <StackPanel>
                         <Button x:Name="StorageFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
@@ -567,10 +378,10 @@
                             </Grid>
                         </Button>
                         <StackPanel x:Name="StorageFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
-
+                
                         <TextBlock Text="动作合成和脚本库默认放在 C 盘的用户目录里，可以改到别的盘。改了只影响以后保存的文件，已有的文件不会自己搬过去，需要自己复制。"
                                    Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/>
-
+                
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="96"/>
@@ -594,7 +405,7 @@
                                     Click="CompositionFolderReset_Click"
                                     ToolTip="改回 C 盘用户目录"/>
                         </Grid>
-
+                
                         <Grid>
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="96"/>
@@ -621,71 +432,366 @@
                         </StackPanel>
                     </StackPanel>
                 </Border>
+            </StackPanel>
+            <StackPanel x:Name="SettingsRightColumn" Grid.Row="0" Grid.Column="2">
+                <StackPanel Margin="0,12,0,4">
+                    <TextBlock Text="扩展功能" FontSize="13" FontWeight="SemiBold"/>
+                    <TextBlock Text="接其它程序或 AI 时再设置。" FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                </StackPanel>
 
-                <!-- 外部程序控制接口（默认关闭；给脚本/别的软件用的 HTTP 插座） -->
-                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                     <StackPanel>
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="🔌 外部程序控制接口" FontSize="14" FontWeight="SemiBold"
-                                       VerticalAlignment="Center"/>
-                            <Border x:Name="WebApiBadge" Grid.Column="1" Background="{StaticResource WarningSoft}"
-                                    CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
-                                <TextBlock x:Name="WebApiBadgeText" Text="已关闭" FontSize="10"
-                                           FontWeight="SemiBold" Foreground="{StaticResource Warning}"/>
-                            </Border>
-                        </Grid>
-                        <TextBlock Text="给别的程序用的插座：脚本、快捷键工具、别的软件发一条 HTTP 请求就能让机器动（写轴、急停、归中、切模式、切预设、放脚本）。默认关闭；打开后只有本机能调，请求必须带对令牌，急停锁着时什么写操作都进不来。"
-                                   Foreground="{StaticResource Muted}" FontSize="11"
-                                   Margin="0,6,0,0" TextWrapping="Wrap"/>
-
-                        <CheckBox x:Name="WebApiEnabledCheck" Content="打开接口（http://localhost:8580）"
-                                  FontSize="12" Margin="0,10,0,0" HorizontalAlignment="Left"/>
-                        <CheckBox x:Name="WebApiLanCheck" Content="允许局域网里的设备调用（手机 / 平板 / 别的电脑）"
-                                  FontSize="12" Margin="0,6,0,0" HorizontalAlignment="Left"
-                                  ToolTip="打开后按本机每块网卡的 IP 逐个尝试绑定；普通权限下绑不上会写进日志，需要管理员执行一次 netsh http add urlacl 授权"/>
-
-                        <Grid Margin="0,10,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="96"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="令牌" FontSize="11" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center"/>
-                            <TextBox x:Name="WebApiTokenBox" Grid.Column="1" IsReadOnly="True" FontFamily="Consolas"
-                                     FontSize="11" VerticalContentAlignment="Center"
-                                     ToolTip="请求头 X-Hexa-Token 的值：复制给你要调用它的那个程序"/>
-                            <Button Grid.Column="2" Content="复制" Width="60" Height="28" FontSize="11"
-                                    Margin="8,0,0,0" Click="WebApiCopyToken_Click"/>
-                            <Button Grid.Column="3" Content="换一个" Width="68" Height="28" FontSize="11"
-                                    Margin="8,0,0,0" Click="WebApiResetToken_Click"
-                                    ToolTip="生成新令牌，旧的立刻失效；正在用的外部程序要跟着改"/>
-                        </Grid>
-
-                        <TextBlock x:Name="WebApiStatusText" FontSize="10" Foreground="{StaticResource Muted}"
-                                   Margin="0,8,0,0" TextWrapping="Wrap" Text="已关闭，不监听任何端口。"/>
+                        <Button x:Name="WebApiFoldBtn" Tag="WebApiFoldBody" Style="{StaticResource BtnGhost}"
+                                Padding="0,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                Click="SettingsSection_Click" AutomationProperties.Name="🔌 外部程序控制接口" ToolTip="展开或收起🔌 外部程序控制接口；只改变显示，不开关功能">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="▸" Tag="FoldArrow" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="🔌 外部程序控制接口" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="脚本、手机和其它软件通过 HTTP 控制设备" FontSize="10" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,3,8,0"/>
+                                </StackPanel>
+                                <Border x:Name="WebApiBadge" Grid.Column="2" Background="{StaticResource WarningSoft}"
+                                        CornerRadius="4" Padding="6,1" VerticalAlignment="Center">
+                                    <TextBlock x:Name="WebApiBadgeText" Text="已关闭" FontSize="10"
+                                               FontWeight="SemiBold" Foreground="{StaticResource Warning}"/>
+                                </Border>
+                            </Grid>
+                        </Button>
+                        <StackPanel x:Name="WebApiFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
+                            <TextBlock Text="给别的程序用的插座：脚本、快捷键工具、别的软件发一条 HTTP 请求就能让机器动（写轴、急停、归中、切模式、切预设、放脚本）。默认关闭；打开后只有本机能调，请求必须带对令牌，急停锁着时什么写操作都进不来。"
+                                       Foreground="{StaticResource Muted}" FontSize="11"
+                                       Margin="0,6,0,0" TextWrapping="Wrap"/>
+                            
+                            <CheckBox x:Name="WebApiEnabledCheck" Content="打开接口（http://localhost:8580）"
+                                      FontSize="12" Margin="0,10,0,0" HorizontalAlignment="Left"/>
+                            <CheckBox x:Name="WebApiLanCheck" Content="允许局域网里的设备调用（手机 / 平板 / 别的电脑）"
+                                      FontSize="12" Margin="0,6,0,0" HorizontalAlignment="Left"
+                                      ToolTip="打开后按本机每块网卡的 IP 逐个尝试绑定；普通权限下绑不上会写进日志，需要管理员执行一次 netsh http add urlacl 授权"/>
+                            
+                            <Grid Margin="0,10,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="96"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="令牌" FontSize="11" Foreground="{StaticResource Muted}"
+                                           VerticalAlignment="Center"/>
+                                <TextBox x:Name="WebApiTokenBox" Grid.Column="1" IsReadOnly="True" FontFamily="Consolas"
+                                         FontSize="11" VerticalContentAlignment="Center"
+                                         ToolTip="请求头 X-Hexa-Token 的值：复制给你要调用它的那个程序"/>
+                                <Button Grid.Column="2" Content="复制" Width="60" Height="28" FontSize="11"
+                                        Margin="8,0,0,0" Click="WebApiCopyToken_Click"/>
+                                <Button Grid.Column="3" Content="换一个" Width="68" Height="28" FontSize="11"
+                                        Margin="8,0,0,0" Click="WebApiResetToken_Click"
+                                        ToolTip="生成新令牌，旧的立刻失效；正在用的外部程序要跟着改"/>
+                            </Grid>
+                            
+                            <TextBlock x:Name="WebApiStatusText" FontSize="10" Foreground="{StaticResource Muted}"
+                                       Margin="0,8,0,0" TextWrapping="Wrap" Text="已关闭，不监听任何端口。"/>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 
-                <!-- 姿态识别（YOLO）已搬到 实验台 → 画面同步（2026-11）：这里只留一行指引，免得回设置页找不着 -->
-                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="🧍 姿态识别（YOLO）已移到「实验台 → 画面同步」。"
-                                   FontSize="12" VerticalAlignment="Center"/>
-                        <Button x:Name="PoseMovedGoBtn" Content="去实验台" Width="76" Height="26" FontSize="11"
-                                Margin="10,0,0,0" Padding="0" Style="{StaticResource BtnSecondary}"
-                                Click="PoseMovedGo_Click"
-                                ToolTip="跳到实验台页；姿态识别的开关和模型下载在「🖥 画面同步」那张卡里"/>
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <StackPanel>
+                        <Button x:Name="AiFoldBtn" Tag="AiFoldBody" Style="{StaticResource BtnGhost}"
+                                Padding="0,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                Click="SettingsSection_Click" AutomationProperties.Name="🤖 AI 助手" ToolTip="展开或收起🤖 AI 助手；只改变显示，不开关功能">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="▸" Tag="FoldArrow" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="🤖 AI 助手" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="填写地址、模型和 API Key" FontSize="10" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,3,8,0"/>
+                                </StackPanel>
+                        
+                            </Grid>
+                        </Button>
+                        <StackPanel x:Name="AiFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
+                            <TextBlock Text="填好这三项，「AI 助手」页就能对话并让它控制设备。三个都留空 = AI 功能关闭。这串字符只存在本机，不会上传，也不会写进代码。"
+                                       Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/>
+                            <Grid Margin="0,0,0,10">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="96"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="API Key" FontSize="12" Foreground="{StaticResource Muted}"
+                                           VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <!-- 密码框：key 是一串能花钱的凭据，别让它明文躺在屏幕上（旁边有人、或截个图就漏了）。
+                                     取值走 AiKeyBox.Password（不再是 .Text），保存逻辑与字段名没变。 -->
+                                <PasswordBox x:Name="AiKeyBox" Grid.Column="1" FontSize="12" Height="30" Margin="0,0,0,8"
+                                             PasswordChanged="AiKey_PasswordChanged"
+                                             ToolTip="从服务商网站复制过来的一长串字符，直接粘贴（Ctrl+V）。出于安全这里不显示明文，粘贴后按「保存 AI 设置」即可。"/>
+                                <TextBlock Grid.Row="1" Text="接口地址" FontSize="12" Foreground="{StaticResource Muted}"
+                                           VerticalAlignment="Center" Margin="0,0,10,8"/>
+                                <TextBox x:Name="AiBaseBox" Grid.Row="1" Grid.Column="1" FontSize="12" Height="30" Margin="0,0,0,8"
+                                         TextChanged="AiBox_TextChanged"
+                                         ToolTip="默认 https://api.deepseek.com，用别家服务时换成对应的地址"/>
+                                <TextBlock Grid.Row="2" Text="模型" FontSize="12" Foreground="{StaticResource Muted}"
+                                           VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <TextBox x:Name="AiModelBox" Grid.Row="2" Grid.Column="1" FontSize="12" Height="30"
+                                         TextChanged="AiBox_TextChanged"
+                                         ToolTip="要用的模型名字，填服务商给的那个名字"/>
+                            </Grid>
+                            <StackPanel Orientation="Horizontal">
+                                <Button x:Name="SaveAiBtn" Content="保存 AI 设置" Style="{StaticResource BtnPrimary}"
+                                        Width="118" Height="32" FontSize="12" Click="SaveAiBtn_Click"/>
+                                <TextBlock x:Name="AiDirtyHint" Text="● 改了还没保存 —— 点「保存 AI 设置」" FontSize="11"
+                                           Foreground="{StaticResource Warning}" VerticalAlignment="Center"
+                                           Margin="10,0,0,0" Visibility="Collapsed"/>
+                                <TextBlock x:Name="AiStatusText" FontSize="11" Foreground="{StaticResource Muted}"
+                                           VerticalAlignment="Center" Margin="10,0,0,0" TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                        </StackPanel>
                     </StackPanel>
                 </Border>
 
-                <!-- ══ 关于与维护（页面最下方） ══════════════════════════════ -->
-                <Border Style="{StaticResource Card}" Margin="0,16,0,0">
+                <StackPanel Margin="0,12,0,4">
+                    <TextBlock Text="排查与维护" FontSize="13" FontWeight="SemiBold"/>
+                    <TextBlock Text="有问题时先看报告和日志，再做设备自检。" FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                </StackPanel>
+
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <StackPanel>
+                        <Button x:Name="DiagnosticsFoldBtn" Tag="DiagnosticsFoldBody" Style="{StaticResource BtnGhost}"
+                                Padding="0,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                Click="SettingsSection_Click" AutomationProperties.Name="🩺 诊断报告" ToolTip="展开或收起🩺 诊断报告；只改变显示，不开关功能">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="▸" Tag="FoldArrow" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="🩺 诊断报告" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="一键打包日志、状态与最近的停顿记录" FontSize="10" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,3,8,0"/>
+                                </StackPanel>
+                        
+                            </Grid>
+                        </Button>
+                        <StackPanel x:Name="DiagnosticsFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
+                            <TextBlock Text="出现异常时可点这里把日志和状态打包成一个 zip，方便排查（只落本地，不会外发）。"
+                                       Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="GenDiagReportBtn" Content="生成诊断报告" Height="32" Padding="14,0" FontSize="12"
+                                        Style="{StaticResource BtnSecondary}" Click="GenDiagReport_Click"/>
+                                <Button x:Name="OpenReportDirBtn" Grid.Column="1" Content="打开报告目录" Height="32" Padding="14,0"
+                                        FontSize="12" Style="{StaticResource BtnSecondary}" Margin="8,0,0,0"
+                                        Click="OpenReportDir_Click"/>
+                                <TextBlock x:Name="StallSummaryText" Grid.Column="2" Text="" FontSize="10"
+                                           Foreground="{StaticResource Faint}" Margin="10,0,0,0"
+                                           VerticalAlignment="Center" TextWrapping="Wrap"/>
+                            </Grid>
+                            <TextBlock Text="上方会自动显示最近 10 分钟的停顿检测结果；生成报告时也会把停顿快照一并写进 status.txt。"
+                                       Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <StackPanel>
+                        <Button x:Name="LogFoldBtn" Tag="LogFoldBody" Style="{StaticResource BtnGhost}"
+                                Padding="0,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                Click="SettingsSection_Click" AutomationProperties.Name="📄 日志查看" ToolTip="展开或收起📄 日志查看；只改变显示，不开关功能">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="▸" Tag="FoldArrow" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="📄 日志查看" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="{Binding Text, ElementName=LogCountText}" FontSize="10" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,3,8,0"/>
+                                </StackPanel>
+                        
+                            </Grid>
+                        </Button>
+                        <StackPanel x:Name="LogFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="📄 日志查看" FontSize="14" FontWeight="SemiBold"/>
+                                    <TextBlock x:Name="LogCountText" Text="最近 0 条" FontSize="11"
+                                               Foreground="{StaticResource Muted}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                    <!-- 体积和上限：日志写满会自己轮转，这里说清楚上限是多少、旧内容去哪了 -->
+                                    <TextBlock x:Name="LogSizeText" FontSize="10"
+                                               Foreground="{StaticResource Faint}" Margin="0,2,0,0" TextWrapping="Wrap"/>
+                                </StackPanel>
+                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+                                    <Button x:Name="RefreshLogBtn" Content="刷新" Width="60" Height="28" FontSize="11"
+                                            Click="RefreshLog_Click" ToolTip="重新读一遍日志文件"/>
+                                    <Button x:Name="CopyLogBtn" Content="复制全部" Width="72" Height="28" FontSize="11"
+                                            Margin="6,0,0,0" Click="CopyLog_Click"
+                                            ToolTip="把最近的日志复制到剪贴板，方便发给别人看"/>
+                                    <Button x:Name="OpenLogFileBtn" Content="打开文件" Width="72" Height="28" FontSize="11"
+                                            Margin="6,0,0,0" Click="OpenLogFile_Click"
+                                            ToolTip="用记事本打开完整的日志文件"/>
+                                    <Button x:Name="ClearLogBtn" Content="清空" Width="60" Height="28" FontSize="11"
+                                            Margin="6,0,0,0" Click="ClearLog_Click"
+                                            ToolTip="删掉 app.log 和上一代 app.log.1（会先问一次，删了就找不回来了）"/>
+                                </StackPanel>
+                            </Grid>
+                            <CheckBox x:Name="AutoRefreshLogCheck" Content="自动刷新（每 2 秒，排查问题时开着更方便）"
+                                      FontSize="11" Margin="0,0,0,8"/>
+                            <!-- 隐私开关：默认关。关着时「画面同步」的日志只写进程名（chrome (标题已隐藏)），
+                                 因为窗口标题会暴露用户在看什么。改动立即写进设置，下次开始观察时生效。 -->
+                            <CheckBox x:Name="LogWindowTitlesCheck" Content="日志里记录窗口标题（默认关：标题会暴露你在看什么）"
+                                      FontSize="11" Margin="0,0,0,8"
+                                      ToolTip="关着的时候，日志只记进程名，例如「画面同步已启动：chrome (标题已隐藏)」；下次开始「画面同步」时生效"/>
+                            <!-- 折行显示：日志行很长，横向滚动才能看全的后半段以前是要滚的。 -->
+                            <ListBox x:Name="LogList" Height="130"
+                                     Background="{StaticResource Surface}" BorderBrush="{StaticResource Border}"
+                                     BorderThickness="1" FontFamily="Consolas" FontSize="11"
+                                     ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding}" FontFamily="Consolas" FontSize="11"
+                                                   TextWrapping="Wrap"/>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <StackPanel>
+                        <Button x:Name="DeviceTestFoldBtn" Tag="DeviceTestFoldBody" Style="{StaticResource BtnGhost}"
+                                Padding="0,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                Click="SettingsSection_Click" AutomationProperties.Name="🔧 设备自检" ToolTip="展开或收起🔧 设备自检；只改变显示，不开关功能">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="20"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="▸" Tag="FoldArrow" FontSize="14" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                    <TextBlock Text="🔧 设备自检" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="读取设备信息、逐个试轴" FontSize="10" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis" Margin="0,3,8,0"/>
+                                </StackPanel>
+                        
+                            </Grid>
+                        </Button>
+                        <StackPanel x:Name="DeviceTestFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
+                            <TextBlock Text="读一下固件信息，再逐个试轴：点某个轴，机器会小幅动一下，看哪里在动就知道实际装了哪些电机（说明书上写的轴不一定都装了）。测试前会先停掉正在跑的动作。"
+                                       Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                            <!-- 链路存活：只看回显，永不因为"没回话"锁输出（误伤比漏报贵）。
+                                 文字由 SerialLinkMonitor.Describe 统一产出，界面只负责显示，避免两处措辞说岔。 -->
+                            <TextBlock x:Name="LinkStatusText" Text="链路：未连接" FontSize="11"
+                                       Foreground="{StaticResource Muted}" Margin="0,0,0,8" TextWrapping="Wrap"/>
+                            <!-- 两个按钮并排一行：以前「读取设备信息」自己占一行，左边空出一大片。 -->
+                            <Grid Margin="0,0,0,10">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <Button x:Name="ExportBlackBoxBtn" Content="导出故障包" Height="32" Padding="14,0" FontSize="12"
+                                        Style="{StaticResource BtnSecondary}" Click="ExportBlackBox_Click"/>
+                                <Button x:Name="DeviceInfoBtn" Grid.Column="1" Content="读取设备信息" Height="32" Padding="14,0"
+                                        FontSize="12" Style="{StaticResource BtnSecondary}" Margin="8,0,0,0"
+                                        Click="DeviceInfo_Click"/>
+                                <TextBlock x:Name="ExportBlackBoxHint" Grid.Column="2" Text="还没导出过" FontSize="10"
+                                           Foreground="{StaticResource Faint}" Margin="10,0,0,0"
+                                           VerticalAlignment="Center" TextWrapping="Wrap"/>
+                            </Grid>
+                            <TextBox x:Name="DeviceInfoBox" Margin="0,8,0,12" Height="96" IsReadOnly="True"
+                                     FontFamily="Consolas" FontSize="11" TextWrapping="Wrap" AcceptsReturn="True"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Text="还没读取。先连上设备，再点上面的按钮；如果串口被 MultiFunPlayer / Intiface Central 占着，会读不到。"/>
+                            <TextBlock Text="逐轴测试：点一下会先动到限位范围的 15% 位置再回中，幅度不大，但机器真的会动。"
+                                       FontSize="11" Foreground="{StaticResource Muted}" Margin="0,0,0,6" TextWrapping="Wrap"/>
+                            <WrapPanel x:Name="AxisTestPanel"/>
+                            <TextBlock x:Name="AxisTestHint" Text="" FontSize="10" Foreground="{StaticResource Faint}"
+                                       Margin="0,6,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                    <StackPanel>
+                        <Button x:Name="FirmwareFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
+                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                ToolTip="直接改设备固件里的设置：舵机零点、方向反转、最大角度、蓝牙、设备名…"
+                                Click="FirmwareFold_Click">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock x:Name="FirmwareFoldTitle" Text="▸ 🧩 固件设置（进阶）" FontSize="14"
+                                           FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="FirmwareFoldSummary" Grid.Column="1" Text="" FontSize="10"
+                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                           Margin="12,0,0,0" TextTrimming="CharacterEllipsis"/>
+                            </Grid>
+                        </Button>
+                
+                        <StackPanel x:Name="FirmwareFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
+                            <TextBlock FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,0,0,10"
+                                       Text="直接改设备固件里的设置（舵机零点、方向反转、最大角度、蓝牙、设备名…）。串口协议读不到设备当前值，所以下面填的是「要改成多少」；填好点「应用改动」，再点「保存到设备」，提示要重启的项还要重启才生效。"/>
+                            <WrapPanel Margin="0,0,0,6">
+                                <Button x:Name="FirmwareReadBtn" Content="读取设置列表" Height="32" FontSize="12"
+                                        Padding="12,0" Margin="0,0,8,8" Style="{StaticResource BtnSecondary}"
+                                        ToolTip="读设备固件当前支持哪些设置项（要固件支持 #list-settings 这套命令）"
+                                        Click="FirmwareRead_Click"/>
+                                <Button x:Name="FirmwareApplyBtn" Content="应用改动" Height="32" FontSize="12"
+                                        Padding="12,0" Margin="0,0,8,8" Style="{StaticResource BtnPrimary}"
+                                        ToolTip="把填了值的项发到设备（这一步还没写进设备的 Flash，断电会丢）"
+                                        Click="FirmwareApply_Click"/>
+                                <Button x:Name="FirmwareSaveBtn" Content="保存到设备" Height="32" FontSize="12"
+                                        Padding="12,0" Margin="0,0,8,8" Style="{StaticResource BtnSecondary}"
+                                        ToolTip="让设备把设置写进自己的 Flash（$save），断电也不丢"
+                                        Click="FirmwareSave_Click"/>
+                                <Button x:Name="FirmwareRestartBtn" Content="重启设备" Height="32" FontSize="12"
+                                        Padding="12,0" Margin="0,0,8,8" Style="{StaticResource BtnSecondary}"
+                                        ToolTip="重启固件（#restart）：串口会断开几秒，之后 Hexa 会自动重连"
+                                        Click="FirmwareRestart_Click"/>
+                            </WrapPanel>
+                            <TextBlock x:Name="FirmwareStatusText" Text="还没读取。先连上设备，再点「读取设置列表」。"
+                                       FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,0,0,10"/>
+                
+                            <StackPanel x:Name="FirmwareCommonPanel"/>
+                            <TextBlock x:Name="FirmwareOthersHint" Text="" FontSize="10"
+                                       Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                       Margin="0,8,0,4" Visibility="Collapsed"/>
+                            <ScrollViewer x:Name="FirmwareOthersScroll" MaxHeight="280"
+                                          VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                                <StackPanel x:Name="FirmwareOthersPanel"/>
+                            </ScrollViewer>
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+
+                <Border Style="{StaticResource Card}" Margin="0,10,0,0">
                     <StackPanel>
                         <Button x:Name="AboutFoldBtn" Style="{StaticResource BtnGhost}" Padding="0" Height="30"
                                 HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
@@ -704,10 +810,10 @@
                             </Grid>
                         </Button>
                         <StackPanel x:Name="AboutFoldBody" Visibility="Collapsed" Margin="0,12,0,0">
-
+                
                         <TextBlock Text="换电脑、重装系统之前，可以把整份设置导出来存着，需要时再导回去 —— 不用一个个页面手抄。"
                                    Foreground="{StaticResource Muted}" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/>
-
+                
                         <!-- 版本：只读信息，回填一次即可（运行中不会变） -->
                         <Grid Margin="0,0,0,8">
                             <Grid.ColumnDefinitions>
@@ -745,7 +851,7 @@
                                     Click="AboutDataFolderOpen_Click"
                                     ToolTip="在文件管理器里打开这个目录（设置文件就在里面）"/>
                         </Grid>
-
+                
                         <StackPanel Orientation="Horizontal">
                             <Button x:Name="ExportConfigBtn" Content="导出配置…" Width="104" Height="32" FontSize="12"
                                     Style="{StaticResource BtnPrimary}" Click="ExportConfig_Click"
@@ -760,7 +866,6 @@
                         </StackPanel>
                     </StackPanel>
                 </Border>
-
             </StackPanel>
         </Grid>
         </StackPanel>

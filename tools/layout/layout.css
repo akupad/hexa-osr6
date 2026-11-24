@@ -1,0 +1,50 @@
+:root{--bg:#0e131e;--bg2:#151c29;--card:#19212f;--line:#27324a;--tx:#e7edf8;--mut:#8a9ab3;--acc:#5ba7ff;--amber:#e2b04a;--violet:#a98bff;--red:#e06c6c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.55 "Segoe UI","Microsoft YaHei",sans-serif}
+header{position:sticky;top:0;z-index:9;background:rgba(14,19,30,.97);border-bottom:1px solid var(--line);padding:12px 18px}
+header .title{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap}
+h1{font-size:17px;margin:0;font-weight:600}
+.meta{color:var(--mut);font-size:12px}
+.tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:10px}
+#q{background:var(--bg2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px 10px;min-width:300px}
+.tools button{background:var(--bg2);border:1px solid var(--line);color:var(--tx);border-radius:8px;padding:6px 12px;cursor:pointer}
+.tools button:hover{border-color:var(--acc);color:var(--acc)}
+.chk{color:var(--mut);font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer}
+main{display:grid;grid-template-columns:200px 1fr;align-items:start}
+nav{position:sticky;top:112px;max-height:calc(100vh - 120px);overflow:auto;padding:14px 10px;border-right:1px solid var(--line)}
+nav a{display:flex;gap:8px;padding:6px 10px;border-radius:8px;color:var(--tx);text-decoration:none;font-size:13px}
+nav a:hover{background:var(--bg2)}
+nav a.active{background:#1d2b44;color:var(--acc)}
+nav a span:last-child{color:var(--mut);font-size:11px}
+#content{padding:16px 20px 90px}
+.page{margin-bottom:24px}
+.page h2{font-size:15px;margin:0 0 10px}
+.page h2 em{font-style:normal;color:var(--mut);font-size:12px;margin-left:8px}
+.tree{display:flex;flex-direction:column;gap:4px}
+.node.card>.head{background:var(--card);border:1px solid var(--line);border-radius:10px}
+.node.fold>.head,.node.expander>.head{background:#1e1a12;border:1px solid #3b3222;border-radius:8px}
+.node.expander>.head{background:#171c2c;border-color:#2c3a5c}
+.head{display:flex;gap:8px;align-items:center;padding:7px 10px;cursor:pointer;user-select:none}
+.head:hover{border-color:var(--acc)}
+.caret{color:var(--mut);transition:transform .12s;display:inline-block;font-size:11px}
+.caret.open{transform:rotate(90deg);color:var(--acc)}
+.ttl{font-weight:600;font-size:13px;flex:1;min-width:120px}
+.tag{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:999px;padding:0 7px;white-space:nowrap}
+.tag.warn{color:var(--amber);border-color:#57451f}
+.tag.ok{color:#5f9f7c;border-color:#284a38}
+.tag.name{color:var(--violet);border-color:#3d3263}
+.tag.ln{color:var(--acc);border-color:#24405f}
+.tag.hide{color:var(--red);border-color:#5a2b2b}
+.body{padding:4px 0 4px 18px;border-left:1px solid var(--line);margin-left:12px;display:flex;flex-direction:column;gap:4px}
+.body.closed{display:none}
+.leaf{display:flex;gap:8px;align-items:center;padding:3px 8px;border-left:2px solid transparent;border-radius:5px;font-size:13px}
+.node.hidden .leaf{border-left-color:var(--red);opacity:.85}
+.node.label .leaf{color:#bcc9dd}
+.node.label .leaf .ttl,.node.hidden .leaf .ttl{font-weight:400}
+body.compact .head{padding:4px 8px}
+body.compact .leaf{padding:1px 6px;font-size:12px}
+body.compact #content{padding:10px 14px 60px}
+footer{color:var(--mut);font-size:12px;padding:0 20px 40px}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:#2b3550;border-radius:6px}
+::-webkit-scrollbar-track{background:#121826}

@@ -72,8 +72,19 @@ public partial class PlaygroundViewModel : ObservableObject
     private void ToggleAuto()
     {
         _engine.AutoPattern = AutoPattern;
-        if (_engine.AutoRunning) _engine.StopAuto();
-        else _engine.StartAuto();
+        if (_engine.AutoRunning)
+        {
+            _engine.StopAuto();
+            // 手动停止 = 用户主动交回默认：清掉「手动自动优先」，画面同步这条自动路径恢复接管权。
+            App.RuleEngine.SetManualAutoPriority(false);
+        }
+        else if (_engine.StartAuto())
+        {
+            // 手动「开始自动」= 明确的用户意图：置位让伴随彻底不插手（只对手动这一路生效，
+            // 伴随自己的「画面同步自动路径」不受影响）。StartAuto 返回 false（瞬时被急停/断连
+            // 打断）时不置位，按钮不会误以为已经压过伴随。
+            App.RuleEngine.SetManualAutoPriority(true);
+        }
         SyncFromEngine();
     }
 
@@ -86,7 +97,11 @@ public partial class PlaygroundViewModel : ObservableObject
         AutoPattern = _engine.AutoPattern;
         // 记住"正在用的快速预设"：重启后高亮回到它（用户手动改波形/强度/速度时页面会清掉）。
         _cfg.LastQuickPreset = id;
-        if (!_engine.AutoRunning) _engine.StartAuto();
+        if (!_engine.AutoRunning && _engine.StartAuto())
+        {
+            // 快速预设也是用户手动开始：同样置位「手动自动优先」。
+            App.RuleEngine.SetManualAutoPriority(true);
+        }
         SyncFromEngine();
     }
 

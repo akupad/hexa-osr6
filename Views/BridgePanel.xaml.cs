@@ -106,7 +106,6 @@ public partial class BridgePanel : UserControl
             BridgeLinkCheck.IsChecked = App.Settings.BridgeAxisLink;
             BridgeLinkSlider.Value = App.Settings.BridgeAxisLinkAmount;
             BridgeLinkLabel.Text = $"{(int)Math.Round(App.Settings.BridgeAxisLinkAmount)}%";
-            BridgeComfortCheck.IsChecked = App.Settings.BridgeUseComfortLimits;
             BridgeRawTcodeCheck.IsChecked = App.Settings.AllowRawTCodeUdp;
             RefreshRawTcodeHint();
             SyncBridgeShapeUi();
@@ -139,8 +138,6 @@ public partial class BridgePanel : UserControl
         BridgeSmoothCheck.Unchecked += (_, _) => { if (!_loadingUi) { SyncBridgeShapeUi(); ApplyBridgeSettings(); } };
         BridgeLinkCheck.Checked += (_, _) => { if (!_loadingUi) { SyncBridgeShapeUi(); ApplyBridgeSettings(); } };
         BridgeLinkCheck.Unchecked += (_, _) => { if (!_loadingUi) { SyncBridgeShapeUi(); ApplyBridgeSettings(); } };
-        BridgeComfortCheck.Checked += (_, _) => { if (!_loadingUi) ApplyBridgeSettings(); };
-        BridgeComfortCheck.Unchecked += (_, _) => { if (!_loadingUi) ApplyBridgeSettings(); };
         BridgeRawTcodeCheck.Checked += (_, _) => { if (!_loadingUi) { RefreshRawTcodeHint(); ApplyBridgeSettings(); } };
         BridgeRawTcodeCheck.Unchecked += (_, _) => { if (!_loadingUi) { RefreshRawTcodeHint(); ApplyBridgeSettings(); } };
         BridgeSmoothSlider.ValueChanged += (_, e) =>
@@ -194,8 +191,7 @@ public partial class BridgePanel : UserControl
         {
             BridgeShapeSummary.Text =
                 (smooth ? $"平滑 {App.Settings.BridgeSmoothingMs}ms" : "平滑关") + " · " +
-                (link ? $"联动 {App.Settings.BridgeAxisLinkAmount:0}%" : "联动关") + " · " +
-                (BridgeComfortCheck.IsChecked == true ? "舒适档开" : "舒适档关");
+                (link ? $"联动 {App.Settings.BridgeAxisLinkAmount:0}%" : "联动关");
         }
     }
 
@@ -242,7 +238,6 @@ public partial class BridgePanel : UserControl
         App.Settings.BridgeSmoothingMs = (int)Math.Round(BridgeSmoothSlider.Value);
         App.Settings.BridgeAxisLink = BridgeLinkCheck.IsChecked == true;
         App.Settings.BridgeAxisLinkAmount = BridgeLinkSlider.Value;
-        App.Settings.BridgeUseComfortLimits = BridgeComfortCheck.IsChecked == true;
         App.Settings.GameBridgeAllowLan = BridgeLanCheck.IsChecked == true;
         App.Settings.AllowRawTCodeUdp = BridgeRawTcodeCheck.IsChecked == true;
         App.Settings.Normalize();

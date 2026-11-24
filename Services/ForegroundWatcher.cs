@@ -58,6 +58,24 @@ public sealed class ForegroundWatcher : IDisposable
         _timer = null;
     }
 
+    /// <summary>绑定的进程还在不在（切窗不等于退出：进程活着就只是降级继续）。</summary>
+    private static bool ProcessAlive(string name)
+    {
+        string trimmed = (name ?? "").Trim();
+        if (trimmed.Length == 0) return false;
+        if (trimmed.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) trimmed = trimmed[..^4];
+        try
+        {
+            var procs = System.Diagnostics.Process.GetProcessesByName(trimmed);
+            try { return procs.Length > 0; }
+            finally { foreach (var p in procs) p.Dispose(); }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     private void Tick()
     {
         try
@@ -93,6 +111,10 @@ public sealed class ForegroundWatcher : IDisposable
                 && string.Equals(_cfg.CompanionSource?.Trim(), "screen", StringComparison.OrdinalIgnoreCase))
                 return;
 
+            // 「只用游戏信号」：没有对接就来信号等着，不要拿底色动作顶上（这是一条明确的例外）。
+            if (string.Equals(_cfg.CompanionSource?.Trim(), "telemetry", StringComparison.OrdinalIgnoreCase))
+                return;
+
             // funscript 播放期间不抢占，避免自动切预设覆盖手动播放。
             bool manualPlayback = _funscript?.IsPlaying == true;
 
@@ -101,8 +123,12 @@ public sealed class ForegroundWatcher : IDisposable
 
             if (game)
             {
+                // 回到这个游戏：先撤掉切窗降级（混合系数在引擎里平滑爬回正常，不是跳变）。
+                _engine.SetBackgroundDegraded(false);
+
                 // 仅在“进入游戏”的边沿应用一次绑定预设，避免与手动停止/归中打架。
-                if (!_inGame && !manualPlayback && _engine.CanRun)
+                // 用户自己停过（暂停 / 停止 / 急停）就别替他重启：这不是「丢信号」，得等他再按一次开始。
+                if (!_inGame && !manualPlayback && _engine.CanRun && !_engine.UserStopLatched)
                 {
                     // 这个游戏有自己的配置就用它，没有才回落到全局的「底色动作 / 底色强度」。
                     // （和规则引擎 GameCompanionRules.Apply 读的是同一套设置，两条路的覆盖规则一致。）
@@ -149,9 +175,20 @@ public sealed class ForegroundWatcher : IDisposable
             }
             else if (_inGame)
             {
-                // 切回桌面/非游戏 → 自动待机（funscript 播放中不打断）。
+                // 切回桌面/非游戏：先分清「只是切窗」还是「真的退出了」。
+                // · 进程还在（alt-tab / 看攻略 / 打字）→ 锁住原目标，平滑降到慢速小幅继续，切回就平滑接上；
+                // · 进程真没了 → 才算退出，走缓降回中待机（funscript 播放中不打断）。
                 _inGame = false;
-                if (!manualPlayback && _engine.CanRun) StandbyGracefully();
+                if (ProcessAlive(target))
+                {
+                    _engine.SetBackgroundDegraded(true);
+                    NoteTransition("切到别的窗口：目标还在，先慢速小幅动着（切回就平滑接上）");
+                }
+                else
+                {
+                    _engine.SetBackgroundDegraded(false);
+                    if (!manualPlayback && _engine.CanRun) StandbyGracefully();
+                }
                 StateChanged?.Invoke();
             }
         }

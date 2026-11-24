@@ -20,6 +20,9 @@ public partial class StrokesPage : Page
     private const double CardMinWidth = 124;
     private const int    CardMaxCols  = 6;    // 宽屏也别排成密密麻麻的小格子
     private const double CardHeight   = 56;
+
+    // 脚本架默认展开：导入的脚本要一进来就能看见（收起只是个人偏好，不记忆）
+    private bool _shelfOpen = true;
     private double _cardWidth = 156;
 
     // 实时 3D 预览刷新（120ms，与 PlaygroundPage 的 150ms 轴条刷新同一节奏）
@@ -118,7 +121,11 @@ public partial class StrokesPage : Page
         _previewTimer.Tick += (_, _) => RefreshPreview();
         IsVisibleChanged += (_, _) =>
         {
-            if (IsVisible) StartPreviewTimer();
+            if (IsVisible)
+            {
+                StartPreviewTimer();
+                LoadScriptShelf();   // 从脚本库那一栏回来时把刚导入的脚本带出来
+            }
             else
             {
                 StopPreviewTimer();
@@ -130,7 +137,7 @@ public partial class StrokesPage : Page
             StopPreviewTimer();
             StopPresetPreview();
         };
-        Loaded += (_, _) => { UpdateResponsiveLayout(); if (IsVisible) StartPreviewTimer(); };
+        Loaded += (_, _) => { UpdateResponsiveLayout(); if (IsVisible) StartPreviewTimer(); LoadScriptShelf(); };
 
         // 窗口宽度变了就重算右栏宽度和卡片宽度（最小 880 窗口下正文只有约 660px）
         SizeChanged += (_, _) => UpdateResponsiveLayout();
@@ -1176,7 +1183,13 @@ public partial class StrokesPage : Page
         }
         if (!_vm.Playing && !App.Engine.CanRun)
         {
-            System.Windows.MessageBox.Show("设备未连接或处于急停，无法播放。", "播放动作",
+            // CanRun 现在把「没连设备 / 急停 / 归中 / 输出锁着」四种情况都算进去了，
+            // 按真实原因给一句具体提示，别再用「设备未连接或急停」这种笼统说法糊弄人。
+            string reason = App.Engine.EmergencyStopped ? "设备处于急停锁定，先点侧栏「⬆ 全部归中」解锁。"
+                : App.Engine.IsHoming ? "设备正在归中，等它停下来再播放。"
+                : !App.Serial.IsOpen ? "设备没连上，先到「设置」页连接。"
+                : "输出通道锁着，先点侧栏「⬆ 全部归中」解锁。";
+            System.Windows.MessageBox.Show(reason, "播放动作",
                 MessageBoxButton.OK, MessageBoxImage.Warning);
             SyncPlayButton();
             return;
@@ -1218,7 +1231,7 @@ public partial class StrokesPage : Page
     }
 
     /// <summary>
-    /// 「现在为什么不能播放」要写在脸上：没连设备 / 急停 / 正在归中各有各的去处，
+    /// 「现在为什么不能播放」要写在脸上：没连设备 / 急停 / 正在归中 / 输出锁着 / 没选动作，各有各的去处，
     /// 能用的功能（试看、编辑、搜索）也要说明不受影响。
     /// </summary>
     private void SyncDeviceHint()
@@ -1232,8 +1245,176 @@ public partial class StrokesPage : Page
             message = "⚠ 设备没连上：现在可以浏览、试看、编辑和搜索动作，但「播放」要连上设备才能用（到「设置」页连接）。";
         else if (App.Engine.IsHoming)
             message = "⏳ 设备正在归中，等它停下来再播放。";
+        else if (!App.Serial.OutputEnabled)
+            // 设备连上了、也没急停/归中，但输出闸门还关着（比如刚经历过板子重启恢复的瞬间窗口）：
+            // 这状态下帧会被串口层静默丢弃、机器不会动，必须说清楚，而不是让播放按钮「点了没反应」。
+            message = "⚠ 输出锁着：设备已连上，但输出通道还没解锁，先点左边侧栏的「⬆ 全部归中」解锁，之后才能播放。试看、编辑、搜索都不受影响。";
+        else if (App.StrokesVm.SelectedStroke is null)
+            // 设备没问题、输出也解锁，但还没选动作：播放按钮是灰的，得说明原因，别让人以为软件坏了。
+            message = "⚠ 还没选动作：在左侧点一张动作卡片选中它，右上角「▶ 播放」才会亮。试看、编辑、搜索都不受影响。";
 
         DeviceHintBar.Visibility = message is null ? Visibility.Collapsed : Visibility.Visible;
         if (message is not null) DeviceHintText.Text = message;
+    }
+
+    // ══ 页签：动作 ←→ 脚本库（2026-11-24 用户要求把脚本库并进这一页）═══════════════
+    // ScriptLibraryPage 本身就是 Page，塞不进 Grid，所以用 Frame 承载；第一次点才构造，
+    // 不点就不占内存（脚本库要扫库目录、读 funscript 头）。
+    private ScriptLibraryPage? _libraryPage;
+    private bool _libraryShown;
+
+    private void TabStrokes_Click(object sender, RoutedEventArgs e) => ShowLibrary(false);
+    private void TabLibrary_Click(object sender, RoutedEventArgs e) => ShowLibrary(true);
+
+    /// <summary>外部要直接打开脚本库（例如上次停在脚本库的旧设置）时用这个。</summary>
+    public void ShowScriptLibrary() => ShowLibrary(true);
+
+    private void ShowLibrary(bool show)
+    {
+        if (show && _libraryPage is null)
+        {
+            _libraryPage = new ScriptLibraryPage();
+            // Frame 只能放 Page，而且 Navigate 是排队异步的（切栏那一拍 Content 还空着）
+            LibraryHost.Navigate(_libraryPage);
+        }
+
+        _libraryShown = show;
+        LibraryHost.Visibility = show ? Visibility.Visible : Visibility.Collapsed;
+        StrokePane.Visibility  = show ? Visibility.Collapsed : Visibility.Visible;
+
+        // 当前那一栏用主色按钮，另一栏用次要样式 —— 一眼看出自己在哪
+        TabStrokesBtn.Style = (Style)FindResource(show ? "BtnSecondary" : "BtnPrimary");
+        TabLibraryBtn.Style = (Style)FindResource(show ? "BtnPrimary" : "BtnSecondary");
+    }
+
+    /// <summary>当前是不是停在脚本库那一栏（自检和外部调用判断用）。</summary>
+    public bool IsLibraryShown => _libraryShown;
+
+    // ══════════════════════════════════════════════════════════════════
+    // 脚本架：把脚本库里的脚本（含刚导入的）直接列在动作栏
+    // 单击＝切到「📚 脚本库」那一栏并选中它；双击＝直接载入播放
+    // ══════════════════════════════════════════════════════════════════
+    private void LoadScriptShelf()
+    {
+        List<ScriptEntry> entries;
+        try
+        {
+            entries = ScriptLibrary.List();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("[脚本架] 读脚本库失败：" + ex.Message);
+            entries = new List<ScriptEntry>();
+        }
+
+        ShelfPanel.Children.Clear();
+        foreach (ScriptEntry entry in entries) ShelfPanel.Children.Add(MakeScriptChip(entry));
+
+        ShelfTitle.Text = (_shelfOpen ? "▾" : "▸") + $"  📚 脚本库脚本（{entries.Count}）";
+        ShelfHint.Text = entries.Count == 0
+            ? "脚本库还是空的：点右边「📥 导入脚本…」，或去「📚 脚本库」那一栏导入；导完这一排就有了。"
+            : "点一下＝切到「📚 脚本库」那一栏并选中它（再点那边的「▶ 载入并播放」）；双击这里＝直接载入播放。";
+    }
+
+    private Border MakeScriptChip(ScriptEntry entry)
+    {
+        var title = new TextBlock
+        {
+            Text = (entry.Valid ? "🎬 " : "⚠ ") + entry.Name,
+            FontSize = 11,
+            FontWeight = FontWeights.SemiBold,
+            MaxWidth = 190,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Foreground = (Brush)FindResource(entry.Valid ? "Text" : "Warning"),
+        };
+        var meta = new TextBlock
+        {
+            Text = entry.Valid
+                ? TimeSpan.FromMilliseconds(entry.DurationMs).ToString(@"m\:ss") + $" · {entry.TrackCount} 轴"
+                : (entry.Error ?? "无法解析"),
+            FontSize = 10,
+            Foreground = (Brush)FindResource("Muted"),
+            MaxWidth = 190,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+        };
+        var stack = new StackPanel();
+        stack.Children.Add(title);
+        stack.Children.Add(meta);
+
+        var chip = new Border
+        {
+            Child = stack,
+            Background = (Brush)FindResource(entry.Valid ? "BgRaised" : "DangerSoft"),
+            BorderBrush = (Brush)FindResource("BorderStrong"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(6),
+            Padding = new Thickness(9, 5, 9, 5),
+            Margin = new Thickness(0, 0, 8, 8),
+            Cursor = Cursors.Hand,
+            Tag = entry.FilePath,
+            ToolTip = entry.Valid
+                ? $"{entry.Name}\n时长 {TimeSpan.FromMilliseconds(entry.DurationMs).ToString(@"m\:ss")} · {entry.TrackCount} 轴\n单击＝切到脚本库那一栏并选中；双击＝直接载入播放"
+                : $"{entry.Name}\n无法解析：{entry.Error ?? "未知原因"}",
+        };
+        if (!entry.Valid) chip.Opacity = 0.72;
+        chip.MouseLeftButtonUp += ShelfChip_MouseUp;
+        return chip;
+    }
+
+    private void ShelfChip_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: string path } || path.Length == 0) return;
+        bool play = e.ClickCount >= 2;
+        ShowLibrary(true);
+        _libraryPage?.ShowAndSelect(path, play);
+    }
+
+    private void ShelfHeader_MouseUp(object sender, MouseButtonEventArgs e)
+    {
+        _shelfOpen = !_shelfOpen;
+        ShelfScroll.Visibility = _shelfOpen ? Visibility.Visible : Visibility.Collapsed;
+        LoadScriptShelf();
+    }
+
+    private void ShelfRefresh_Click(object sender, RoutedEventArgs e)
+    {
+        LoadScriptShelf();
+        _libraryPage?.ReloadFromDisk();
+    }
+
+    /// <summary>动作栏里直接导入脚本：和脚本库那一栏走同一条导入路径（伴生轴文件、同名覆盖确认都一样）。</summary>
+    private async void ShelfImport_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "导入脚本（可多选）",
+            Filter = "funscript 脚本 (*.funscript)|*.funscript|所有文件 (*.*)|*.*",
+            Multiselect = true,
+        };
+        if (dlg.ShowDialog() != true) return;
+        try
+        {
+            var sources = ScriptLibrary.ExpandCompanionFiles(dlg.FileNames);
+            var conflicts = ScriptLibrary.ConflictingTargets(sources);
+            bool overwrite = false;
+            if (conflicts.Count > 0)
+            {
+                string names = string.Join("、", conflicts.Take(5).Select(dest => System.IO.Path.GetFileNameWithoutExtension(dest)));
+                if (conflicts.Count > 5) names += $" 等 {conflicts.Count} 个";
+                if (System.Windows.MessageBox.Show($"库内已有同名脚本：{names}。覆盖它们？", "覆盖确认",
+                        MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
+                overwrite = true;
+            }
+
+            var summary = ScriptLibrary.ImportMany(sources, overwrite);
+            LoadScriptShelf();
+            _libraryPage?.ReloadFromDisk();
+            if (summary.Scripts.Count > 0)
+                ShelfHint.Text = $"刚导入 {summary.Scripts.Count} 个脚本，已经列在这一排了（双击就能播）。";
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show("导入失败：" + ex.Message, "错误", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 }

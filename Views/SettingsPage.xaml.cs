@@ -70,6 +70,12 @@ public partial class SettingsPage : Page
     {
         InitializeComponent();
 
+        // 悬浮窗被别处关掉（小窗上的 ✕、托盘菜单、快捷键）时，这里的按钮文案要跟着变，
+        // 「🪟 悬浮窗」那块顺势收起 —— 以前只在设置页自己点按钮时才刷新，所以会出现
+        // 「明明已经收起来了，按钮还写着『隐藏悬浮窗』，点一下又把它放出来」。
+        App.OverlayVisibilityChanged += OnOverlayVisibilityChanged;
+        Unloaded += (_, _) => App.OverlayVisibilityChanged -= OnOverlayVisibilityChanged;
+
         // Connection status
         _vm.PropertyChanged += (_, e) =>
         {
@@ -94,6 +100,12 @@ public partial class SettingsPage : Page
         PreferWiredCheck.IsChecked = _vm.PreferWired;
         GlobalHotkeysCheck.IsChecked = App.Settings.GlobalHotkeysEnabled;
         RefreshStorageFolderTexts();
+
+        // 诊断：停顿汇总行，3 秒刷一次（StallDetector 是静态的，读数极轻）。
+        RefreshStallSummary();
+        var stallTimer = new System.Windows.Threading.DispatcherTimer { Interval = System.TimeSpan.FromSeconds(3) };
+        stallTimer.Tick += (_, _) => RefreshStallSummary();
+        stallTimer.Start();
         AutoConnectCheck.Checked += (_, _) => _vm.AutoConnect = true;
         AutoConnectCheck.Unchecked += (_, _) => _vm.AutoConnect = false;
         PreferWiredCheck.Checked += (_, _) => { _vm.PreferWired = true; ReloadPortCombo(); };
@@ -220,6 +232,18 @@ public partial class SettingsPage : Page
     /// 宽窗口 = 两栏并排（每栏约 570px，滑杆/按钮照样不超过 420px 的横条红线）；
     /// 窄窗口 = 右栏整块搬到左栏下面，一栏到底，不会被窗口边缘切掉。
     /// </summary>
+    private void SettingsSection_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button { Tag: string bodyName } button ||
+            FindName(bodyName) is not FrameworkElement body) return;
+        bool expanded = body.Visibility != Visibility.Visible;
+        body.Visibility = expanded ? Visibility.Visible : Visibility.Collapsed;
+        if (button.Content is Grid header)
+            foreach (UIElement child in header.Children)
+                if (child is TextBlock { Tag: "FoldArrow" } arrow)
+                    arrow.Text = expanded ? "▾" : "▸";
+    }
+
     private void ApplySettingsLayout(double width)
     {
         if (width <= 0 || SettingsColumns is null) return;
@@ -239,6 +263,7 @@ public partial class SettingsPage : Page
         }
         else
         {
+            SettingsLeftCol.Width = new GridLength(1, GridUnitType.Star);
             SettingsGapCol.Width = new GridLength(0);
             SettingsRightCol.Width = new GridLength(0);
             Grid.SetRow(SettingsRightColumn, 1);
@@ -439,6 +464,20 @@ public partial class SettingsPage : Page
     private void OverlayToggleBtn_Click(object sender, RoutedEventArgs e)
     {
         App.ToggleOverlay();
+        UpdateOverlayStatus();
+    }
+
+    /// <summary>
+    /// 悬浮窗被关掉/打开（不管从哪条路：小窗上的 ✕、托盘菜单、快捷键）：只把按钮文案和状态字同步过来。
+    /// 不折叠、不收起这一块 —— 用户原话「我不是要收起，我要你解决的是我叉了悬浮窗按钮还显示隐藏悬浮窗」。
+    /// </summary>
+    private void OnOverlayVisibilityChanged(bool visible)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            Dispatcher.BeginInvoke(new Action(() => OnOverlayVisibilityChanged(visible)));
+            return;
+        }
         UpdateOverlayStatus();
     }
 
@@ -1540,13 +1579,6 @@ public partial class SettingsPage : Page
         WebApiStatusText.Text = "已换新令牌，旧的立刻失效 —— 正在用的外部程序要跟着改，否则会被拒绝（403）。";
     }
 
-    /// <summary>姿态识别（YOLO）卡已搬到「实验台 → 画面同步」（2026-11）：这里只留一行指引 + 跳转按钮。</summary>
-    private void PoseMovedGo_Click(object sender, RoutedEventArgs e)
-    {
-        if (System.Windows.Application.Current?.MainWindow is MainWindow win)
-            win.NavigateTo("testlab");
-    }
-
     private void ScriptFolderReset_Click(object sender, RoutedEventArgs e) =>
         ApplyStorageFolder("", scriptFolder: true);
 
@@ -1873,6 +1905,59 @@ public partial class SettingsPage : Page
         {
             ExportBlackBoxBtn.IsEnabled = true;
         }
+    }
+
+    private void RefreshStallSummary()
+    {
+        StallSummaryText.Text = "最近10分钟停顿：" + Hexa.Diagnostics.StallDetector.SnapshotText();
+    }
+
+    private async void GenDiagReport_Click(object sender, RoutedEventArgs e)
+    {
+        GenDiagReportBtn.IsEnabled = false;
+        try
+        {
+            // 打包要建目录 + 复制日志 + 压 zip：放后台跑，别在界面线程上做。
+            string path = await Task.Run(() => Hexa.Diagnostics.DiagnosticReport.Create("manual"));
+            RefreshStallSummary();
+            if (string.IsNullOrEmpty(path))
+            {
+                System.Windows.MessageBox.Show("诊断报告生成失败（目录不可写），详见日志。", "诊断",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+            var result = System.Windows.MessageBox.Show(
+                "诊断报告已生成：\n" + path + "\n\n要现在打开它所在的文件夹吗？",
+                "诊断报告", MessageBoxButton.YesNo, MessageBoxImage.Information);
+            if (result == MessageBoxResult.Yes)
+                OpenReportDirectory(path);
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("生成诊断报告失败", ex);
+            System.Windows.MessageBox.Show("生成失败：" + ex.Message, "诊断",
+                MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+        finally
+        {
+            GenDiagReportBtn.IsEnabled = true;
+        }
+    }
+
+    private void OpenReportDir_Click(object sender, RoutedEventArgs e) => OpenReportDirectory(null);
+
+    private static void OpenReportDirectory(string? zipPath)
+    {
+        string dir = zipPath is { Length: > 0 }
+            ? System.IO.Path.GetDirectoryName(zipPath)!
+            : Hexa.Diagnostics.DiagnosticReport.GetReportDirectory();
+        if (string.IsNullOrEmpty(dir) || !System.IO.Directory.Exists(dir))
+        {
+            System.Windows.MessageBox.Show("报告目录还不存在（还没生成过报告）。", "诊断",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(dir) { UseShellExecute = true });
     }
 
     private void HomeBtn_Click(object sender, RoutedEventArgs e)

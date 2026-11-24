@@ -32,13 +32,25 @@ public partial class MainWindow : Window
             "strokes"  => new StrokesPage(),
             "editor"   => new EditorPage(),
             "testlab"  => new TestLabPage(),
+            "companion"=> new CompanionPage(),
             "settings" => new SettingsPage(),
-            "scripts"  => new ScriptLibraryPage(),
+            // 脚本库不再是独立页：旧设置里存着 "scripts" 的由 Navigate() 归一化到 strokes
             "ai"       => new AiAssistantPage(),
             _          => new PlaygroundPage(),
         };
         _pages[tag] = page;
         return page;
+    }
+
+    /// <summary>
+    /// 旧设置里可能还存着 "scripts"（脚本库以前是左侧独立一页，2026-11-24 并进了「动作」页）：
+    /// 统一落到 strokes 并在动作页上直接打开脚本库那一栏，不让人回到一个空白/不存在的位置。
+    /// </summary>
+    private static bool NormalizePageTag(ref string tag)
+    {
+        if (tag != "scripts") return false;
+        tag = "strokes";
+        return true;
     }
 
     public MainWindow()
@@ -58,7 +70,7 @@ public partial class MainWindow : Window
         _statusTimer.Tick += (_, _) => UpdateDeviceState();
         _statusTimer.Start();
 
-        _navBtns = new[] { NavPlayground, NavManual, NavStrokes, NavEditor, NavAi, NavScripts, NavSettings, NavTestLab };
+        _navBtns = new[] { NavPlayground, NavCompanion, NavManual, NavStrokes, NavEditor, NavAi, NavSettings, NavTestLab };
 
         // 界面语言：App 启动时已按设置定好，这里把侧栏（导航按钮 + 连接/安全/为什么不动 三行 + 归中·急停）应用一遍。
         LocalizationService.Apply(this);
@@ -74,8 +86,12 @@ public partial class MainWindow : Window
             else App.Engine.TogglePlayback();
         });
             App.Hotkeys.OnEnd           += () => App.Dispatch(() => App.Engine.EmergencyStop());
-            App.Hotkeys.OnHome          += () => App.Dispatch(() => App.StrokesVm.NextStroke(+1));
-            App.Hotkeys.OnUp            += () => App.Dispatch(() => App.StrokesVm.NextStroke(-1));
+            // 下一招 / 上一招：有动作池就在池子里首尾循环，空池按动作页顺序切。
+            // 手动换招带保护期，不会被下一拍自动换招盖掉；热键不唤醒已停止的动作。
+            App.Hotkeys.OnHome          += () => App.Dispatch(() => App.StrokesVm.CycleCompanionAction(+1));
+            App.Hotkeys.OnUp            += () => App.Dispatch(() => App.StrokesVm.CycleCompanionAction(-1));
+            App.Hotkeys.OnTempoUp       += () => App.Dispatch(() => App.Engine.AdjustTempo(+1));
+            App.Hotkeys.OnTempoDown     += () => App.Dispatch(() => App.Engine.AdjustTempo(-1));
             App.Hotkeys.OnDelete        += () => _ = App.Engine.ClimaxBurstAsync();
             App.Hotkeys.OnIntensityUp   += () => { App.Engine.AdjustIntensity(+0.1); App.Settings.Save(); };
             App.Hotkeys.OnIntensityDown += () => { App.Engine.AdjustIntensity(-0.1); App.Settings.Save(); };
@@ -173,6 +189,7 @@ public partial class MainWindow : Window
 
     private void Navigate(string tag)
     {
+        bool openLibrary = NormalizePageTag(ref tag);
         if (App.Settings.LastPageTag != tag)
         {
             App.Settings.LastPageTag = tag;
@@ -187,6 +204,7 @@ public partial class MainWindow : Window
         }
 
         Page page = GetPage(tag);
+        if (openLibrary && page is StrokesPage stroked) stroked.ShowScriptLibrary();
         ContentFrame.Navigate(page);
         ApplyLanguageToPage(page);
     }

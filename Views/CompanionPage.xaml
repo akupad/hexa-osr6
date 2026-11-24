@@ -1,0 +1,237 @@
+<Page x:Class="Hexa.Views.CompanionPage"
+      xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+      xmlns:controls="clr-namespace:Hexa.Controls"
+      xmlns:views="clr-namespace:Hexa.Views"
+      Background="{StaticResource Bg}" Title="伴随">
+
+    <!-- 本页专用样式：和「测试台」的功能选择按钮同一套（未选中给卡片底，选中项描边加粗） -->
+    <Page.Resources>
+        <Style x:Key="FeatureBtnBase" TargetType="Button" BasedOn="{StaticResource BtnBase}">
+            <Setter Property="Background" Value="{StaticResource SurfaceRaised}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource Border}"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Padding" Value="12,8"/>
+            <Setter Property="FontSize" Value="13"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Foreground" Value="{StaticResource Text}"/>
+            <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        </Style>
+        <Style x:Key="FeatureBtnOn" TargetType="Button" BasedOn="{StaticResource FeatureBtnBase}">
+            <Setter Property="BorderBrush" Value="{StaticResource Primary}"/>
+            <Setter Property="BorderThickness" Value="2"/>
+        </Style>
+        <Style x:Key="FeatureBtnOff" TargetType="Button" BasedOn="{StaticResource FeatureBtnBase}"/>
+    </Page.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Margin="24,16,24,24" MaxWidth="1440" HorizontalAlignment="Stretch">
+            <TextBlock Text="💞 伴随" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,3"/>
+
+            <TextBlock Text="这里放的都是「让别的东西来指挥设备」：游戏（Lovense 联动 / 游戏桥）、手柄。开关都存在设置里，切到别页也照旧生效；只是换一页看，不影响它们继续运行。"
+                       Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,8" TextWrapping="Wrap"/>
+
+            <!-- 功能选择：一次只显示一块卡片（和「测试台」同一套用法），选中的按钮描边加粗高亮。 -->
+            <TextBlock Text="这一页有三种用法，点哪个就只显示哪一块（不用往下滑）：" Style="{StaticResource Hint}" Margin="0,4,0,6"/>
+            <Grid x:Name="FeatureSwitchGrid" Margin="0,0,0,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+                <Button x:Name="FeatureLovenseBtn" Tag="LovenseCard" Click="FeatureSwitch_Click"
+                        Grid.Row="0" Grid.Column="0"
+                        Style="{StaticResource FeatureBtnOn}" Margin="0,0,6,6"
+                        HorizontalContentAlignment="Left" Padding="12,8"
+                        ToolTip="游戏把它当 Lovense 玩具，游戏里怎么动设备就怎么动">
+                    <StackPanel>
+                        <TextBlock Text="🎮 游戏联动 · Lovense" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Text="游戏里怎么动，设备就怎么动" FontSize="10" Opacity="0.75"
+                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="FeatureBridgeBtn" Tag="BridgeCard" Click="FeatureSwitch_Click"
+                        Grid.Row="0" Grid.Column="1"
+                        Style="{StaticResource FeatureBtnOff}" Margin="6,0,0,6"
+                        HorizontalContentAlignment="Left" Padding="12,8"
+                        ToolTip="Hexa 在本机开一个 Intiface / Buttplug 服务，游戏连上就直控设备">
+                    <StackPanel>
+                        <TextBlock Text="🌉 游戏桥" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Text="游戏连本机端口直控设备" FontSize="10" Opacity="0.75"
+                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
+                <Button x:Name="FeatureGamepadBtn" Tag="GamepadCard" Click="FeatureSwitch_Click"
+                        Grid.Row="1" Grid.Column="0"
+                        Style="{StaticResource FeatureBtnOff}" Margin="0,0,6,0"
+                        HorizontalContentAlignment="Left" Padding="12,8"
+                        ToolTip="插上 Xbox 手柄，扳机和摇杆直接推设备">
+                    <StackPanel>
+                        <TextBlock Text="🕹 游戏手柄" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Text="扳机 / 摇杆直接推设备" FontSize="10" Opacity="0.75"
+                                   TextWrapping="Wrap" Margin="0,2,0,0"/>
+                    </StackPanel>
+                </Button>
+            </Grid>
+
+            <Border x:Name="LovenseCard" Style="{StaticResource Card}" Margin="0,10,0,0">
+                <StackPanel>
+                    <TextBlock Text="🎮 游戏联动 · Lovense" FontSize="14" FontWeight="SemiBold"/>
+                    <TextBlock Text="游戏把它当 Lovense 玩具：游戏里怎么动，设备就怎么动（Intiface 那套协议）。"
+                               FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                    <StackPanel x:Name="LovenseFoldBody" Margin="0,12,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <CheckBox x:Name="LovenseEnabledCheck" Content="游戏里当 Lovense 玩具" FontSize="12"
+                                      VerticalAlignment="Center" Checked="LovenseEnabled_Changed" Unchecked="LovenseEnabled_Changed"/>
+                            <TextBlock Grid.Column="1" Text="端口" FontSize="12" Foreground="{StaticResource Muted}"
+                                       VerticalAlignment="Center" Margin="16,0,8,0"/>
+                            <TextBox x:Name="LovensePortBox" Grid.Column="2" Width="104" Height="28" FontSize="14"
+                                     FontFamily="Consolas" TextAlignment="Center" Padding="0,2,0,0"
+                                     VerticalContentAlignment="Center" LostFocus="LovensePort_LostFocus"
+                                     ToolTip="游戏设置里「Lovense SSL 端口」照填这个数"/>
+                            <StackPanel Grid.Column="5" Orientation="Horizontal" HorizontalAlignment="Right"
+                                        VerticalAlignment="Center">
+                                <Button x:Name="LovenseTrustBtn" Content="信任证书" FontSize="11" Padding="7,1"
+                                        Margin="0,0,8,0" Visibility="Collapsed" Click="LovenseTrust_Click"
+                                        ToolTip="点一下，Windows 会弹一次确认框，点「是」以后游戏才认这个证书"/>
+                                <TextBlock x:Name="LovenseStatusText" Text="未开启" FontSize="11"
+                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                           TextTrimming="CharacterEllipsis"/>
+                            </StackPanel>
+                        </Grid>
+                        <Grid Margin="0,6,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="行程" FontSize="12" Foreground="{StaticResource Muted}"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <controls:RangeSlider x:Name="LovenseRange" Grid.Column="1" Minimum="0" Maximum="100"
+                                                  SmallChange="1" LowerValue="20" UpperValue="70"
+                                                  VerticalAlignment="Center"
+                                                  LowerValueChanged="LovenseRange_Changed"
+                                                  UpperValueChanged="LovenseRange_Changed"
+                                                  LostMouseCapture="LovenseRange_LostMouseCapture"
+                                                  ToolTip="一根条子上两个圆点：左边＝最高（抬到这儿就停），右边＝最深（插到这儿就停）。怕顶出去被压就把左边那个往右拉"/>
+                            <TextBlock x:Name="LovenseRangeText" Grid.Column="2" Text="最高 20%　最深 70%" FontSize="12"
+                                       FontFamily="Consolas" Foreground="{StaticResource Muted}" MinWidth="150"
+                                       TextAlignment="Right" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </Grid>
+                        
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="旋转" FontSize="12" Foreground="{StaticResource Muted}"
+                                       VerticalAlignment="Center" Margin="0,0,8,0"/>
+                            <controls:RangeSlider x:Name="LovenseRotateRange" Grid.Column="1" Minimum="0" Maximum="100"
+                                                  SmallChange="1" LowerValue="20" UpperValue="80"
+                                                  VerticalAlignment="Center"
+                                                  LowerValueChanged="LovenseRotate_Changed"
+                                                  UpperValueChanged="LovenseRotate_Changed"
+                                                  LostMouseCapture="LovenseRotate_LostMouseCapture"
+                                                  ToolTip="扭转（R0）从哪儿转到哪儿：两个圆点就是两头，游戏给的强度决定这段里摆多大"/>
+                            <TextBlock x:Name="LovenseRotateText" Grid.Column="2" Text="20% – 80%" FontSize="12"
+                                       FontFamily="Consolas" Foreground="{StaticResource Muted}" MinWidth="150"
+                                       TextAlignment="Right" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </Grid>
+                        
+                        
+                        <Grid Margin="0,4,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <CheckBox x:Name="LovenseLocalOnlyCheck" Content="仅本机连接（127.0.0.1）"
+                                      FontSize="11" VerticalAlignment="Center"
+                                      Checked="LovenseLocalOnly_Changed" Unchecked="LovenseLocalOnly_Changed"
+                                      ToolTip="默认关（0.0.0.0，手机/VR 能连）。勾上后只监听 127.0.0.1，手机端会连不上"/>
+                            <CheckBox x:Name="LovenseExtraRotateToyCheck" Grid.Column="1" Content="额外报一个会旋转的玩具（nora → R0）"
+                                      FontSize="11" VerticalAlignment="Center" Margin="16,0,0,0"
+                                      Checked="LovenseExtraRotateToy_Changed" Unchecked="LovenseExtraRotateToy_Changed"
+                                      ToolTip="让游戏也发 Rotate。默认关：多报一台玩具可能改变游戏的能力判断"/>
+                        </Grid>
+                        
+                        <Grid Margin="0,2,0,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                            </Grid.ColumnDefinitions>
+                            <CheckBox x:Name="AutoTwistCheck" Content="自动扭转（R0 跟 L0 联动）" FontSize="11"
+                                      VerticalAlignment="Center"
+                                      ToolTip="近 2 秒没有显式旋转命令时，R0 跟着 L0 走：插入转一边、拔出转回"/>
+                            <TextBlock Grid.Column="1" Text="幅度" FontSize="11" Foreground="{StaticResource Muted}"
+                                       VerticalAlignment="Center" Margin="12,0,8,0"/>
+                            <Slider x:Name="AutoTwistSlider" Grid.Column="2" Minimum="0" Maximum="60" SmallChange="1"
+                                    Value="25" VerticalAlignment="Center" 
+                                    ToolTip="联动幅度：R0 = 50 ± 幅度 × (L0 偏离中心的比例)，再夹进上面旋转条的两端"/>
+                            <TextBlock x:Name="AutoTwistText" Grid.Column="3" Text="25%" FontSize="11" FontFamily="Consolas"
+                                       Foreground="{StaticResource Muted}" MinWidth="40" TextAlignment="Right"
+                                       VerticalAlignment="Center" Margin="8,0,0,0"/>
+                        </Grid>
+                        
+                        <TextBlock x:Name="LovenseLiveText" Text="现在 L0 — · R0 —" FontSize="11" FontFamily="Consolas"
+                                   Foreground="{StaticResource Accent}" Margin="0,3,0,0"/>
+                        
+                        <TextBlock x:Name="LovenseAddressText" Text="" FontSize="11" Foreground="{StaticResource Muted}"
+                                   Margin="0,2,0,0" TextWrapping="Wrap" LineHeight="17"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border x:Name="BridgeCard" Style="{StaticResource Card}" Margin="0,10,0,0">
+                <StackPanel>
+                    <TextBlock Text="🌉 游戏桥（Intiface / Buttplug）" FontSize="14" FontWeight="SemiBold"/>
+                    <TextBlock Text="给「自己会发动作指令的游戏」用：Hexa 在本机开一个服务，游戏连上这个端口就能直接指挥设备。"
+                               FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                    <TextBlock x:Name="BridgeSectionSummary" Text="" FontSize="11"
+                               Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                    <views:BridgePanel x:Name="BridgeSectionBody" Margin="0,10,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <Border x:Name="GamepadCard" Style="{StaticResource Card}" Margin="0,10,0,0">
+                <StackPanel>
+                    <TextBlock Text="🕹 游戏手柄" FontSize="14" FontWeight="SemiBold"/>
+                    <TextBlock Text="插上 Xbox 手柄：左 / 右扳机 = 主行程与扭转，两个摇杆 = 四个副轴。"
+                               FontSize="11" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+                    <TextBlock x:Name="GamepadFoldSummary"
+                               Text="没启用：手柄不影响设备"
+                               FontSize="11" Foreground="{StaticResource Muted}"
+                               TextWrapping="Wrap" Margin="0,4,0,0"/>
+                    <StackPanel x:Name="GamepadBody" Margin="0,10,0,0">
+                        <TextBlock x:Name="GamepadStatus" Text="还没检测（插上手柄后点下面的按钮）"
+                                   FontSize="11" Foreground="{StaticResource Muted}"
+                                   TextWrapping="Wrap" Margin="0,0,0,8"/>
+                        <TextBlock FontSize="10" Foreground="{StaticResource Muted}" Margin="0,1"
+                                   Text="左 / 右扳机 = 主行程与扭转"/>
+                        <TextBlock FontSize="10" Foreground="{StaticResource Muted}" Margin="0,1"
+                                   Text="两个摇杆 = 四个副轴"/>
+                        <TextBlock FontSize="10" Foreground="{StaticResource Warning}" Margin="0,6,0,10"
+                                   TextWrapping="Wrap"
+                                   Text="⚠ 启用后，你动手柄设备就会跟着动。"/>
+                        <Button x:Name="GamepadBtn" Content="启用手柄"
+                                Style="{StaticResource BtnSecondary}"
+                                HorizontalAlignment="Stretch" Height="32"
+                                Click="GamepadBtn_Click"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

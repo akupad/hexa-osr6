@@ -64,6 +64,9 @@ internal sealed class ScreenSyncTracker
     private int _roiX0, _roiY0, _roiX1, _roiY1;  // ROI 像素边界（含）
     private bool _roiValid;
     private double _roiUpdatedAt;                // 上次 ROI 更新的本地时钟
+    private readonly List<int> _panXs = new(2048);   // 平移估计的采样点（排除主体框）
+    private readonly List<int> _panYs = new(2048);
+    private readonly List<int> _panBlock = new(2048);
 
     private int _roiCount;                       // 采样后的 ROI 像素数
     private int _roiStep;                        // 采样步长（把 ROI 抽到 ≤ RoiMaxPixels）
@@ -138,6 +141,25 @@ internal sealed class ScreenSyncTracker
 
     /// <summary>主成分翻号次数（防跳反计数器）。</summary>
     public int SignFixes => _signFixes;
+
+
+    /// <summary>相邻两帧的全局位移（像素/帧，取横竖较大者）。镜头平移大时它明显大于 0。</summary>
+    public double PanPixels { get; private set; }
+
+    /// <summary>帧差里有多大比例能被「整幅平移」解释（0–1）。背景整体在动时接近 1。</summary>
+    public double PanFraction { get; private set; }
+
+    /// <summary>
+    /// 这一拍的主要运动是不是「整幅画面在平移」（摇镜/镜头推拉）。
+    /// 是的话调用方不该把整幅位移当成角色自己在动 —— 那正是「画面一动就跟着抽」的来源。
+    /// </summary>
+    public bool PanDominant => PanFraction >= 0.5 && PanBlockFraction >= 0.5 && PanPixels >= 1.0;
+
+    /// <summary>本次平移估计实际用到的背景采样点数（主体占满画面时为 0）。</summary>
+    public int PanSamples { get; private set; }
+
+    /// <summary>分块看「跟着一起走」的比例：只主体那一块在动时它很小。</summary>
+    public double PanBlockFraction { get; private set; }
 
     /// <summary>倾斜 R1（左右，50±30）。</summary>
     public double R1 => _r1;
@@ -237,6 +259,7 @@ internal sealed class ScreenSyncTracker
         ComputeCentroid();
         UpdatePcAndProject();
         UpdateQuality();
+        UpdatePan();
         UpdateDepth();
         UpdateTilt();
 
@@ -246,6 +269,90 @@ internal sealed class ScreenSyncTracker
     /// <summary>窗口内第 f 帧（0 = 最旧，_count-1 = 当前）在环形缓冲里的槽位。</summary>
     private int SlotOf(int f) =>
         (_ringIndex - (_count - 1 - f) + (WindowFrames << 2)) % WindowFrames;
+
+    // ── 全局平移估计（摇镜/推拉）────────────────────────────────────────
+    // 采样点间隔 6px，位移搜索 ±8px（步长 2，边界内再做 ±1 细化），单帧约十几万次加减，
+    // 20fps 下占用可忽略。目的不是精确配准，而是回答「这一拍的帧差能不能被整幅平移解释」。
+    private void UpdatePan()
+    {
+        PanPixels = 0;
+        PanFraction = 0;
+        PanBlockFraction = 0;
+        if (_count < 2) return;
+        byte[] curr = _ring[_ringIndex];
+        byte[] prev = _ring[SlotOf(_count - 2)];
+        const int step = 6, border = 12, cols = 4, rows = 3;
+        int innerW = Width - 2 * border, innerH = Height - 2 * border;
+        if (innerW < cols * 8 || innerH < rows * 8) return;
+        // 采样点按 4×3 分块编好号：摇镜要求「整幅一起走」，只靠一块动不算。
+        _panXs.Clear(); _panYs.Clear(); _panBlock.Clear();
+        for (int y = border; y < Height - border; y += step)
+            for (int x = border; x < Width - border; x += step)
+            {
+                int bx = Math.Min(cols - 1, (x - border) * cols / innerW);
+                int by = Math.Min(rows - 1, (y - border) * rows / innerH);
+                _panXs.Add(x); _panYs.Add(y); _panBlock.Add(by * cols + bx);
+            }
+        int n = _panXs.Count;
+        PanSamples = n;
+        if (n < 120) return;
+        long zero = 0;
+        for (int i = 0; i < n; i++)
+        {
+            int p = _panYs[i] * Width + _panXs[i];
+            zero += Math.Abs(curr[p] - prev[p]);
+        }
+        int bestDx = 0, bestDy = 0;
+        long best = zero;
+        for (int dy = -8; dy <= 8; dy += 2)
+            for (int dx = -8; dx <= 8; dx += 2)
+            {
+                long sad = PanSad(curr, prev, dx, dy);
+                if (sad < best) { best = sad; bestDx = dx; bestDy = dy; }
+            }
+        for (int dy = bestDy - 1; dy <= bestDy + 1; dy++)
+            for (int dx = bestDx - 1; dx <= bestDx + 1; dx++)
+            {
+                if (dx < -9 || dx > 9 || dy < -9 || dy > 9) continue;
+                long sad = PanSad(curr, prev, dx, dy);
+                if (sad < best) { best = sad; bestDx = dx; bestDy = dy; }
+            }
+        PanPixels = Math.Max(Math.Abs(bestDx), Math.Abs(bestDy));
+        PanFraction = zero <= 0 ? 0 : Math.Clamp(1.0 - (double)best / zero, 0, 1);
+        if (PanPixels < 1.0) return;
+        // 分块验证：每块自己也变好了才算「跟着镜头一起走」，只靠主体那一块变好不算。
+        int blocks = cols * rows;
+        Span<long> b0 = stackalloc long[blocks];
+        Span<long> b1 = stackalloc long[blocks];
+        for (int i = 0; i < n; i++)
+        {
+            int blk = _panBlock[i];
+            int x = _panXs[i], y = _panYs[i];
+            int px = x + bestDx, py = y + bestDy;
+            if (px < 0 || px >= Width || py < 0 || py >= Height) continue;
+            int p = y * Width + x;
+            b0[blk] += Math.Abs(curr[p] - prev[p]);
+            b1[blk] += Math.Abs(curr[p] - prev[py * Width + px]);
+        }
+        int moved = 0;
+        for (int i = 0; i < blocks; i++)
+            if (b0[i] > 0 && b1[i] * 2 <= b0[i]) moved++;
+        PanBlockFraction = (double)moved / blocks;
+    }
+
+    private long PanSad(byte[] curr, byte[] prev, int dx, int dy)
+    {
+        long sad = 0;
+        int n = _panXs.Count;
+        for (int i = 0; i < n; i++)
+        {
+            int x = _panXs[i], y = _panYs[i];
+            int px = x + dx, py = y + dy;
+            if (px < 0 || px >= Width || py < 0 || py >= Height) continue;
+            sad += Math.Abs(curr[y * Width + x] - prev[py * Width + px]);
+        }
+        return sad;
+    }
 
     private void UpdateRoi()
     {

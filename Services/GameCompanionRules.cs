@@ -58,17 +58,13 @@ public static class GameCompanionRules
         };
 
         // 底色动作/强度：这个游戏有专属配置就整套换成它的（与 ForegroundWatcher 进游戏时同一套覆盖规则）。
-        string baseMode = settings.CompanionBaseMode;
-        double baseIntensity = settings.CompanionBaseIntensity;
-        if (settings.GameProfiles is { } profiles
-            && process.Length > 0
-            && profiles.TryGetValue(process, out GameProfile? profile)
-            && profile is not null)
-        {
-            if (!string.IsNullOrWhiteSpace(profile.Mode)) baseMode = profile.Mode;
-            if (double.IsFinite(profile.Intensity)) baseIntensity = profile.Intensity;
-        }
-        baseIntensity = Math.Clamp(double.IsFinite(baseIntensity) ? baseIntensity : 1.0, 0.1, 2.0);
+        // 播放方式默认「固定用户选的那一个动作」；只有显式选「轮流」且池子非空才在池子里换。
+        CompanionBaseChoice choice = CompanionPlayPolicy.Resolve(settings, process);
+        string baseMode = choice.Mode;
+        double baseIntensity = choice.Intensity;
+
+        // 「只用游戏信号」是一个例外：没有对接信号就等着，不拿底色动作顶上。
+        bool telemetryOnly = string.Equals(source, "telemetry", StringComparison.OrdinalIgnoreCase);
 
         lock (settings.Rules)
         {
@@ -76,7 +72,7 @@ public static class GameCompanionRules
                 if (!rule.Id.StartsWith("companion-", StringComparison.OrdinalIgnoreCase)) rule.Enabled = false;
 
             RuleConfig gallery = FindOrCreate(settings.Rules, "companion-base");
-            gallery.Enabled = process.Length > 0;
+            gallery.Enabled = process.Length > 0 && !telemetryOnly;
             gallery.Type = "process";
             gallery.Role = "gallery";
             gallery.Match = process;
@@ -88,8 +84,7 @@ public static class GameCompanionRules
 
             RuleConfig reactionRule = FindOrCreate(settings.Rules, "companion-reaction");
             // 只用游戏信号时不听声音（auto / sound 保持原样：按「激烈场面时」是否关闭决定）。
-            bool telemetryOnly = string.Equals(source, "telemetry", StringComparison.OrdinalIgnoreCase);
-            reactionRule.Enabled = gallery.Enabled && reaction != "none" && !telemetryOnly;
+            reactionRule.Enabled = process.Length > 0 && reaction != "none" && !telemetryOnly;
             reactionRule.Type = "game";
             reactionRule.Role = "reaction";
             reactionRule.Match = process;

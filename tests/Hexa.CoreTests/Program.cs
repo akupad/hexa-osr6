@@ -705,7 +705,10 @@ try
     var cfg = new AppSettings();
     using var engine = new MotionEngine(serial, cfg);
     Check("simulator is connected", serial.IsOpen && serial.IsSimulation);
-    Check("device is armed and can run by default", engine.IsArmed && engine.CanRun);
+    // CanRun 现在还要求输出闸门解锁（真实设备连上时由 OnConnectionChanged 解锁，
+    // 这里是先建引擎后连的模拟，得手动补上同样的那一步）。
+    serial.OutputEnabled = true;
+    Check("device is armed and can run once output is unlocked", engine.IsArmed && engine.CanRun);
     Check("arm simulator", engine.TryArm(out _));
     Check("arm first enters homing state", engine.IsHoming && !engine.CanRun);
     Check("homing emits DSTOP then a full center frame",
@@ -1331,7 +1334,6 @@ try
         // 整形全关 = 旧行为：游戏指令原样透传（这条保证"随时能退回"）
         cfg.BridgeInputSmoothing = false;
         cfg.BridgeAxisLink = false;
-        cfg.BridgeUseComfortLimits = false;
         string handshake = WsSend("[{\"LinearCmd\":{\"Id\":10,\"DeviceIndex\":0,\"Vectors\":[{\"Index\":0,\"Position\":1.0,\"Duration\":200}]}}]");
         Check("game bridge completes websocket handshake",
             handshake.Contains("101 Switching Protocols") && handshake.Contains("Sec-WebSocket-Accept"));
@@ -1348,7 +1350,6 @@ try
         // 且插值时间用节拍长度（60ms），设备才不会一次跳满行程。
         cfg.BridgeInputSmoothing = true;
         cfg.BridgeSmoothingMs = 90;
-        cfg.BridgeUseComfortLimits = true;
         int beforeShape = serial.SimulationCommands.Count;
         WsSend("[{\"LinearCmd\":{\"Id\":14,\"DeviceIndex\":0,\"Vectors\":[{\"Index\":0,\"Position\":1.0,\"Duration\":200}]}}]");
         bool shapedReached = SpinWait.SpinUntil(
@@ -1360,8 +1361,6 @@ try
 
         // ScalarCmd 在整形开着时也必须过整形（低通 + 限速）：否则游戏 60fps 发 0↔1 方波时，
         // 轴永远跑不完一段就被反向重指，端点反复硬反转。这里断言「不是一步到位的 I60 直落」。
-        bool savedComfort = cfg.BridgeUseComfortLimits;
-        cfg.BridgeUseComfortLimits = false;             // 关掉舒适限速，让趋近在几拍内完成，测试才不用等十几秒
         int beforeScalarShape = serial.SimulationCommands.Count;
         WsSend("[{\"ScalarCmd\":{\"Id\":16,\"DeviceIndex\":0,\"Scalars\":[{\"Index\":0,\"Scalar\":0.0}]}}]");
         SpinWait.SpinUntil(() => serial.SimulationCommands.Skip(beforeScalarShape)
@@ -1370,7 +1369,6 @@ try
             .Where(cmd => cmd.StartsWith("L0", StringComparison.Ordinal)).ToList();
         Check("game bridge ScalarCmd is shaped (several steps, never a single immediate jump to the target)",
             scalarShapeSteps.Count >= 3 && !serial.SimulationCommands.Skip(beforeScalarShape).Contains("L00000I60"));
-        cfg.BridgeUseComfortLimits = savedComfort;
         Check("game bridge records rx/tx instruction log",
             bridge.RxCount >= 1 && bridge.TxCount >= 1
             && bridge.RecentLog.Any(entry => entry.Direction == "RX" && entry.Text.Contains("LinearCmd"))
@@ -1403,7 +1401,6 @@ try
         cfg.GameBridgeMode = "single";
         cfg.BridgeInputSmoothing = false;    // 整形三件套全关＝原样透传，指令有没有落地一看便知
         cfg.BridgeAxisLink = false;
-        cfg.BridgeUseComfortLimits = false;
         cfg.Normalize();
 
         var clientCounts = new List<int>();
@@ -2087,6 +2084,25 @@ try
         var logs = new AppSettings { LogMaxMegabytes = 9999 };
         logs.Normalize();
         Check("日志上限被夹到 500MB 以内（防止手改配置写崩磁盘）", logs.LogMaxMegabytes == 500);
+        // 深度/节奏默认全自动：不勾「自定义」时永远按 50 / 1.0 基准走，勾上才用他拖的值。
+        var autoDepth = new AppSettings { ScreenSyncDepth = 88, ScreenSyncSpeed = 2.2, AudioDepth = 12, AudioSpeed = 0.4 };
+        Check("深度节奏默认全自动（不勾自定义就按 50 / 1.0 基准走画面和声音）",
+            !autoDepth.ScreenSyncCustom && !autoDepth.AudioCustom
+            && autoDepth.ScreenDepthEffective == 50 && autoDepth.ScreenSpeedEffective == 1.0
+            && autoDepth.AudioDepthEffective == 50 && autoDepth.AudioSpeedEffective == 1.0);
+        autoDepth.ScreenSyncCustom = true;
+        autoDepth.AudioCustom = true;
+        Check("勾上自定义后深度和节奏改回用户设的值",
+            autoDepth.ScreenDepthEffective == 88 && Math.Abs(autoDepth.ScreenSpeedEffective - 2.2) < 1e-9
+            && autoDepth.AudioDepthEffective == 12 && Math.Abs(autoDepth.AudioSpeedEffective - 0.4) < 1e-9);
+        AppSettings? customRoundTrip = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(
+            new AppSettings { ScreenSyncCustom = true, AudioCustom = true, ScreenSyncDepth = 77, AudioSpeed = 1.7 }));
+        Check("自定义开关和他设的深度节奏能存进配置再读回来",
+            customRoundTrip is { ScreenSyncCustom: true, AudioCustom: true }
+            && customRoundTrip.ScreenDepthEffective == 77
+            && Math.Abs(customRoundTrip.AudioSpeedEffective - 1.7) < 1e-9);
+        Check("生效值只是算出来的，不会写进配置文件",
+            !JsonSerializer.Serialize(new AppSettings()).Contains("Effective"));
     }
 
     // ── 人声（呻吟）响应：用户报"对女性呻吟没反应" ─────────────────────
@@ -2294,6 +2310,7 @@ try
         using var ambientSerial = new SerialService();
         ambientSerial.SetSimulationMode(true);
         using var ambientEngine = new MotionEngine(ambientSerial, ambientCfg);
+        ambientSerial.OutputEnabled = true;   // 同上一节：解锁输出闸门，等价于真机连上后的状态
         double[] direct = [70, 50, 50, 50, 50, 50];
 
         // 用「次要轴偏离 50 的均方根」当指标：限速器本身在目标附近有余摆，
@@ -2713,12 +2730,20 @@ try
     Check($"界面词表：第一版按页面覆盖到 200 条以上（实际 {uiTable.Length} 条）", uiTable.Length >= 200);
     Check("界面词表：查表用字典与词条一一对应",
         Hexa.Services.LocalizationTable.Map.Count == uiTable.Length);
-    Check("界面词表：T(\"全部归中\") 返回英文",
+    // T 是「动态文字」的唯一出口，从 2026-11-24 起跟随界面语言：中文界面必须原样返回中文，
+    // 所以下面这条断言只在英文界面下成立 —— 先把语言切到英文，测完由后面的断言切回中文。
+    Hexa.Services.LocalizationService.UiLanguage = Hexa.Services.LocalizationService.English;
+    Check("界面词表：英文界面下 T(\"全部归中\") 返回英文",
         Hexa.Services.LocalizationService.T("全部归中") == "Center all");
     Check("界面词表：查不到的中文原样返回（绝不半截替换）",
         Hexa.Services.LocalizationService.T("这句话不在词表里") == "这句话不在词表里");
     Check("界面词表：英文侧没有漏翻的汉字",
         uiTable.All(entry => !entry.En.Any(c => c is >= '\u4e00' and <= '\u9fff')));
+    Hexa.Services.LocalizationService.UiLanguage = Hexa.Services.LocalizationService.Chinese;
+    Check("中文界面下 T() 原样返回中文（侧栏状态/弹窗不再变英文）",
+        Hexa.Services.LocalizationService.T("全部归中") == "全部归中"
+        && Hexa.Services.LocalizationService.T("待机") == "待机"
+        && Hexa.Services.LocalizationService.T("已解锁") == "已解锁");
 
     Hexa.Services.LocalizationService.UiLanguage = "fr";
     bool languageFallback = Hexa.Services.LocalizationService.UiLanguage == Hexa.Services.LocalizationService.Chinese;
@@ -2795,12 +2820,13 @@ try
         Check("链路：写完帧并收到 uart 回显 → 已确认（EchoRatio 有值）",
             aliveSnapshot.IsAlive && aliveSnapshot.HasEcho && aliveSnapshot.EchoRatio > 0);
 
-        // ⑧ 同一份现场往后推 5 秒仍无任何回话 → 判死，并给出"拔插 USB"的处置。
+        // ⑧ 同一份现场往后推 5 秒仍无任何回话 → 判死；文案必须劝人「先别拔」，
+        //    因为程序现在会自己硬复位（2026-11 改：以前叫用户拔线，拔了才恢复）。
         linkNow = linkNow.AddSeconds(5);
         var deadSnapshot = live.Snapshot();
-        Check("链路：写完帧后 5 秒没有任何回话 → 判死（文案提示拔插 USB）",
+        Check("链路：写完帧后 5 秒没有任何回话 → 判死（文案劝「先别拔」并说明会自动复位）",
             deadSnapshot.IsDead && !deadSnapshot.IsAlive
-            && SerialLinkMonitor.Describe(deadSnapshot).Contains("拔插 USB", StringComparison.Ordinal));
+            && SerialLinkMonitor.Describe(deadSnapshot).Contains("先别拔线", StringComparison.Ordinal));
 
         // ⑨ 空闲：写过帧之后停手不动（超过写字窗口），心跳仍在 ⇒ 正常状态，绝不能提示拔线。
         var idleNow = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -3366,7 +3392,45 @@ try
                 double v = bg + (fg - bg) * Math.Exp(-(dx * dx + dy * dy) * inv2s2);
                 gray[y * w + x] = (byte)Math.Clamp((int)Math.Round(v), 0, 255);
             }
+
         }
+        return gray;
+    }
+
+    /// <summary>整幅纹理按 panX 横移（摇镜），主体固定贴在纹理上 —— 用来复现「镜头一动整幅都在动」。</summary>
+    static byte[] PanFrame(int panX, int panY)
+    {
+        const int w = ScreenSyncTracker.Width;
+        const int h = ScreenSyncTracker.Height;
+        var gray = new byte[w * h];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+            {
+                int sx = ((x - panX) % 40 + 40) % 40;
+                int sy = ((y - panY) % 40 + 40) % 40;
+                gray[y * w + x] = (byte)(sx < 8 || sy < 8 ? 210 : 40 + (sx * 3 + sy * 5) % 60);
+            }
+        // 主体：贴在纹理坐标上的亮块，随摇镜一起移动（相对场景静止）。
+        int cx = 160 + panX, cy = 90 + panY;
+        for (int y = Math.Max(0, cy - 14); y < Math.Min(h, cy + 14); y++)
+            for (int x = Math.Max(0, cx - 14); x < Math.Min(w, cx + 14); x++)
+                gray[y * w + x] = 250;
+        return gray;
+    }
+
+    /// <summary>固定的场景纹理（背景不动）+ 主体上下移动 —— 用来验证「主体自己在动」不会被当成摇镜。</summary>
+    static byte[] MotionFrame(double centerY)
+    {
+        const int w = ScreenSyncTracker.Width;
+        const int h = ScreenSyncTracker.Height;
+        var gray = new byte[w * h];
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++)
+                gray[y * w + x] = (byte)(26 + (x * 7 + y * 13) % 61);
+        int cy = (int)Math.Round(centerY);
+        for (int y = Math.Max(0, cy - 18); y < Math.Min(h, cy + 18); y++)
+            for (int x = w / 2 - 26; x < w / 2 + 26; x++)
+                gray[y * w + x] = 235;
         return gray;
     }
 
@@ -3485,6 +3549,183 @@ try
         double d2 = tracker.RelativeDepth;
         Check($"画面同步：幅度 40→16 相对深度按比例下降（{d1:F2}→{d2:F2}）",
             tracker.Ok && d1 > 0.8 && d2 / d1 > 0.25 && d2 / d1 < 0.6);
+    }
+
+
+    // ⑦ 镜头平移 ≠ 角色动作：整幅画面在平移时标记为 PanDominant，静止主体 + 摇镜不再被当成来回动作。
+    {
+        var tracker = new ScreenSyncTracker();
+        const double dt = 1.0 / 20.0;
+        var panFrames = new byte[100][];
+        for (int i = 0; i < 100; i++)
+            panFrames[i] = PanFrame((int)Math.Round(14 * Math.Sin(2 * Math.PI * 1.0 * i * dt)), 0);
+        var swPan = System.Diagnostics.Stopwatch.StartNew();
+        foreach (byte[] frame in panFrames) tracker.SubmitGray(frame, dt);
+        swPan.Stop();
+        Check($"画面同步：整幅摇镜被判成 PanDominant（{tracker.PanPixels:0}px/帧，{tracker.PanFraction:P0} 可由平移解释，采样 {tracker.PanSamples}，块 {tracker.PanBlockFraction:P0}）",
+            tracker.PanDominant);
+        Console.WriteLine($"    [测速] 整幅平移估计 {swPan.Elapsed.TotalMilliseconds / 100:F3} ms/帧（{ScreenSyncTracker.Width}×{ScreenSyncTracker.Height}，20fps 预算 50ms）");
+    }
+
+
+    // ⑧ 主体自己在动、背景不动：不能被误判成摇镜。
+    {
+        var tracker = new ScreenSyncTracker();
+        const double dt = 1.0 / 20.0;
+        for (int i = 0; i < 100; i++)
+            tracker.SubmitGray(MotionFrame(90 + 40 * Math.Sin(2 * Math.PI * 1.0 * i * dt)), dt);
+        Check($"画面同步：主体局部运动不会被误判成整幅平移（{tracker.PanPixels:0}px/帧，{tracker.PanFraction:P0}，采样 {tracker.PanSamples}，块 {tracker.PanBlockFraction:P0}）",
+            !tracker.PanDominant);
+
+    // ⑨ 声音场景分类：合成呻吟 / 音乐 / 撞击 / 安静四种声音，看它各自听成什么。
+    {
+        const int rate = 48000;
+        var rng = new Random(7);
+
+        // 呻吟：0.9 秒一声、每声 0.62 秒，基频 210→265Hz 滑上去再滑回来，谐波按 1/h 衰减，底噪压到 −70dB。
+        double[] moan = new double[rate * 6];
+        {
+            int period = rate * 9 / 10;
+            for (int pos = 0; pos + period <= moan.Length; pos += period)
+            {
+                int len = (int)(0.62 * rate);
+                double phase = 0;
+                for (int i = 0; i < len; i++)
+                {
+                    double t = i / (double)rate;
+                    double env = Math.Sin(Math.PI * t / 0.62);
+                    env *= env;
+                    double f0 = 210 + 55 * Math.Sin(Math.PI * t / 0.62);
+                    phase += 2 * Math.PI * f0 / rate;
+                    double v = 0;
+                    for (int h = 1; h <= 6; h++) v += Math.Sin(h * phase) / h;
+                    moan[pos + i] += 0.22 * env * v;
+                }
+            }
+            for (int i = 0; i < moan.Length; i++) moan[i] += 0.0003 * (rng.NextDouble() * 2 - 1);
+        }
+
+        // 音乐：120BPM 底鼓 + 每拍长贝斯 + 反拍 hi-hat + 一直铺着的三音和弦。
+        double[] music = new double[rate * 8];
+        {
+            double[] chord = [220.0, 277.18, 329.63];
+            for (int i = 0; i < music.Length; i++)
+            {
+                double t = i / (double)rate;
+                foreach (double f in chord) music[i] += 0.05 * Math.Sin(2 * Math.PI * f * t);
+            }
+            int beat = rate / 2;
+            for (int pos = 0; pos + beat <= music.Length; pos += beat)
+            {
+                int k = pos / beat;
+                for (int i = 0; i < rate / 4; i++)
+                {
+                    double t = i / (double)rate;
+                    music[pos + i] += 0.30 * Math.Exp(-t * 26) * Math.Sin(2 * Math.PI * 55 * t);
+                }
+                double bassHz = (k % 4) switch { 0 => 82.41, 1 => 82.41, 2 => 110.0, _ => 98.0 };
+                for (int i = 0; i < (int)(0.42 * rate); i++)
+                {
+                    double t = i / (double)rate;
+                    music[pos + i] += 0.16 * Math.Exp(-t * 3.2) * Math.Sin(2 * Math.PI * bassHz * t);
+                }
+                int hp = pos + beat / 2;
+                if (hp + 2400 <= music.Length)
+                    for (int i = 0; i < 2400; i++)
+                        music[hp + i] += 0.12 * Math.Exp(-i / (double)rate * 60) * (rng.NextDouble() * 2 - 1);
+            }
+        }
+
+        // 撞击：40–60ms 的噪声性拍击 + 68Hz 闷响，间隔 0.40–0.60 秒随机（不踩拍子）。
+        double[] slam = new double[rate * 6];
+        {
+            int pos = rate / 4;
+            while (pos < slam.Length - rate / 3)
+            {
+                for (int i = 0; i < (int)(0.05 * rate); i++)
+                    slam[pos + i] += 0.40 * Math.Exp(-i / (double)rate * 90) * (rng.NextDouble() * 2 - 1);
+                for (int i = 0; i < (int)(0.16 * rate) && pos + i < slam.Length; i++)
+                    slam[pos + i] += 0.26 * Math.Exp(-i / (double)rate * 30) * Math.Sin(2 * Math.PI * 68 * i / rate);
+                pos += (int)((0.40 + 0.20 * rng.NextDouble()) * rate);
+            }
+            // 真实录音不会在两下撞击之间绝对静音：带一点房间底噪（−54dB），否则间隔全被判成安静。
+            for (int i = 0; i < slam.Length; i++) slam[i] += 0.004 * (rng.NextDouble() * 2 - 1);
+        }
+
+        double[] quiet = new double[rate * 3];
+        for (int i = 0; i < quiet.Length; i++) quiet[i] = 0.00008 * (rng.NextDouble() * 2 - 1);
+
+        AudioSceneKind Classify(double[] pcm, out string detail)
+        {
+            var det = new AudioEventDetector();
+            var scene = new AudioSceneClassifier();
+            var events = new MotionEvent[AudioEventDetector.MaxEventsPerBlock];
+            var tally = new int[8];
+            int total = 0;
+            for (int pos = 0; pos + 480 <= pcm.Length; pos += 480)
+            {
+                double at = pos / (double)rate;
+                det.Process(pcm.AsSpan(pos, 480), rate, at, events);
+                scene.Update(det.SceneFeature(at));
+                if (at < 0.8) continue;                       // 前 0.8 秒当预热，不记账
+                tally[(int)scene.Kind]++;
+                total++;
+            }
+            int best = 0;
+            for (int i = 1; i < tally.Length; i++) if (tally[i] > tally[best]) best = i;
+            detail = $"{(AudioSceneKind)best} {tally[best]}/{total} 帧（呻吟 {tally[(int)AudioSceneKind.Voice]} / 音乐 {tally[(int)AudioSceneKind.Music]} / 撞击 {tally[(int)AudioSceneKind.Impact]} / 混合 {tally[(int)AudioSceneKind.Mixed]} / 安静 {tally[(int)AudioSceneKind.Silence]}），{scene.Describe()}";
+            return (AudioSceneKind)best;
+        }
+
+        var moanKind = Classify(moan, out string moanNote);
+        Check($"声音分类：呻吟听成人声（{moanNote}）", moanKind == AudioSceneKind.Voice);
+
+        var musicKind = Classify(music, out string musicNote);
+        Check($"声音分类：音乐听成音乐（{musicNote}）", musicKind == AudioSceneKind.Music);
+
+        var slamKind = Classify(slam, out string slamNote);
+        Check($"声音分类：撞击听成撞击（{slamNote}）", slamKind == AudioSceneKind.Impact);
+
+        var quietKind = Classify(quiet, out string quietNote);
+        Check($"声音分类：安静听成安静（{quietNote}）", quietKind == AudioSceneKind.Silence);
+    }
+
+        // ── 串口异常断开现场记录（SerialService.Incident.cs） ─────────────────
+        // 出问题时要能回答三件事：最后发出去的是什么、设备自己吐了什么、断在第几帧。
+        {
+            var incidentSvc = new SerialService();
+            incidentSvc.NoteTxTrace("L09999I100");
+            incidentSvc.NoteTxTrace("L00000I050 R00000I020");
+            incidentSvc.NoteRxTrace("SR6 TCode v1\r\nExecutor: Stats F50.0");
+            incidentSvc.NoteRxTrace("0 frames=100\nGuru Medit");
+            incidentSvc.NoteRxTrace("ation Error: Core 0 panic'ed (Load access fault)\n");
+            string trace = incidentSvc.BuildIncidentText("disconnect", "测试断开", new IOException("信号灯超时时间已到"));
+
+            Check("断开现场：带版本头", trace.Contains("# hexa-serial-trace-v1"));
+            Check("断开现场：事件头有类型与说明", trace.Contains("类型: disconnect") && trace.Contains("说明: 测试断开"));
+            Check("断开现场：发送轨迹在", trace.Contains("L09999I100") && trace.Contains("L00000I050 R00000I020"));
+            Check("断开现场：跨两次读的半行被拼回一行", trace.Contains("Executor: Stats F50.00 frames=100"));
+            Check("断开现场：设备故障行单独摘出",
+                trace.Contains("## 设备自报故障行（1 行") && trace.Contains("Guru Meditation Error: Core 0 panic'ed (Load access fault)"));
+            Check("断开现场：异常原文带上", trace.Contains("信号灯超时时间已到"));
+
+            incidentSvc.StashIncidentTrace("disconnect", "断开那一刻的快照");
+            string cached = incidentSvc.TakeIncidentTrace("archive", "诊断包现场");
+            Check("断开现场：诊断包优先用断开瞬间的快照",
+                cached.Contains("类型: disconnect") && cached.Contains("说明: 断开那一刻的快照"));
+            Check("断开现场：快照只被取走一次",
+                incidentSvc.TakeIncidentTrace("archive", "诊断包现场").Contains("类型: archive"));
+            // 落盘这一段单独验：诊断包里那一份就是从这儿出去的。
+            string traceFile = Path.Combine(Path.GetTempPath(), "hexa-trace-test-" + Guid.NewGuid().ToString("N") + ".txt");
+            Hexa.Diagnostics.DiagnosticReport.WriteSerialTraceTxt(traceFile, "disconnect", incidentSvc);
+            string written = File.Exists(traceFile) ? File.ReadAllText(traceFile) : "";
+            Check("断开现场：能落成可以直接打开的 txt",
+                written.Contains("# hexa-serial-trace-v1") && written.Contains("L09999I100")
+                && written.Contains("Guru Meditation Error"));
+            try { File.Delete(traceFile); } catch (IOException) { }
+
+            incidentSvc.Dispose();
+        }
     }
 }
 catch (Exception ex)

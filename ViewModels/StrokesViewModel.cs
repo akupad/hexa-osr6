@@ -500,4 +500,26 @@ public partial class StrokesViewModel : ObservableObject
         else idx = (idx + dir + all.Length) % all.Length;
         SelectStroke(all[idx]);
     }
+
+    /// <summary>
+    /// 全局热键「上/下一招」：用户勾了动作池就在池子里按顺序首尾循环（不加权、不随机插招）；
+    /// 空池退回动作页顺序。选中即生效并带保护期（见 MotionEngine.SelectCompanionAction）。
+    /// </summary>
+    public void CycleCompanionAction(int dir)
+    {
+        var pool = App.Settings.CompanionPool;
+        string? next = CompanionPlayPolicy.NextInPool(pool, SelectedStroke?.Id, dir);
+        if (next is not null)
+        {
+            var preset = AllPresets.FirstOrDefault(p => string.Equals(p.Id, next, StringComparison.OrdinalIgnoreCase));
+            if (preset is not null)
+            {
+                SelectStroke(preset);
+                App.Engine.SelectCompanionAction(preset.Id);
+            }
+            return;
+        }
+        NextStroke(dir);
+        if (SelectedStroke is not null) App.Engine.SelectCompanionAction(SelectedStroke.Id);
+    }
 }

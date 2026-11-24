@@ -46,6 +46,8 @@ public sealed class HotkeyService : IDisposable
     public event Action? OnIntensityUp;
     public event Action? OnIntensityDown;
     public event Action? OnToggleOverlay;
+    public event Action? OnTempoUp;
+    public event Action? OnTempoDown;
 
     public void Attach(Window window, bool enabled, HotkeyConfig bindings)
     {
@@ -172,6 +174,8 @@ public sealed class HotkeyService : IDisposable
             case HotkeyConfig.IntensityUp: OnIntensityUp?.Invoke(); break;
             case HotkeyConfig.IntensityDown: OnIntensityDown?.Invoke(); break;
             case HotkeyConfig.ToggleOverlay: OnToggleOverlay?.Invoke(); break;
+            case HotkeyConfig.TempoUp: OnTempoUp?.Invoke(); break;
+            case HotkeyConfig.TempoDown: OnTempoDown?.Invoke(); break;
             default: return IntPtr.Zero;
         }
         handled = true;

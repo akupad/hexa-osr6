@@ -217,8 +217,14 @@ public sealed class SerialLinkMonitor
         if (snapshot.FramesWritten == 0)
             return "链路：待发帧 · 还没写过命令，设备安静属正常";
 
+        // 刚连上还没收到过任何一个字节：秒数会算成无穷大，别把「还没说话」说成「链路死了」。
+        if (snapshot.LastByteAtUtc is null)
+            return "链路：刚连上 · 还没收到设备回话（先别拔线，正在等它应答）";
+
         if (snapshot.IsDead)
-            return $"链路：{snapshot.SecondsSinceLastByte:0.0} 秒没有任何数据 · 设备可能已复位或线松，拔插 USB 后重连";
+            // 以前这句直接叫人拔线，可设备 panic 重启只要 2–3 秒就会自己回来（程序还会自动硬复位）。
+            // 话说重了，用户就真去拔了 —— 现在改成先劝别拔。
+            return $"链路：{snapshot.SecondsSinceLastByte:0.0} 秒没收到设备回话 · 正在自动复位重连，先别拔线";
 
         if (snapshot.IsAlive)
             return $"链路：已确认 · {snapshot.SecondsSinceLastEcho:0.0} 秒前收到过回显";

@@ -221,6 +221,20 @@ public sealed class AudioEventDetector
     }
 
     /// <summary>喂入一块单声道采样，返回检出的事件数（已写入 <paramref name="output"/>）。</summary>
+    /// <summary>
+    /// 本帧的场景特征（测试与诊断用）：把谱通量分析里已经算好的谱形指标打包成 <see cref="AudioSceneFeature"/>。
+    /// 生产路径上 AudioReactiveService 用自己那只 flux 上的同一批属性，不必绕这一道。
+    /// </summary>
+    public AudioSceneFeature SceneFeature(double atSeconds)
+    {
+        double band = _flux.BandRatioDb <= -60
+            ? 0
+            : Math.Clamp(Math.Pow(10, _flux.BandRatioDb / 10.0), 0, 1);
+        return new AudioSceneFeature(
+            atSeconds, _flux.BroadbandDb, _flux.SubRatio, _flux.LowRatio,
+            band, _flux.HighRatio, _flux.Flatness, _flux.Harmonics, _flux.F0Hz,
+            _flux.VoiceLike, _flux.IsOnset, _flux.LastOnsetStrength);
+    }
     public int Process(ReadOnlySpan<double> mono, int sampleRate, double timestampSeconds, Span<MotionEvent> output)
     {
         if (mono.Length == 0 || sampleRate <= 0) return 0;
@@ -661,6 +675,7 @@ internal sealed class SpectralFluxOnset
     private readonly Complex[] _spectrum   = new Complex[SpectrumLength];
     private readonly double[] _logMag      = new double[SpectrumLength];   // 本帧对数幅度（只在通量范围内写）
     private readonly double[] _logMagRef   = new double[SpectrumLength];   // 上一帧的（供 SuperFlux 取最大）
+    private readonly double[] _mag         = new double[SpectrumLength];   // 本帧线性幅度（只在通量范围内写）
     private readonly double[] _fluxHistory = new double[FluxHistoryCapacity];
     private readonly double[] _medianScratch = new double[FluxHistoryCapacity];
 
@@ -668,9 +683,16 @@ internal sealed class SpectralFluxOnset
     private int _sampleRate;
     private int _hopSamples;                 // 一跳的样本数（= 采样率 ÷ 100，与检测器分帧完全一致）
     private double _hopSeconds = 0.010;
+    private double _binHz = 46.875;
     private int _fluxWindowFrames = 20;      // 中位数窗口的帧数（200ms）
     private int _binLo, _binHi, _fluxBinCount;
     private int _bandLo, _bandHi;
+
+    // 场景分类需要的额外频带边界与谱形指标（见 AudioSceneClassifier）：
+    //   sub   20–80Hz   —— 肉体碰撞、底鼓的低频"闷响"
+    //   low   80–200Hz  —— 贝斯/鼓的持续低音
+    //   high  2000–8000Hz —— 拍击声、齿音、钹片的高频"啪"
+    private int _subLo, _subHi, _lowLo, _lowHi, _highLo, _highHi, _flatLo, _flatHi, _harmLo, _harmHi;
 
     private int _ringWrite;
     private int _samplesSinceFrame;
@@ -686,6 +708,13 @@ internal sealed class SpectralFluxOnset
     private double _broadbandDb = DbFloor;
     private double _bandRatioDb = DbFloor;
     private bool _isOnset;
+
+    // ── 场景分类的谱形指标（每帧更新，读的人只有 AudioSceneClassifier）──────────
+    private double _subRatio, _lowRatio, _highRatio;
+    private double _flatness = 1.0;
+    private double _harmonics;
+    private double _f0Hz;
+    private bool   _voiceLike;
 
     /// <summary>本帧是不是一次起音（已过自适应阈值、最小间隔与静音门）。</summary>
     public bool IsOnset => _isOnset;
@@ -717,6 +746,27 @@ internal sealed class SpectralFluxOnset
     /// <summary>人声频带能量占全带能量的比例（dB）。0 = 全在带内；−9dB ≈ 只有 12.5%。</summary>
     public double BandRatioDb => _bandRatioDb;
 
+    /// <summary>20–80Hz（碰撞/底鼓的闷响）占全带能量的比例 0–1。</summary>
+    public double SubRatio => _subRatio;
+
+    /// <summary>80–200Hz（贝斯/鼓的持续低音）占全带能量的比例 0–1。</summary>
+    public double LowRatio => _lowRatio;
+
+    /// <summary>2000–8000Hz（拍击、齿音、钹片）占全带能量的比例 0–1。</summary>
+    public double HighRatio => _highRatio;
+
+    /// <summary>谱平坦度 0–1（300–3000Hz 内的几何均值 ÷ 算术均值）：越小越像乐音/人声，越大越像噪声。</summary>
+    public double Flatness => _flatness;
+
+    /// <summary>80–1000Hz 里能数出来的谐波峰个数（0–8）：人声/乐器 ≥2，纯噪声与单次碰撞接近 0–1。</summary>
+    public double Harmonics => _harmonics;
+
+    /// <summary>估计的基频（Hz，0 = 没数出来）。</summary>
+    public double F0Hz => _f0Hz;
+
+    /// <summary>本帧是否"像人的嗓子"：谐波成列 + 中频占主导 + 谱不平坦。</summary>
+    public bool VoiceLike => _voiceLike;
+
     /// <summary>采样率变了就重建 FFT 与 bin 边界；没变是空操作（每块调一次也不花钱）。</summary>
     public void EnsureFormat(int sampleRate)
     {
@@ -726,6 +776,7 @@ internal sealed class SpectralFluxOnset
         _hopSeconds = _hopSamples / (double)sampleRate;
         _fluxWindowFrames = Math.Clamp((int)Math.Round(FluxWindowSeconds / _hopSeconds), 4, FluxHistoryCapacity);
         double binHz = sampleRate / (double)FftSize;
+        _binHz = binHz;
         _binLo = Math.Max(1, (int)Math.Ceiling(FluxLowHz / binHz));
         _binHi = Math.Min(SpectrumLength - 2, (int)Math.Floor(FluxHighHz / binHz));
         if (_binHi - _binLo < 4) { _binLo = 1; _binHi = SpectrumLength - 2; }
@@ -734,6 +785,16 @@ internal sealed class SpectralFluxOnset
         _bandLo = Math.Max(1, (int)Math.Ceiling(VoiceBandLowHz / binHz));
         _bandHi = Math.Min(SpectrumLength - 2, (int)Math.Floor(VoiceBandHighHz / binHz));
         if (_bandHi <= _bandLo) { _bandLo = 1; _bandHi = SpectrumLength - 2; }
+        // 分类用的频带边界同样按 bin 中心频率取；上下沿都夹在通量范围内（30–8000Hz）。
+        _subLo  = BinAt(20.0, binHz);   _subHi  = BinAt(80.0, binHz);
+        _lowLo  = _subHi + 1;           _lowHi  = BinAt(200.0, binHz);
+        _highLo = BinAt(2000.0, binHz); _highHi = BinAt(8000.0, binHz);
+        _flatLo = BinAt(300.0, binHz);  _flatHi = BinAt(3000.0, binHz);
+        _harmLo = BinAt(70.0, binHz);   _harmHi = BinAt(1000.0, binHz);
+        if (_lowHi  <= _lowLo)  _lowHi  = Math.Min(SpectrumLength - 2, _lowLo + 1);
+        if (_highHi <= _highLo) _highHi = Math.Min(SpectrumLength - 2, _highLo + 1);
+        if (_flatHi <= _flatLo) _flatHi = Math.Min(SpectrumLength - 2, _flatLo + 1);
+        if (_harmHi <= _harmLo) _harmHi = Math.Min(SpectrumLength - 2, _harmLo + 1);
         // 窗口与 FFT 处理器只在这里建一次：稳态每帧不再分配任何东西。
         _fft = new FftProcessor(FftSize, FftWindowType.Hann);
         Reset();
@@ -757,6 +818,12 @@ internal sealed class SpectralFluxOnset
         _lastOnsetStrength = 0;
         _lastOnsetAtSeconds = double.NegativeInfinity;
         _bandDb = _broadbandDb = _bandRatioDb = DbFloor;
+        Array.Clear(_mag);
+        _subRatio = _lowRatio = _highRatio = 0;
+        _flatness = 1.0;
+        _harmonics = 0;
+        _f0Hz = 0;
+        _voiceLike = false;
         _isOnset = false;
         // 节拍跟踪也要一起清：不清的话换歌之后 6 秒窗口里还混着上一段的包络、
         // _recentOnsets 里还留着最多 12 秒的旧起音，可能立刻 Locked 并按旧相位先踩两下。
@@ -796,6 +863,7 @@ internal sealed class SpectralFluxOnset
         // ② 幅度谱：totalPower 是全带（当分母），bandPower 是人声频带（当分子）。
         //    直流与 Nyquist 只算一次，其余 bin 乘 2（正负频率各占一半能量）。
         double bandPower = 0, totalPower = 0;
+        double subPower = 0, lowPower = 0, highPower = 0;
         for (int k = 0; k < SpectrumLength; k++)
         {
             Complex c = _spectrum[k];
@@ -805,8 +873,19 @@ internal sealed class SpectralFluxOnset
             double power = (k == 0 || k == SpectrumLength - 1) ? mag * mag : 2.0 * mag * mag;
             totalPower += power;
             if (k >= _bandLo && k <= _bandHi) bandPower += power;
-            if (k >= _binLo && k <= _binHi) _logMag[k] = Math.Log(1.0 + LogCompression * mag);
+            if (k >= _binLo && k <= _binHi)
+            {
+                _logMag[k] = Math.Log(1.0 + LogCompression * mag);
+                _mag[k] = mag;
+            }
+            // 分类频带（20–80 / 80–200 / 2000–8000）顺手累加：同一趟循环，不加成本。
+            if (k >= _subLo && k <= _subHi) subPower += power;
+            else if (k >= _lowLo && k <= _lowHi) lowPower += power;
+            if (k >= _highLo && k <= _highHi) highPower += power;
         }
+        _subRatio  = totalPower > 1e-20 ? Math.Clamp(subPower / totalPower, 0, 1) : 0;
+        _lowRatio  = totalPower > 1e-20 ? Math.Clamp(lowPower / totalPower, 0, 1) : 0;
+        _highRatio = totalPower > 1e-20 ? Math.Clamp(highPower / totalPower, 0, 1) : 0;
 
         // ③ SuperFlux 谱通量：参考值 = **上一帧**在 ±MaxFilterBins 里的最大值，再取正差分求和。
         //    必须先算完所有 bin 的差分再更新 _logMagRef（否则左邻居会被本帧覆盖掉）。
@@ -838,6 +917,7 @@ internal sealed class SpectralFluxOnset
         _bandRatioDb = totalPower > 1e-20
             ? 10.0 * Math.Log10(Math.Max(bandPower / totalPower, 1e-10))
             : DbFloor;
+        UpdateSpectralShape();
 
         // ⑥ 起音判定 + 脉冲衰减（帧时钟自己走，不依赖系统时间，回调里也没有锁）。
         _frameSeconds += _hopSeconds;
@@ -859,6 +939,73 @@ internal sealed class SpectralFluxOnset
         // ⑦ 节拍跟踪：把"这一帧有多像一次起音"喂给 tempo 估计。
         //    用衰减脉冲 _onsetPulse 而不是 _lastOnsetStrength —— 前者是连续的包络，后者只在起音那一帧更新。
         Tempo.Push(_onsetPulse, _hopSeconds);
+    }
+
+    /// <summary>频率 → bin 序号（夹在通量范围 1 … SpectrumLength−2 内）。</summary>
+    private int BinAt(double hz, double binHz)
+    {
+        int k = (int)Math.Round(hz / binHz);
+        return Math.Clamp(k, 1, SpectrumLength - 2);
+    }
+
+    /// <summary>
+    /// 谱形指标：平坦度（乐音 ↔ 噪声）、谐波峰个数与基频（人声 ↔ 非人声）。
+    /// 只翻 O(几十) 个 bin，不加 FFT、不分配内存，10ms 一帧的开销可以忽略。
+    /// </summary>
+    private void UpdateSpectralShape()
+    {
+        int n = _flatHi - _flatLo + 1;
+        if (n <= 0) { _flatness = 1.0; _harmonics = 0; _f0Hz = 0; _voiceLike = false; return; }
+
+        // ① 平坦度：几何均值 ÷ 算术均值（0 = 纯乐音，1 = 白噪声）。
+        double sum = 0, logSum = 0;
+        for (int k = _flatLo; k <= _flatHi; k++)
+        {
+            double m = _mag[k] + 1e-12;
+            sum += m;
+            logSum += Math.Log(m);
+        }
+        double arith = sum / n;
+        double geo = Math.Exp(logSum / n);
+        _flatness = arith > 1e-12 ? Math.Clamp(geo / arith, 0.0, 1.0) : 1.0;
+
+        // ② 谐波：70–1000Hz 内的局部极大。峰高门槛取该区最强峰的 −25dB，
+        //    再要求"与最低那个峰成整数倍对齐"——呻吟的嗓音频谱就是这样一列等间距的齿。
+        int lo = _harmLo, hi = _harmHi;
+        double peakMax = 0;
+        for (int k = lo; k <= hi; k++) if (_mag[k] > peakMax) peakMax = _mag[k];
+        _harmonics = 0;
+        _f0Hz = 0;
+        _voiceLike = false;
+        if (peakMax <= 1e-9) return;
+
+        double peakFloor = peakMax * 0.0562;     // −25dB
+        int first = 0;
+        for (int k = lo + 1; k < hi; k++)
+        {
+            double m = _mag[k];
+            if (m < peakFloor) continue;
+            if (m < _mag[k - 1] || m < _mag[k + 1]) continue;   // 局部极大
+            if (first == 0) first = k;
+        }
+        if (first == 0) return;
+
+        double f0Bin = first;                     // 以 bin 为单位做整数倍对齐，比 Hz 更省
+        int aligned = 0;
+        for (int h = 1; h * f0Bin <= hi && h <= 8; h++)
+        {
+            double target = h * f0Bin;
+            int t0 = Math.Max(lo, (int)Math.Floor(target * 0.92));
+            int t1 = Math.Min(hi, (int)Math.Ceiling(target * 1.08));
+            for (int k = t0; k <= t1; k++)
+            {
+                if (_mag[k] >= peakFloor && _mag[k] >= _mag[k - 1] && _mag[k] >= _mag[k + 1]) { aligned++; break; }
+            }
+        }
+        _harmonics = aligned;
+        _f0Hz = first * _binHz;
+        // 谐波成列 ≥3 且谱不平坦 → 像嗓子（女声呻吟的基频常在 200–400Hz，正好落在这个窗口）。
+        _voiceLike = aligned >= 3 && _flatness <= 0.30;
     }
 
     private void PushFluxHistory(double value)

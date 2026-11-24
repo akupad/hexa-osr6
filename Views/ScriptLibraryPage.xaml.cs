@@ -68,7 +68,7 @@ public partial class ScriptLibraryPage : Page
     private readonly Action _engineStatusRelay;
     /// <summary>滑杆拖动时不要每 1 像素写一次盘：停手 400ms 再存。</summary>
     private readonly System.Windows.Threading.DispatcherTimer _saveTimer;
-    /// <summary>播放中每 150ms 刷一次进度：播放器只在状态变化时广播 StatusChanged，进度条不会自己动。</summary>
+    /// <summary>播放中每 150ms 刷一次「跟着播放器走」的状态行：播放器只在状态变化时广播 StatusChanged。</summary>
     private readonly System.Windows.Threading.DispatcherTimer _progressTimer;
     /// <summary>自动匹配脚本的结果只显示几秒，之后自己收起来（免得常驻一行过期信息）。</summary>
     private readonly System.Windows.Threading.DispatcherTimer _noteTimer;
@@ -78,7 +78,7 @@ public partial class ScriptLibraryPage : Page
     private bool _statusHooked;
     /// <summary>正在按设置初始化界面（此时不要回写设置）。</summary>
     private bool _loadingUi;
-    /// <summary>最近一次「播放被拒」的原因，播放控制卡常显（成功开始播放后清空）。</summary>
+    /// <summary>最近一次「播放被拒」的原因，播放警示行常显（成功开始播放后清空）。</summary>
     private string? _blockedReason;
 
     // ── 媒体同步（外挂播放器时间码从动）──────────────────────────────
@@ -87,10 +87,7 @@ public partial class ScriptLibraryPage : Page
     /// 所以要到用户真的点「连接」才建它 —— 也就天然满足了「没点连接就不许自动连播放器」。
     /// </summary>
     private MediaSyncService? _mediaSync;
-    /// <summary>正在拖进度条（拖动期间同步循环不抢位置，松手才交还）。</summary>
-    private bool _scrubbing;
-    /// <summary>拖动中准备跳到的秒数（只用于读数显示，真正的跳转已经交给播放器）。</summary>
-    private double _scrubSeconds;
+
     /// <summary>章节列表当前属于哪个脚本（避免同一次选择重复解析文件）。</summary>
     private string? _chapterPath;
 
@@ -131,11 +128,16 @@ public partial class ScriptLibraryPage : Page
         Loaded += async (_, _) =>
         {
             HookStatusEvents();
-            RefreshRateLabel();
             LoadEnhanceControls();
             InitMediaSyncControls();
             UpdateFolderHint();
             await RefreshListAsync();
+        };
+        // 页面被缓存复用：从动作栏的脚本架切回来时列表可能已经过期（那边刚导入过脚本），
+        // 每次变得可见就重读一遍目录（后台线程读，不卡 UI）。
+        IsVisibleChanged += (_, _) =>
+        {
+            if (IsVisible && IsLoaded) _ = RefreshListAsync(Selected?.FilePath);
         };
         Unloaded += (_, _) =>
         {
@@ -330,7 +332,6 @@ public partial class ScriptLibraryPage : Page
             ScriptList.ItemsSource = rows;
             // 刷新/改名后把选中行找回来，别让用户重新点一遍
             if (keepSelection != null) SelectRowByPath(keepSelection);
-            PlayBtn.IsEnabled = Selected is { Valid: true };
             // 名称列里的 📑/🔖 标记是这次重排出来的：章节按钮也要跟着当前选中行走
             // （ItemsSource 换了之后 SelectionChanged 不一定再触发，所以这里显式来一次）
             LoadChaptersFor(Selected?.FilePath);
@@ -493,11 +494,9 @@ public partial class ScriptLibraryPage : Page
         if (fs == null) return;
 
         SyncPlaybackButtons();
-        RefreshRateLabel();
         UpdatePlaybackPanel();
 
-        // 进度条只在播放中自己走（播放器不会每帧广播状态）。
-        // 但下面两种情况也必须一直刷，否则界面会「停在上一秒」：
+        // 下面两种情况也必须一直刷，否则界面会「停在上一秒」：
         // ① 媒体同步连着（状态行要跟着播放器走）；② 开着 A-B 循环（到 B 要跳回 A）。
         // A-B 循环期间把节拍收紧到 40ms —— 150ms 一次的话，冲过 B 点会明显多走一截。
         // 只有在真的播着的时候才收紧：暂停时没必要 25Hz 空转。
@@ -538,49 +537,13 @@ public partial class ScriptLibraryPage : Page
     }
 
     /// <summary>
-    /// 播放控制卡：状态徽章 + 当前脚本 + 进度条 + 时间读数 + 无法下发的原因。
+    /// 播放侧状态：无法下发的原因（常显）+「跟着播放器走」的状态行。状态徽章/进度条/倍率已随播放工具条一起移除。
     /// 播放器只在 Load/Play/Pause/Stop/Seek 和引擎状态变化时广播，所以播放中由 _progressTimer 定时调它。
     /// </summary>
     private void UpdatePlaybackPanel()
     {
         var fs = App.FunscriptPlayer;
         if (fs == null) return;
-
-        // ① 状态徽章（急停 > 未载入 > 播放中 > 已播完 > 已暂停）
-        string badge;
-        string badgeBrush;
-        string inkBrush;
-        if (App.Engine.EmergencyStopped) { badge = "已急停"; badgeBrush = "DangerSoft"; inkBrush = "Danger"; }
-        else if (!fs.HasTrack) { badge = "未载入脚本"; badgeBrush = "SurfaceRaised"; inkBrush = "Muted"; }
-        else if (fs.IsPlaying) { badge = "正在播放"; badgeBrush = "PrimarySoft"; inkBrush = "Primary"; }
-        else if (fs.DurationMs > 0 && fs.PositionMs >= fs.DurationMs) { badge = "已播完"; badgeBrush = "SurfaceRaised"; inkBrush = "Muted"; }
-        else { badge = "已暂停"; badgeBrush = "WarningSoft"; inkBrush = "Warning"; }
-
-        if (!string.Equals(PlayStateText.Text, badge, StringComparison.Ordinal)) PlayStateText.Text = badge;
-        var wantBg = (Brush)FindResource(badgeBrush);
-        if (!ReferenceEquals(PlayStateBadge.Background, wantBg)) PlayStateBadge.Background = wantBg;
-        var wantInk = (Brush)FindResource(inkBrush);
-        if (!ReferenceEquals(PlayStateText.Foreground, wantInk)) PlayStateText.Foreground = wantInk;
-
-        // ② 正在播哪个
-        NowPlayingText.Text = fs.HasTrack
-            ? $"当前脚本：{Path.GetFileName(fs.LoadedFile ?? "")}"
-            : "还没有载入脚本：在下面的列表里选一个，点「▶ 载入并播放」。";
-        LocateBtn.Visibility = fs.HasTrack ? Visibility.Visible : Visibility.Collapsed;
-
-        // ③ 进度 + 时间。进度条现在**可以拖**（外壳那层 Border 接了鼠标事件，见 PlaybackScrub_*）；
-        //    拖动中不覆盖 Value：那 0–1 的读数是用户正在拖的位置，被定时器刷回去就拖不动了。
-        if (!_scrubbing)
-        {
-            PlaybackProgress.Value = fs.DurationMs > 0
-                ? Math.Clamp(fs.PositionMs / (double)fs.DurationMs, 0, 1)
-                : 0;
-        }
-        PlaybackTimeText.Text = fs.HasTrack
-            ? _scrubbing
-                ? $"{FormatClock((long)(_scrubSeconds * 1000))} / {FormatClock(fs.DurationMs)} · 拖动中"
-                : $"{FormatClock(fs.PositionMs)} / {FormatClock(fs.DurationMs)} · 剩 {FormatClock(fs.DurationMs - fs.PositionMs)}"
-            : "— / —";
 
         // ④ 逐帧下发被拒的原因（规则引擎接管 / 未连接 / 急停）：常显，绝不静默失败
         SetPlaybackWarn(fs.DirectInputBlockReason ?? _blockedReason);
@@ -589,7 +552,7 @@ public partial class ScriptLibraryPage : Page
         UpdateMediaSyncPanel();
     }
 
-    /// <summary>播放控制卡里的警示行（null / 空 = 隐藏）。</summary>
+    /// <summary>列表上方的播放警示行（null / 空 = 隐藏）。</summary>
     private void SetPlaybackWarn(string? text)
     {
         bool show = !string.IsNullOrWhiteSpace(text);
@@ -603,27 +566,10 @@ public partial class ScriptLibraryPage : Page
     private void SyncPlaybackButtons()
     {
         var fs = App.FunscriptPlayer;
-        PauseResumeBtn.Content = fs.IsPaused ? "▶ 继续" : "⏸ 暂停";
-        PauseResumeBtn.IsEnabled = fs.HasTrack;
-        StopBtn.IsEnabled = fs.HasTrack;
-        // 有东西在放/暂停时，「停止」是最该被一眼看到的出口
-        var stopStyle = (Style)FindResource(fs.HasTrack ? "BtnDanger" : "BtnSecondary");
-        if (!ReferenceEquals(StopBtn.Style, stopStyle)) StopBtn.Style = stopStyle;
 
         // A-B 的「设 A / 设 B」要有位置可设：没载入脚本就是灰的（点了只能弹一句「先载入脚本」）
         AbLoopSetABtn.IsEnabled = fs.HasTrack;
         AbLoopSetBBtn.IsEnabled = fs.HasTrack;
-    }
-
-    /// <summary>倍率只读显示（与「脚本制作 → 微调波形」的「脚本倍率」是同一个设置项）。</summary>
-    private void RefreshRateLabel()
-    {
-        double set = App.Settings.ScriptPlaybackSpeed;
-        // 媒体同步在跑时实际倍率 = 设置的倍率 × 同步微调（±10%），只写设置值会让用户以为设备按 1.00x 在走。
-        double effective = _mediaSync?.Status.EffectiveRate ?? 0;
-        RateLabel.Text = effective > 0.01 && Math.Abs(effective - set) > 0.005
-            ? $"{effective:0.00}x（跟随影片微调中 · 设定 {set:0.00}x）"
-            : $"{set:0.00}x";
     }
 
     /// <summary>「打开库目录」按钮的悬停提示写明真实路径（库目录可以在设置页改）。</summary>
@@ -813,80 +759,14 @@ public partial class ScriptLibraryPage : Page
     }
 
     /// <summary>
-    /// 告诉同步服务「位置现在由用户/循环做主」（拖动进度条、A-B 循环期间）。
+    /// 告诉同步服务「位置现在由 A-B 循环做主」。
     /// 优先级：拖动 &gt; A-B 循环 &gt; 正常跟随 —— 拖动是用户当下的动作，最该听他的。
     /// </summary>
     private void UpdatePositionHold()
     {
         if (_mediaSync is null) return;
-        if (_scrubbing) { _mediaSync.SetPositionHold("正在拖动进度条"); return; }
         if (_abLoopB.HasValue) { _mediaSync.SetPositionHold("A-B 循环中"); return; }
         _mediaSync.SetPositionHold(null);
-    }
-
-    // ── 进度条拖动 ───────────────────────────────────────────────────
-
-    /// <summary>按下即跳（和播放器一样的手感），并抓住鼠标，之后移动全归这里处理。</summary>
-    private void PlaybackScrub_Start(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        var fs = App.FunscriptPlayer;
-        if (fs is null || !fs.HasTrack || fs.DurationMs <= 0) return;
-
-        _scrubbing = true;
-        // 拖动期间让同步循环停手：它每 80ms 纠正一次位置，不喊停根本拖不动（还会和手指打架）。
-        UpdatePositionHold();
-        if (sender is UIElement element) element.CaptureMouse();
-        ScrubTo(sender, e);
-        e.Handled = true;
-    }
-
-    private void PlaybackScrub_Move(object sender, MouseEventArgs e)
-    {
-        if (!_scrubbing) return;
-        // 鼠标在别处松开（拖出窗口）时收不到 Up：这里补一次收尾，否则会一直「拖动中」。
-        if (e.LeftButton != System.Windows.Input.MouseButtonState.Pressed)
-        {
-            EndScrub(sender);
-            return;
-        }
-        ScrubTo(sender, e);
-        e.Handled = true;
-    }
-
-    private void PlaybackScrub_End(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        if (!_scrubbing) return;
-        EndScrub(sender);
-        e.Handled = true;
-    }
-
-    /// <summary>把鼠标横向位置换算成脚本时间并 Seek（只动脚本，不动播放器）。</summary>
-    private void ScrubTo(object sender, System.Windows.Input.MouseEventArgs e)
-    {
-        if (sender is not IInputElement reference) return;
-        var fs = App.FunscriptPlayer;
-        if (fs is null || fs.DurationMs <= 0) return;
-        double width = (sender as FrameworkElement)?.ActualWidth ?? 0;
-        if (width <= 0) return;
-
-        double fraction = Math.Clamp(e.GetPosition(reference).X / width, 0, 1);
-        _scrubSeconds = fraction * fs.DurationMs / 1000.0;
-        fs.SeekSeconds(_scrubSeconds);
-        // 立刻把进度条和读数画到新位置：不然要等下一次定时器（150ms）才动，手感很黏。
-        UpdatePlaybackPanel();
-    }
-
-    /// <summary>
-    /// 松手：位置交还给同步循环。
-    /// 注意：开着「跟着播放器走」时，下一次同步（80ms 内）会发现误差 &gt; 1 秒并把脚本拉回画面位置 ——
-    /// 那不是 bug，正是「跟着播放器走」该有的行为（脚本必须和画面对得上）。悬停提示里已经写明。
-    /// </summary>
-    private void EndScrub(object sender)
-    {
-        _scrubbing = false;
-        if (sender is UIElement element && element.IsMouseCaptured) element.ReleaseMouseCapture();
-        UpdatePositionHold();
-        RefreshStatus();
     }
 
     // ── A-B 循环 ─────────────────────────────────────────────────────
@@ -965,7 +845,7 @@ public partial class ScriptLibraryPage : Page
     /// </summary>
     private void EnforceAbLoop()
     {
-        if (_abLoopB is not { } end || _scrubbing) return;
+        if (_abLoopB is not { } end) return;
         var fs = App.FunscriptPlayer;
         if (fs is null || !fs.IsPlaying || !fs.HasTrack) return;
         double start = _abLoopA ?? 0;
@@ -1189,13 +1069,26 @@ public partial class ScriptLibraryPage : Page
         if (summary.InvalidCount > 0) message += $"，其中 {summary.InvalidCount} 个无法解析";
         message += "：\n  " + string.Join("\n  ", lines);
         message += $"\n\n都放进了脚本库：{ScriptLibrary.Folder}";
-        message += "\n用法：在列表里选中它 → 点「▶ 载入并播放」（会驱动设备），或点行内 ▶ 直接播。";
+        message += "\n用法：在「🎯 动作」页的脚本架里点它（双击直接播），或在列表里点行内 ▶。";
 
         System.Windows.MessageBox.Show(message, "导入脚本", MessageBoxButton.OK,
             summary.InvalidCount > 0 ? MessageBoxImage.Warning : MessageBoxImage.Information);
     }
 
-    private async void Play_Click(object sender, RoutedEventArgs e) => await PlayRowAsync(Selected);
+    /// <summary>
+    /// 动作栏脚本架用：刷一遍列表 → 选中指定脚本（可选：直接载入播放）。
+    /// 走的就是本页自己的 RefreshListAsync / PlayRowAsync，选中态与播放状态跟手点时完全一致。
+    /// </summary>
+    internal void ShowAndSelect(string filePath, bool play) => _ = ShowAndSelectAsync(filePath, play);
+
+    private async Task ShowAndSelectAsync(string filePath, bool play)
+    {
+        await RefreshListAsync(filePath);
+        if (play && Selected is { Valid: true }) await PlayRowAsync(Selected);
+    }
+
+    /// <summary>动作栏那边导入/删除脚本后调一下，本页下次显示时就是新列表。</summary>
+    internal void ReloadFromDisk() => _ = RefreshListAsync(Selected?.FilePath);
 
     private async void RowPlay_Click(object sender, RoutedEventArgs e) => await PlayRowAsync(RowOf(sender));
 
@@ -1204,7 +1097,7 @@ public partial class ScriptLibraryPage : Page
     {
         if (row == null)
         {
-            SetPlaybackWarn("先在下面的列表里选一个脚本，再点「▶ 载入并播放」。");
+            SetPlaybackWarn("先在下面的列表里选一个脚本，再点行内 ▶ 播放。");
             return;
         }
         if (!row.Valid)
@@ -1267,26 +1160,6 @@ public partial class ScriptLibraryPage : Page
         RefreshStatus();
     }
 
-    /// <summary>暂停 / 继续。继续时走和「载入并播放」相同的接管检查，急停或规则引擎接管会明确拒绝。</summary>
-    private void PauseResume_Click(object sender, RoutedEventArgs e)
-    {
-        var fs = App.FunscriptPlayer;
-        if (fs.IsPlaying)
-        {
-            fs.Pause();
-        }
-        else if (!fs.HasTrack)
-        {
-            SetPlaybackWarn("还没有载入脚本：先在列表里选一个，点「▶ 载入并播放」。");
-            return;
-        }
-        else
-        {
-            TryStartPlayback();
-        }
-        RefreshStatus();
-    }
-
     /// <summary>停止：暂停 + 停掉引擎输出 + 播放位置归零（服务内完成，不会把设备推到脚本开头姿态）。</summary>
     private void CommunitySearch_Click(object sender, RoutedEventArgs e) => OpenCommunitySearch();
 
@@ -1321,46 +1194,6 @@ public partial class ScriptLibraryPage : Page
         {
             if (CommunitySearchBox is { } bad) bad.ToolTip = "打不开浏览器：" + ex.Message;
         }
-    }
-
-    private void Stop_Click(object sender, RoutedEventArgs e)
-    {
-        App.FunscriptPlayer.Stop();
-        _blockedReason = null;
-        RefreshStatus();
-    }
-
-    /// <summary>把列表滚到正在播的那一行并选中它（长列表里一眼找到）。</summary>
-    private void Locate_Click(object sender, RoutedEventArgs e)
-    {
-        string? path = App.FunscriptPlayer.LoadedFile;
-        if (!string.IsNullOrEmpty(path)) SelectRowByPath(path);
-    }
-
-    /// <summary>脚本倍率 −0.05x（下限 0.25x）。</summary>
-    private void RateMinus_Click(object sender, RoutedEventArgs e) => AdjustRate(-0.05);
-
-    /// <summary>脚本倍率 +0.05x（上限 2.00x）。</summary>
-    private void RatePlus_Click(object sender, RoutedEventArgs e) => AdjustRate(+0.05);
-
-    /// <summary>
-    /// 调整脚本播放倍率：与「脚本制作 → 微调波形」的「脚本倍率」共用同一个设置项
-    /// （App.Settings.ScriptPlaybackSpeed，FunscriptPlayerService.Tick 每帧读它），写回后立即持久化。
-    /// </summary>
-    private void AdjustRate(double delta)
-    {
-        var cfg = App.Settings;
-        double target = Math.Round(cfg.ScriptPlaybackSpeed + delta, 2);
-        if (target is > 2.0 or < 0.25)
-        {
-            SetPlaybackWarn(target > 2.0 ? "播放倍率已经到上限 2.00x。" : "播放倍率已经到下限 0.25x。");
-            return;
-        }
-        double next = Math.Clamp(target, 0.25, 2.0);
-        cfg.ScriptPlaybackSpeed = next;
-        App.Engine.ScriptSpeed = next;   // 引擎侧（自定义模式等）保持同步，和微调页写法一致
-        cfg.Save();
-        RefreshRateLabel();
     }
 
     private async void RowRename_Click(object sender, RoutedEventArgs e) => await RenameRowAsync(RowOf(sender));
@@ -1480,24 +1313,6 @@ public partial class ScriptLibraryPage : Page
         }
     }
 
-    // ── 动作库（StrokePreset）JSON 导入 / 导出 ──────────────────────────
-
-    /// <summary>把全部动作预设导出为 [{name,type,data}] 结构的 JSON 文件。</summary>
-    private void ExportPresets_Click(object sender, RoutedEventArgs e)
-    {
-        // 动作库导入导出现在是一份共用实现（Services/StrokePresetIO.cs），动作页与这里用同一套对话框，
-        // 免得两处的文件名、提示文案与冲突处理各写一遍、日久天长跑偏。
-        StrokePresetIO.ExportWithDialog(System.Windows.Window.GetWindow(this), "导出动作库",
-            StrokesViewModel.AllPresets, StrokesViewModel.PresetExtras);
-    }
-
-    /// <summary>从 JSON 文件导入动作预设，冲突自动改名，并报告新增 / 重命名数量。</summary>
-    private void ImportPresets_Click(object sender, RoutedEventArgs e)
-    {
-        StrokePresetIO.ImportWithDialog(System.Windows.Window.GetWindow(this), "导入动作库",
-            StrokesViewModel.ImportPresets);
-    }
-
     private async void Refresh_Click(object sender, RoutedEventArgs e) => await RefreshListAsync();
 
     // ══════════════════════════════════════════════════════════════
@@ -1506,6 +1321,34 @@ public partial class ScriptLibraryPage : Page
     private string _generateMediaPath = "";
     private CancellationTokenSource? _generateCts;
 
+    /// <summary>
+    /// 点这一行：把**整张卡**收起 / 展开 —— 播放器那几行（PlayBody）、播放增强的三个开关、
+    /// 说明文字、「🎵 从音频生成…」以及已经展开的生成面板，一起走。
+    /// 收起来整张卡只剩这一行标题，不占高度（用户原话「这一块折叠而不是折叠那一小块」：
+    /// 只藏三个开关那种半折叠等于没折）。正在播放的脚本不受影响，开关状态照旧生效。
+    /// </summary>
+    private void EnhanceHeader_MouseUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        => ToggleEnhanceCard();
+
+    /// <summary>收起 / 展开整张卡。抽出来是为了自检能直接调（MouseButtonEventArgs 没有公开构造函数）。</summary>
+    internal void ToggleEnhanceCard()
+    {
+        if (PlayBody is null || EnhanceBody is null || EnhanceHeaderTitle is null) return;
+        bool collapse = PlayBody.Visibility != Visibility.Collapsed;
+        Visibility vis = collapse ? Visibility.Collapsed : Visibility.Visible;
+        PlayBody.Visibility = vis;
+        EnhanceBody.Visibility = vis;
+        if (EnhanceDesc is not null) EnhanceDesc.Visibility = vis;
+        if (GenerateToggleBtn is not null) GenerateToggleBtn.Visibility = vis;
+        if (collapse)
+        {
+            // 生成面板一起收，别在收起的卡里留一个悬空的盒子；按钮文案跟着回到未展开
+            if (GeneratePanel is not null) GeneratePanel.Visibility = Visibility.Collapsed;
+            if (GenerateToggleBtn is not null) GenerateToggleBtn.Content = "🎵 从音频生成…";
+        }
+        EnhanceHeaderTitle.Text = (collapse ? "▸  " : "▾  ") + "▶ 播放 · ✨ 播放增强";
+        EnhanceHeaderTitle.ToolTip = collapse ? "点这一行展开整张卡（播放 / 播放增强 / 从音频生成）" : "点这一行收起整张卡，只留这一行";
+    }
     private void GenerateToggle_Click(object sender, RoutedEventArgs e)
     {
         bool show = GeneratePanel.Visibility != Visibility.Visible;
@@ -1635,7 +1478,6 @@ public partial class ScriptLibraryPage : Page
 
     private void ScriptList_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        PlayBtn.IsEnabled = Selected is { Valid: true };
         // 选中无效脚本时把原因写到播放卡里，省得用户只能靠悬停猜（下一次状态刷新会覆盖它）
         if (Selected is { Valid: false } bad)
             SetPlaybackWarn($"「{bad.Name}」无法解析，不能播放：{bad.Error ?? "未知原因"}");

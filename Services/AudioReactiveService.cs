@@ -34,12 +34,13 @@ public sealed class AudioReactiveService : IDisposable
     // 以前：开启后直接 StartAuto()，设备不管有没有声音都在跑，声音只改强度。
     // 现在：安静 → 不动（缓慢回中后停发）；有声音 → 位置跟着声音来回，越响越快越深。
     private const double ApplyIntervalMs = 50;
-    private const double SilenceStopMs   = 700;
+private const double SilenceStopMs   = 700;
     private double _phase;
     private double _silenceMs;
     private bool _motionActive;
     private double _envelope;
     private int _blocked;
+    private long _previewPauseUntil;   // 拖「活动范围」把手期间让开（TickCount64 到期）
     private int _motionActiveFlag;
     private volatile bool _disposed;
 
@@ -53,8 +54,6 @@ public sealed class AudioReactiveService : IDisposable
     private const double EventSettleSeconds      = 0.35;       // 事件结束后回中的缓动时长
     private const double EventLabelLingerSeconds = 2.0;        // 界面「最近事件」保鲜期（覆盖最长的渐强 1.6s）
     private const double MaxPhaseOffset          = 0.5;        // 负向标定最多吞掉事件前半段，保证还有可见动作
-    private const double SensitivityGainMin      = 0.75;
-    private const double SensitivityGainMax      = 1.25;
 
     private static readonly double[] CenterPose = [50, 50, 50, 50, 50, 50];   // 回中用（引擎只读入参，不修改它）
 
@@ -108,8 +107,16 @@ public sealed class AudioReactiveService : IDisposable
     private double _voiceHoldLevel;                              // 「她刚刚有多响」：余韵用它打底，一次比一次浅
     private double _lastVoiceEventAt = double.NegativeInfinity;   // 音频线程写：最近一次人声起音的时刻
     private double _voiceConsumedAt = double.NegativeInfinity;    // 定时器线程：已经用过的那一次起音
+    // ── 「主体节奏」与「配乐节奏」分开记 ──
+    // 配乐鼓点快、主体（呻吟 / 撞击）慢的素材里，直接拿谱通量 BPM 当节奏会盲从鼓点。
+    // 这里给主体起音单独记一份间隔，读的时候由分类结果决定信谁。
+    private double _subjectOnsetAt = double.NegativeInfinity;   // 最近一次主体起音的时刻
+    private double _subjectInterval;                            // 主体起音间隔 EMA（秒）
     private double[] _monoScratch = new double[4096];          // 单声道解码缓冲（只在块变大时重建一次）
     private readonly long _clockOrigin = Stopwatch.GetTimestamp();
+    // 声音场景分类：把「一直在变的音量」进一步判成「呻吟 / 音乐 / 碰撞」。
+    // 每块音频更新一次（≈10ms 一帧），只搬已经算好的谱特征，不额外做 FFT。
+    private readonly AudioSceneClassifier _scene = new();
 
     /// <summary>单调时钟（秒）：音频线程与定时器线程共用一条时间轴，用来算事件年龄和延迟对齐。</summary>
     private double NowSeconds() => (Stopwatch.GetTimestamp() - _clockOrigin) / (double)Stopwatch.Frequency;
@@ -132,6 +139,19 @@ public sealed class AudioReactiveService : IDisposable
     public double Envelope => Volatile.Read(ref _envelope);
     /// <summary>设备此刻是否正由声音驱动（静音超时后会变 false）。</summary>
     public bool MotionActive => Volatile.Read(ref _motionActiveFlag) != 0;
+
+    /// <summary>
+    /// 声音响应此刻要不要占设备：开着 + 正在采 + 有超过门限的有效响度。
+    /// 为什么不看 <see cref="MotionActive"/>：伴随的底色动作跑着时自动动作占着引擎，
+    /// 声音根本拿不到直接下发权、MotionActive 永远为假 —— 必须由伴随看这个"意图"
+    /// 主动让位（见 RuleEngine.YieldToAudioLocked），声音才接得上。
+    /// </summary>
+    public bool WantsDevice =>
+        _cfg.AudioReactiveEnabled
+        && _capture != null
+        && Volatile.Read(ref _envelope) > 0.02
+        && _engine.CanRun
+        && !_engine.EmergencyStopped;
     /// <summary>非空 = 声音在响但指令下不去（被游戏伴随接管 / 急停 / 未连接等）。</summary>
     public string BlockedReason => Volatile.Read(ref _blocked) != 0 ? DescribeBlocked() : "";
 
@@ -150,7 +170,9 @@ public sealed class AudioReactiveService : IDisposable
         // 但它照样每帧在写同一批轴 —— 两个写入源交替覆盖就是设备乱抖。这种情况 DirectInputOwner
         // 还写着 "audio"，从控制权上根本看不出来，所以这里单独认一次。
         if (ScriptIsPlaying()) return ScriptPlayingReason;
-        if (_engine.RuleEngineActive) return "游戏伴随正在接管，先关闭它";
+        if (ScreenWatchService.Current is { FollowWantsDevice: true })
+            return "画面同步正在带动设备，声音先让位（画面一停它就自己接回来）";
+        if (_engine.CompanionOwnsDevice) return "游戏伴随的底色动作正在跑，声音先让位（它停下就接回来）";
         if (_engine.IsRunning) return "引擎正被其它动作占用";
         return "设备当前不接受直接下发";
     }
@@ -174,10 +196,47 @@ public sealed class AudioReactiveService : IDisposable
         _engine.DirectInputOwner is { Length: > 0 } owner && !string.Equals(owner, "audio", StringComparison.Ordinal)
         || ScriptIsPlaying();
 
-    /// <summary>当前是不是「角色声音 · 呻吟」这一路（设置里的 AudioResponseMode = "voice"）。</summary>
+    /// <summary>「自动」模式：听出是什么就跟什么（设置里的 AudioResponseMode = "auto"）。</summary>
+    private bool IsAutoMode() =>
+        string.Equals(_cfg.AudioResponseMode, "auto", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 当前是不是「角色声音 · 呻吟」这一路：显式选了 voice，或者是「自动」模式且此刻听出来是呻吟。
+    /// 自动模式下这一路会随场景来回切 —— 听出音乐就交回音乐口径，听出碰撞就交给事件化动作。
+    /// </summary>
     private bool IsVoiceMode() =>
         _cfg.AudioReactiveEnabled
-        && string.Equals(_cfg.AudioResponseMode, "voice", StringComparison.OrdinalIgnoreCase);
+        && (string.Equals(_cfg.AudioResponseMode, "voice", StringComparison.OrdinalIgnoreCase)
+            || (IsAutoMode() && _scene.Kind == AudioSceneKind.Voice));
+
+    /// <summary>当前听出来的场景（自动模式与界面显示都用它）。</summary>
+    public AudioSceneKind SceneKind => _scene.Kind;
+
+    /// <summary>测到的配乐鼓点 BPM（锁不上给 0）。供「别盲从鼓点」判断用，不改既有遥测字段。</summary>
+    public double MusicTempoBpm => TempoBpm();
+
+    /// <summary>场景的中文标签：「呻吟 / 喘息」「音乐」「碰撞 / 拍击」「安静」。</summary>
+    public string SceneLabel => _scene.Label;
+
+    /// <summary>三路分数的一句话诊断（界面状态行用）。</summary>
+    public string SceneDescribe() => _scene.Describe();
+
+    /// <summary>
+    /// 这一帧「该跟的节奏」：分类之后给结论，不是拿谱通量 BPM 一把梭。
+    /// 人声/撞击来源新鲜时用主体节奏（配乐鼓点再快也不跟）；只听得出音乐时用音乐 BPM 但打八五折并压低置信度，
+    /// 免得「鼓点快、主体慢」的素材把动作带飞。Silence 直接给 invalid，交给上层保持原状。
+    /// </summary>
+    public RhythmHint GetRhythmHint()
+    {
+        if (!_cfg.AudioReactiveEnabled) return RhythmHint.None;
+        double now = NowSeconds();
+        double lastSubject = Volatile.Read(ref _subjectOnsetAt);
+        double interval = Volatile.Read(ref _subjectInterval);
+        bool subjectFresh = AudioRhythmPolicy.SubjectFresh(interval, now - lastSubject);
+        double subjectHz = subjectFresh ? 1.0 / interval : 0;
+        double musicHz = TempoBpm() / 60.0;
+        return AudioRhythmPolicy.Resolve(_scene.Kind, subjectFresh, subjectHz, musicHz);
+    }
     public double Rms => Volatile.Read(ref _smoothedRms);
     public double Bass => Volatile.Read(ref _smoothedBass);
     public double BeatPulse => Volatile.Read(ref _beatPulse);
@@ -341,6 +400,7 @@ public sealed class AudioReactiveService : IDisposable
     private void ResetEventState()
     {
         _detector.Reset();
+        _scene.Reset();
         _flux.Reset();          // 谱通量：清掉阈值历史，重启采集后重新收敛
         DiscardEventQueues();
         _active = false;
@@ -451,7 +511,9 @@ public sealed class AudioReactiveService : IDisposable
                 // 人声模式**必须**有检测器：人声强度（深度）和她的节奏（速度）都从它那儿来。
                 // 挂在「事件化动作」勾选下面的话，那个勾选一取消（人声模式本来就忽略它），
                 // 这条路的信号就全断了 —— 会变成一个"勾了没反应"的死开关。
-                || IsVoiceMode();
+                || IsVoiceMode()
+                // 「自动」模式必须有检测器：判场景要用它的谐波/人声电平，切到呻吟时也立刻有信号。
+                || IsAutoMode();
             if (feedDetector && _monoScratch.Length < frames)
                 _monoScratch = new double[Math.Max(frames, _monoScratch.Length * 2)];
 
@@ -491,9 +553,42 @@ public sealed class AudioReactiveService : IDisposable
             // 低音能量一点没丢：smoothedBass 照算，界面「低频」和"节拍"模式的兜底都还在用它。
             Volatile.Write(ref _beatPulse, _flux.Pulse);
 
+            // 场景分类：无条件更新（它就是"这只耳朵的判断"）。用的是同一帧谱特征，不再做 FFT。
+            double voiceBandRatio = _flux.BandRatioDb <= -60
+                ? 0
+                : Math.Clamp(Math.Pow(10, _flux.BandRatioDb / 10.0), 0, 1);
+            double frameAt = NowSeconds();
+            _scene.Update(new AudioSceneFeature(
+                frameAt, _flux.BroadbandDb, _flux.SubRatio, _flux.LowRatio,
+                voiceBandRatio, _flux.HighRatio, _flux.Flatness, _flux.Harmonics, _flux.F0Hz,
+                _flux.VoiceLike, _flux.IsOnset, _flux.LastOnsetStrength));
+
+            // 主体起音（人声 / 撞击）单独记间隔：这两个来源才是「画面里在干什么」的节奏，
+            // 配乐鼓点不属于主体。间隔用 EMA，漏一拍只是稍微拉长，不会把节奏判没。
+            if (_flux.IsOnset && _flux.LastOnsetStrength >= 0.18
+                && (_flux.VoiceLike || _scene.Kind is AudioSceneKind.Voice or AudioSceneKind.Impact))
+            {
+                double previous = Volatile.Read(ref _subjectOnsetAt);
+                double gap = frameAt - previous;
+                if (gap > 0.18 && gap < 2.0)
+                {
+                    double interval = Volatile.Read(ref _subjectInterval);
+                    Volatile.Write(ref _subjectInterval, interval <= 0 ? gap : interval * 0.65 + gap * 0.35);
+                }
+                Volatile.Write(ref _subjectOnsetAt, frameAt);
+            }
+
             Volatile.Write(ref _energy, _cfg.AudioResponseMode switch
             {
                 "bass" => smoothedBass,
+                // 「自动」：这一刻听出什么就用哪一路的强度 —— 呻吟看人声频带，碰撞/音乐看拍点。
+                "auto" => _scene.Kind switch
+                {
+                    AudioSceneKind.Voice  => _detector.VoiceLevel,
+                    AudioSceneKind.Impact => Volatile.Read(ref _beatPulse),
+                    AudioSceneKind.Music  => Math.Max(Volatile.Read(ref _beatPulse), smoothedBass * 0.28),
+                    _                     => _cfg.AudioLowPassEnabled ? smoothedBass : smoothedRms,
+                },
                 // 「节拍」响应模式：以谱通量拍点为主，低音能量当兜底（底鼓再闷也总有低频）。
                 "beat" => Math.Max(Volatile.Read(ref _beatPulse), smoothedBass * 0.28),
                 // 人声模式：界面上的电平条 / 状态行 / 「安静就停」都跟着人声频带走 ——
@@ -528,10 +623,28 @@ public sealed class AudioReactiveService : IDisposable
 
     private void ApplyTimerElapsed(object? sender, System.Timers.ElapsedEventArgs e) => ApplyTick();
 
+    /// <summary>
+    /// 范围预览：拖「活动范围」把手时设备要停在指定位置，这一路先停手 ms 毫秒。
+    /// 它每 30–50ms 一发，不松手预览位置下一拍就被冲掉。到时自己接回来。
+    /// </summary>
+    public void PauseForRangePreview(int ms = 1000) =>
+        Interlocked.Exchange(ref _previewPauseUntil, Environment.TickCount64 + Math.Clamp(ms, 200, 5000));
+
     private void ApplyTick()
     {
         try
         {
+            // ⓪ 正在调活动范围：让给预览那一路摆位置，别跟它抢。
+            if (Environment.TickCount64 < Interlocked.Read(ref _previewPauseUntil))
+            {
+                DiscardEventQueues();
+                CancelActiveEvent();
+                if (_motionActive) { _motionActive = false; Volatile.Write(ref _motionActiveFlag, 0); }
+                _engine.ReleaseDirectInput("audio");
+                Volatile.Write(ref _blocked, 1);
+                return;
+            }
+
             // 设备不可动（未连接 / 归中 / 急停）时必须如实反馈：
             // 以前这里直接 return，_blocked 不置位、_motionActive 也不清零，
             // 急停之后界面还写着「正在跟着声音动」。
@@ -560,9 +673,28 @@ public sealed class AudioReactiveService : IDisposable
                 return;
             }
 
-            if (!_cfg.AudioReactiveEnabled || _engine.RuleEngineActive)
+            // 画面同步优先：它要驱动设备时声音先让位，并且**主动把手里的控制权交出去** ——
+            // 不然画面那边 TryClaimDirectInput 会被「audio 正在控制」挡回来，两边互相等（实测就是画面不动）。
+            // 画面一停（FollowWantsDevice 变 false）这里下一拍就接回来，不用用户重开。
+            if (ScreenWatchService.Current is { FollowWantsDevice: true })
             {
-                // 规则引擎接管时音频不驱动设备，攒下的事件再放出来只会「落后于画面」。
+                DiscardEventQueues();
+                CancelActiveEvent();
+                if (_motionActive) { _motionActive = false; Volatile.Write(ref _motionActiveFlag, 0); }
+                _engine.ReleaseDirectInput("audio");
+                Volatile.Write(ref _blocked, 1);
+                return;
+            }
+
+            // 伴随自己的自动动作在跑时才挡声音（RuleEngineActive 只表示「伴随开着」——
+            // 伴随开着但这一刻没在发动作时，声音应该能接上：这是「声音响应 / 画面同步各开各的」的前提）。
+            // 先把有效响度算出来并写出去，再判"要不要让位"：伴随要靠 WantsDevice（读 _envelope）
+            // 决定让不让位，要是这里被挡在前面不更新，声音就永远等不到那一刻（互相等死）。
+            Volatile.Write(ref _envelope, ComputeEnvelope());
+
+            if (!_cfg.AudioReactiveEnabled || _engine.CompanionOwnsDevice)
+            {
+                // 伴随在驱动设备时音频不驱动，攒下的事件再放出来只会「落后于画面」。
                 // 用户自己把「声音响应」关掉时同理 —— 但那时必须把状态收干净：
                 // 以前这里只 return，正在渲染的事件还挂在 _active 上、_motionActiveFlag 还是 1，
                 // 界面一直写「在动」，声音这条来源也一直不把控制权交还出去。
@@ -572,8 +704,7 @@ public sealed class AudioReactiveService : IDisposable
                 return;
             }
 
-            double envelope = ComputeEnvelope();
-            Volatile.Write(ref _envelope, envelope);
+            double envelope = Volatile.Read(ref _envelope);
 
             // ① 有声音但下不去（被游戏伴随 / 游戏桥接管，或急停）：只显示原因，不动设备。
             if (!_engine.CanAcceptDirectInput || !_engine.TryClaimDirectInput("audio"))
@@ -598,6 +729,15 @@ public sealed class AudioReactiveService : IDisposable
                 return;
             }
             Volatile.Write(ref _blocked, 0);
+
+            // ①.5 自动模式：已经不听成呻吟了，就把抽插的余韵清掉 ——
+            //     否则切到音乐/碰撞后再听到人声时，会从上一段的旧相位接上去，第一下是歪的。
+            if (IsAutoMode() && _scene.Kind != AudioSceneKind.Voice && _voiceAfterglowMs > 0)
+            {
+                _voiceAfterglowMs = 0;
+                _voicePhase = 0;
+                _voiceRate = 0;
+            }
 
             // ② 人声模式（呻吟 = 抽插）：这条路自己管「起音 → 抽插 → 余韵 → 停」。
             //    它**故意忽略**「事件化动作」那个勾选 —— 那个勾选是音乐口径（一次事件 = 一次短期动作），
@@ -754,9 +894,10 @@ public sealed class AudioReactiveService : IDisposable
         if (!double.IsFinite(phase) || phase >= 1.0) { FinishActiveEvent(); return; }
 
         double comfort = Math.Clamp(_engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0);
-        double range = Math.Clamp(_cfg.AudioMotionRange, 5, 60) * comfort;
+        double halfSpan = AudioBounds(out double lo, out double hi, out double center, comfort);
         double strength = Math.Clamp(_activeStrength * SensitivityGain(), 0, 1);
-        double[] values = MotionVocabulary.Render(_activeKind, strength, phase, range, _engine.MultiAxisMotion);
+        double[] values = MotionVocabulary.Render(_activeKind, strength, phase, halfSpan, _engine.MultiAxisMotion);
+        ShiftToBounds(values, lo, hi, center);
         if (_engine.TrySendDirectAxes(values, Math.Max(0.02, duration * EventInterpolationRatio)))
         {
             _motionActive = true;
@@ -831,25 +972,86 @@ public sealed class AudioReactiveService : IDisposable
     }
 
     /// <summary>
-    /// 灵敏度在事件模式下只做 0.75–1.25 的小幅缩放（默认 1.0 → 正好 1.0 倍）：
+    /// 灵敏度在事件模式下只缩放动作幅度（0.5–2.0 倍，1.0 为中性）：
     /// 判定的 dB 阈值是固定的，灵敏度不该改变「什么算事件」（否则同一段素材换个灵敏度就多报/漏报），
-    /// 只该改变动作幅度。
+    /// 只该改变动作幅度。用指数映射让「标准」正好是 1.0 倍，往上往下都对称（0 → 0.5×，2 → 2×）。
     /// </summary>
     private double SensitivityGain() =>
-        SensitivityGainMin + (SensitivityGainMax - SensitivityGainMin) * Math.Clamp(_cfg.AudioSensitivity, 0, 2) / 2.0;
+        Math.Pow(2.0, Math.Clamp(_cfg.AudioSensitivity, 0, 2) - 1.0);
 
-    /// <summary>旧路径（AudioEventMotion = false）：动作跟着音量循环 —— 越响行程越大、来回越快。</summary>
+    /// <summary>
+    /// 声音响应的主轴位置上下限：lo/hi 取设置的最低/最高位置（再夹一次防脏数据），center 是上下限中点。
+    /// 返回半幅 halfSpan = (hi-lo)/2 × 舒适档 comfort —— 舒适档只缩小半幅，不会把位置推出 [lo, hi]（平移由调用方做 center+(v-50)）。
+    /// </summary>
+    private double AudioBounds(out double lo, out double hi, out double center, double comfort)
+    {
+        lo = double.IsFinite(_cfg.AudioMinPosition) ? Math.Clamp(_cfg.AudioMinPosition, 0, 100) : 20;
+        hi = double.IsFinite(_cfg.AudioMaxPosition) ? Math.Clamp(_cfg.AudioMaxPosition, 0, 100) : 80;
+        if (lo > hi) (lo, hi) = (hi, lo);
+        if (hi - lo < 5)
+        {
+            double c = (lo + hi) / 2.0;
+            lo = Math.Max(0, c - 2.5);
+            hi = Math.Min(100, c + 2.5);
+            double span = hi - lo;
+            if (span < 5)
+            {
+                double deficit = 5 - span;
+                if (lo <= 0) hi = Math.Min(100, hi + deficit);
+                else lo = Math.Max(0, lo - deficit);
+            }
+        }
+        center = (lo + hi) / 2.0;
+        // 深度（界面「深度」滑条）：50 = 原来的半幅；100 = 两倍，5 = 几乎不动。只在 [lo,hi] 里缩放，不越界。
+        double depthScale = _cfg.AudioDepthEffective / 50.0;
+        return (hi - lo) / 2.0 * Math.Clamp(comfort, 0, 1) * depthScale;
+    }
+
+    /// <summary>把 Render 返回的「50±」六轴平移到以 center 为中心：主轴（索引 0）夹在 [lo,hi]，其余轴夹在 [0,100]。</summary>
+    private static void ShiftToBounds(double[] values, double lo, double hi, double center)
+    {
+        for (int i = 0; i < values.Length; i++)
+        {
+            double shifted = center + (values[i] - 50);
+            values[i] = Math.Clamp(shifted, i == 0 ? lo : 0, i == 0 ? hi : 100);
+        }
+    }
+
+    /// <summary>
+    /// 锁上节拍时返回 BPM（没锁上返回 0）：声音响应的「快慢」优先按拍子走 ——
+    /// 用户的说法是「节奏决定插多快」，所以有 BPM 就不再拿响度去猜快慢。
+    /// </summary>
+    private double TempoBpm()
+    {
+        TempoTracker? tempo = _flux?.Tempo;
+        return tempo is { Locked: true } && tempo.Bpm >= 20 ? tempo.Bpm : 0;
+    }
+
+    /// <summary>
+    /// 音量路径：响度决定「插多深」，节奏（BPM，测不到就退回响度）决定「插多快」。
+    /// 和旧行为的区别：旧的是「越响行程越大（两头一起涨）」，现在是「越响底端越深，退出来的位置基本固定」——
+    /// 听着安静时只在浅处小幅动，声音一大就扎到底。
+    /// </summary>
     private void ApplyVolumeTick(double envelope)
     {
-        // 旧路径的行为一字未改：越响 → 行程越大、来回越快；插值留长一点，动作才顺。
         double comfort = Math.Clamp(_engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0);
-        double range = Math.Clamp(_cfg.AudioMotionRange, 5, 60) * comfort;
-        double amplitude = range * envelope;
-        double strokesPerSecond = 0.45 + 1.75 * envelope;      // 0.45–2.2 次/秒
+        double halfSpan = AudioBounds(out double lo, out double hi, out double center, comfort);
+        double loud = Math.Clamp(envelope, 0, 1);
+        // 底端（插到底的位置）随响度往下推；顶端（退出来的位置）基本不动，只在小幅时抬高一点。
+        double bottom = Math.Clamp(center + halfSpan * (0.25 + 0.75 * loud), center, hi);
+        double top = Math.Clamp(center - halfSpan * (0.55 - 0.25 * loud), lo, center);
+        double mid = (top + bottom) / 2.0;
+        double amplitude = Math.Max(1.0, (bottom - top) / 2.0);
+        double speedScale = _cfg.AudioSpeedEffective;
+        double bpm = TempoBpm();
+        double strokesPerSecond = bpm > 0
+            ? bpm / 60.0 * speedScale                                  // 有拍子就踩拍子
+            : (0.6 + 0.9 * loud) * speedScale;                          // 没拍子：越响越快，但没旧版那么夸张
+        strokesPerSecond = Math.Clamp(strokesPerSecond, 0.2, 4.0);
         _phase += Math.Tau * strokesPerSecond * (ApplyIntervalMs / 1000.0);
         if (_phase > Math.Tau * 1000) _phase -= Math.Tau * 1000;
 
-        double main = 50 + amplitude * Math.Sin(_phase);
+        double main = Math.Clamp(mid + amplitude * Math.Sin(_phase), lo, hi);
         double[] values = [main, 50, 50, 50, 50, 50];
         if (_engine.TrySendDirectAxes(values, ApplyIntervalMs / 1000.0 * 1.6))
         {
@@ -910,19 +1112,26 @@ public sealed class AudioReactiveService : IDisposable
         // ③ 速度 = 她的节奏。VoicePulseRate 是检测器在音频线程上按 100Hz 数出来的
         //    （人声包络每鼓一次算一次起伏）；数不出来就用 0.6 + 1.2 × 强度兜底，再夹进 0.5–2.2。
         double measured = _detector.VoicePulseRate;
-        double target = measured > 0 ? measured : VoiceFallbackBase + VoiceFallbackGain * level;
+        double bpm = TempoBpm();
+        double target = measured > 0
+            ? measured
+            : bpm > 0
+                ? bpm / 60.0                     // 数不出她的起伏时，跟着音乐的拍子抽
+                : VoiceFallbackBase + VoiceFallbackGain * level;
         target = Math.Clamp(target, VoiceMinRate, VoiceMaxRate);
+        target *= _cfg.AudioSpeedEffective;         // 节奏倍率：人声抽插也一起快/慢
         _voiceRate = _voiceRate <= 0 ? target : _voiceRate + (target - _voiceRate) * VoiceRateSmoothing;
 
         _voicePhase += _voiceRate * (ApplyIntervalMs / 1000.0);   // 相位按"次"算：0→1 是一次完整抽插
         if (_voicePhase > 1000) _voicePhase -= 1000;              // 防溢出（同 ApplyVolumeTick 的做法）
         double phase = _voicePhase - Math.Floor(_voicePhase);
 
-        // ④ 深度：行程 × 舒适档 × 强度，形态交给 Voice 语汇（次要轴只做轻微跟随）。
+        // ④ 深度：半幅 × 强度，形态交给 Voice 语汇（次要轴只做轻微跟随）。
         double comfort = Math.Clamp(_engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0);
-        double range = Math.Clamp(_cfg.AudioMotionRange, 5, 60) * comfort;
+        double halfSpan = AudioBounds(out double lo, out double hi, out double center, comfort);
         double strength = Math.Clamp(level, 0, 1);
-        double[] values = MotionVocabulary.Render(MotionEventKind.Voice, strength, phase, range, _engine.MultiAxisMotion);
+        double[] values = MotionVocabulary.Render(MotionEventKind.Voice, strength, phase, halfSpan, _engine.MultiAxisMotion);
+        ShiftToBounds(values, lo, hi, center);
         if (_engine.TrySendDirectAxes(values, ApplyIntervalMs / 1000.0 * 1.6))
         {
             _motionActive = true;

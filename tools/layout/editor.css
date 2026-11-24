@@ -1,0 +1,55 @@
+:root{--bg:#0E1114;--bg2:#12161A;--card:#151A1E;--border:#2A3138;--border2:#3B444D;--tx:#EFF2F5;--mut:#9AA4AE;--faint:#8A95A0;--primary:#17B890;--accent:#5BA7FF;--warn:#F5B842;--danger:#E55353;--surface:#1A2025;--raised:#232A31}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:13px/1.55 'Segoe UI','Microsoft YaHei',sans-serif}
+header{position:sticky;top:0;z-index:20;background:rgba(14,17,20,.97);border-bottom:1px solid var(--border);padding:10px 18px}
+.row1{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.row2{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:8px}
+h1{font-size:16px;margin:0;font-weight:600}
+.meta{color:var(--faint);font-size:12px}
+.spacer{flex:1}
+button{font:inherit;color:var(--tx);background:var(--raised);border:1px solid var(--border2);border-radius:6px;padding:5px 12px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.primary{background:#12483C;border-color:#1E6B58;color:#CFF5E8}
+button.primary:hover{background:#175A4B}
+select{font:inherit;color:var(--tx);background:var(--raised);border:1px solid var(--border2);border-radius:6px;padding:5px 8px}
+.chk{color:var(--mut);font-size:12px;display:flex;align-items:center;gap:5px;cursor:pointer}
+.hint{color:var(--faint);font-size:12px}
+.dirty{color:var(--warn);font-size:12px}
+main{padding:18px;display:flex;justify-content:center}
+#stage{width:100%;max-width:940px;display:flex;flex-direction:column;gap:10px}
+.blk{background:var(--card);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.blk.card{background:var(--card)}
+.blk.fold,.blk.expander,.blk.group{background:#121619}
+.bh{display:flex;align-items:center;gap:8px;padding:9px 12px;cursor:pointer;user-select:none}
+.bh:hover{background:rgba(91,167,255,.06)}
+.grip{color:var(--border2);cursor:grab;font-size:14px;letter-spacing:1px}
+.grip:active{cursor:grabbing}
+.title{font-weight:600;font-size:13.5px}
+.ck{color:var(--mut);font-size:11px;border:1px solid var(--border);border-radius:999px;padding:0 7px}
+.ck.warn{color:var(--warn);border-color:#4A3C18}
+.ck.kind{color:var(--accent);border-color:#243D5B}
+.ln{color:#5f7285;font-size:11px;margin-left:auto;font-variant-numeric:tabular-nums}
+.bb{padding:2px 12px 10px 30px;display:flex;flex-direction:column;gap:5px}
+.blk.closed>.bb{display:none}
+.blocks{display:flex;flex-direction:column;gap:6px}
+.blk.dragging{opacity:.45;outline:2px dashed var(--accent)}
+.rowline{display:flex;align-items:center;gap:8px;min-height:20px}
+.rowline.head{font-weight:600;font-size:13px;margin-top:4px}
+.rowline.text{color:var(--mut);font-size:12px}
+.rowline .lbl{color:var(--mut);font-size:12px;min-width:96px}
+.track{position:relative;height:6px;flex:1;max-width:260px;background:var(--raised);border-radius:3px}
+.track i{position:absolute;left:0;top:0;bottom:0;width:45%;background:var(--accent);border-radius:3px}
+.track b{position:absolute;top:-4px;left:45%;width:14px;height:14px;border-radius:50%;background:var(--tx);border:1px solid var(--border2)}
+.box{width:34px;height:18px;border-radius:4px;border:1px solid var(--border2);background:var(--surface);position:relative}
+.box.on{background:#12483C;border-color:#1E6B58}
+.box.on:after{content:'';position:absolute;right:2px;top:2px;width:12px;height:12px;border-radius:3px;background:var(--primary)}
+.pill{border:1px solid var(--border2);background:var(--raised);border-radius:6px;padding:2px 10px;font-size:12px}
+.combo{border:1px solid var(--border2);background:var(--surface);border-radius:6px;padding:2px 10px;font-size:12px;min-width:120px;color:var(--tx)}
+.dropzone{height:0;border-top:2px dashed var(--accent);margin:-3px 0}
+.toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#12483C;color:#CFF5E8;border:1px solid #1E6B58;border-radius:8px;padding:8px 16px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+.toast.err{background:#3A2222;border-color:#6B2C2C;color:#F7D5D5}
+body.compact .bb{padding:0 8px 6px 24px;gap:2px}
+body.compact .bh{padding:5px 10px}
+body.compact .rowline{min-height:16px}
+@media (max-width:720px){main{padding:10px}#stage{max-width:none}.bb{padding-left:16px}.ln{display:none}.rowline .lbl{min-width:74px}}

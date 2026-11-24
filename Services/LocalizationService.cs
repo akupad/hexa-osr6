@@ -30,10 +30,15 @@ public static class LocalizationService
         set => _uiLanguage = value == English ? English : Chinese;
     }
 
-    /// <summary>查表翻译：查不到原样返回中文（绝不半截替换）。</summary>
+    /// <summary>
+    /// 查表翻译：查不到原样返回中文（绝不半截替换）。
+    /// 中文界面下直接返回原文 —— 这里是"动态文字"的唯一出口（侧栏状态、急停提示、弹窗按钮…），
+    /// 以前不看 <see cref="UiLanguage"/> 就查表，结果中文界面里这些句子一直是英文（2026-11-24 用户报「为什么是英文」）。
+    /// </summary>
     public static string T(string zh)
     {
         if (zh is null) return "";
+        if (_uiLanguage != English) return zh;
         if (LocalizationTable.Map.TryGetValue(zh, out string? english) && english is not null) return english;
         return zh;
     }

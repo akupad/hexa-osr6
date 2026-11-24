@@ -119,9 +119,6 @@ public sealed class LovenseBridgeService : IDisposable
         set => _rotateDeepPercent = Math.Clamp(value, 0, 100);
     }
 
-    /// <summary>true 时游戏一有动作就把档位顶成「不限速」（只守轴限位），游戏停了再摘掉。</summary>
-    public bool Unlimited { get; set; } = true;
-
     /// <summary>true 时只监听 127.0.0.1；false 沿用现状 0.0.0.0（手机 / VR 能连）。</summary>
     public bool LocalOnly { get; set; }
 
@@ -435,8 +432,8 @@ public sealed class LovenseBridgeService : IDisposable
             }
 
             // 用户定的规矩：玩游戏时唯一的限制是设置页的轴限位，所以收到动作就把档位换成「不限速」，
-            // 游戏一停（Stop / 超时收尾）再摘下来，不影响脚本、声音那些路径。
-            if (Unlimited) _engine.ComfortOverride = Hexa.Models.ComfortProfile.Game;
+            // 游戏一停（Stop / 超时收尾）再摘下来，不影响脚本、声音那些路径。这个不再做开关。
+            _engine.ComfortOverride = Hexa.Models.ComfortProfile.Game;
             // 游戏基本是一抽发一条指令，间隔就是这个动作的真实周期；断流、卡顿时退回强度算出来的频率。
             DateTime arrival = DateTime.UtcNow;
             if (_lastArrivalUtc != DateTime.MinValue)

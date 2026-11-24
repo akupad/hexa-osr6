@@ -120,7 +120,7 @@ public class AppSettings
     public double AudioSensitivity     { get; set; } = 1.0;   // 0–2.0（对应 0–200%）
     public bool   AudioLowPassEnabled  { get; set; } = false;
     public string AudioDeviceId        { get; set; } = "";
-    public string AudioResponseMode    { get; set; } = "energy";   // energy/bass/beat=音乐律动；voice=角色声音（呻吟=抽插）
+    public string AudioResponseMode    { get; set; } = "energy";   // energy/bass/beat=音乐律动；voice=角色声音（呻吟=抽插）；auto=自动判断
     public double AudioNoiseGate       { get; set; } = 0.08;
 
     // ── 沉浸感（事件化动作 / 多轴语汇 / 延迟对齐）────────────────────
@@ -160,10 +160,17 @@ public class AppSettings
     /// <summary>氛围叠加幅度（轴行程百分比，5–30，默认 12）：越大越明显，也会越「抢戏」。</summary>
     public double AmbientOverlayAmount { get; set; } = 12;
 
-    /// 声音响应时主轴（L0）的半幅行程，单位是轴行程的百分比（5–60，默认 30）。
-    /// 意思是「声音最大时，设备在 50±这个值 之间来回」——越大动得越深。
+    /// <summary>
+    /// 已被「最低/最高位置」（AudioMinPosition / AudioMaxPosition）取代 —— 服务层不再读它。
+    /// 保留这个值只为兼容旧配置文件，别在别处引用。
     /// </summary>
     public double AudioMotionRange     { get; set; } = 30;
+
+    /// <summary>声音响应时主轴（L0）允许到达的最低位置（0–100，默认 20）。声音再大也不会低于这条线。</summary>
+    public double AudioMinPosition     { get; set; } = 20;
+
+    /// <summary>声音响应时主轴（L0）允许到达的最高位置（0–100，默认 80）。声音再大也不会高于这条线。</summary>
+    public double AudioMaxPosition     { get; set; } = 80;
 
     // ── 脚本播放增强（只影响播放时的动作，不改脚本文件本身）────────────
     /// <summary>
@@ -228,9 +235,114 @@ public class AppSettings
     public string ScreenWatchTarget { get; set; } = "";
 
     /// <summary>
+    /// 只在绑定的程序处于前台时才驱动设备（默认关）。
+    /// 关着时：只要窗口本身能抓到真实画面（PrintWindow 那条路对后台窗口也有效），
+    /// 切到别的窗口——包括点开 Hexa 自己、看一眼信号面板——都不会让画面同步停下。
+    /// 开着时退回旧语义：离开前台就停、切回来再自己接上。
+    /// 用屏幕抓取兜底（窗口被 D3D 挡住、PrintWindow 拿不到）的时候始终要求前台，因为被挡住的画面抓不到。
+    /// </summary>
+    public bool ScreenFollowOnlyWhenForeground { get; set; } = false;
+
+    /// <summary>
     /// 画面判定的灵敏度（0.2–3.0，默认 1.0）：越大判定线越低、越容易判成「疑似情色场景」。
     /// </summary>
     public double ScreenWatchSensitivity { get; set; } = 1.0;
+
+    // ── 「跟着画面动」的入场门槛（测试台那几条信号条上拖动就是在改这几个值）────
+    // 全部 0 = 不额外筛（只按场景判定线走）。为什么要有：光看判定线，画面里角色站着没动、
+    // 背景有点动就会反复「开始要动 → 没事发生」，设备每两三秒抽一下（2026-11-23 用户实测）。
+    /// <summary>场景强度（模型分+特征分融合）低于这个就不算在动。</summary>
+    public double ScreenSyncMinSceneScore { get; set; } = 0;
+
+    /// <summary>识别模型分低于这个就不算在动。</summary>
+    public double ScreenSyncMinModelScore { get; set; } = 0;
+
+    /// <summary>运动量低于这个就不算在动（默认 0.05：几乎静止的画面挡掉）。</summary>
+    public double ScreenSyncMinMotion { get; set; } = 0.05;
+
+    /// <summary>节奏性低于这个就不算在动。</summary>
+    public double ScreenSyncMinRhythm { get; set; } = 0;
+
+    /// <summary>
+    /// 姿态信号要「真的在动」才算数（深度单位/秒，默认 4）。
+    /// 站着不动的角色，姿态关键点自己也会抖，抖出来的速度能有 1–3 /秒 —— 原来只看「信号有没有」
+    /// 就当成在动，于是人没动作设备也在跟。低于这个值就当姿态这一拍没在动、退回看画面。
+    /// </summary>
+    public double ScreenSyncPoseMinSpeed { get; set; } = 4;
+
+    /// <summary>入场确认拍数（每拍约 100ms，默认 5 = 0.5 秒）：连续这么多拍都过线才开始跟。</summary>
+    public int ScreenSyncEnterFrames { get; set; } = 5;
+
+    /// <summary>退出确认拍数（每拍约 100ms，默认 12 = 1.2 秒）：连续这么多拍都不过线才缓降收手。</summary>
+    public int ScreenSyncExitFrames { get; set; } = 12;
+
+    /// <summary>
+    /// 画面同步活动范围的下限（0–100，设备 L0 的百分比位置）。
+    /// 用户原话「画面同步的活动范围也要可设置且要实时同步带设备上方便设置」：
+    /// 跟画面时 L0 只在 [下限, 上限] 里走，和他给声音设最低/最高位置是同一个意思。
+    /// </summary>
+    public int ScreenSyncMinPosition { get; set; } = 0;
+
+    /// <summary>画面同步活动范围的上限（0–100）。</summary>
+    public int ScreenSyncMaxPosition { get; set; } = 100;
+
+    /// <summary>
+    /// 画面同步「深度」：0–100，50 = 原来那套幅度基准（<see cref="ScreenWatchService"/> 里的 FollowAmplitudeBase）。
+    /// 用户原话「可以根据声音和画面控制深度和节奏」：这个数只缩放任器行程，不改变活动范围的上下限。
+    /// </summary>
+    public double ScreenSyncDepth { get; set; } = 50;
+
+    /// <summary>画面同步「节奏」倍率：0.3–3.0，1 = 原速。缩放的是画面测出来的频率（次/秒），不影响幅度。</summary>
+    public double ScreenSyncSpeed { get; set; } = 1.0;
+    /// <summary>「自定义深度 / 节奏」：不勾（默认）= 由画面自己决定走多远、来回多快；勾上才用下面两条滑条。</summary>
+    public bool ScreenSyncCustom { get; set; }
+
+    /// <summary>画面同步实际生效的深度（未开自定义固定 50 = 自动基准）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public double ScreenDepthEffective => ScreenSyncCustom ? Math.Clamp(ScreenSyncDepth, 5, 100) : 50;
+
+    /// <summary>画面同步实际生效的节奏倍率（未开自定义固定 1.0 = 跟原速）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public double ScreenSpeedEffective => ScreenSyncCustom ? Math.Clamp(ScreenSyncSpeed, 0.3, 3.0) : 1.0;
+
+    /// <summary>
+    /// 画面同步「位置镜像」：人往下沉多少，设备就推到多深 —— 而不是「深度 × 正弦」那种来回抽。
+    /// 打开后姿态信号有效时直接按竖直位置映射 L0，人不动设备就停在那个位置（真同步）。
+    /// 关掉退回旧行为（按深度给振幅、自己按节奏来回走）。
+    /// </summary>
+    public bool ScreenSyncMirrorPose { get; set; } = true;
+
+    /// <summary>
+    /// 画面同步 + 声音响应同开时「配合」：画面给位置/深浅，声音给节奏（有 BPM 就按 BPM 走，
+    /// 没锁上 BPM 就按响度/拍点把每一下加重）。关掉 = 两路各干各的（画面拿设备时声音让位）。
+    /// </summary>
+    public bool ScreenSyncAudioRhythm { get; set; } = true;
+
+
+    /// <summary>声音响应「深度」：0–100，50 = 原来那套（半幅 × 舒适档 × 响度）。只缩放幅度，不动最低/最高位置。</summary>
+    public double AudioDepth { get; set; } = 50;
+
+    /// <summary>声音响应「节奏」倍率：0.3–3.0，1 = 原速。缩放来回次数/人声抽插速率。</summary>
+    public double AudioSpeed { get; set; } = 1.0;
+    /// <summary>「自定义深度 / 节奏」：不勾（默认）= 由声音自己决定走多远、来回多快；勾上才用下面两条滑条。</summary>
+    public bool AudioCustom { get; set; }
+
+    /// <summary>声音响应实际生效的深度（未开自定义固定 50 = 自动基准）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public double AudioDepthEffective => AudioCustom ? Math.Clamp(AudioDepth, 5, 100) : 50;
+
+    /// <summary>声音响应实际生效的节奏倍率（未开自定义固定 1.0 = 跟原速）。</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public double AudioSpeedEffective => AudioCustom ? Math.Clamp(AudioSpeed, 0.3, 3.0) : 1.0;
+
+    /// <summary>
+    /// 手动框选的分析区域：界面在预览图上拖出来的框，归一化的 "x,y,w,h"（0–1，相对整幅画面）。
+    /// 空 = 没框过。钩上之后优先级高于 YOLO 框 —— 用户亲手指的这块比模型猜的准。
+    /// </summary>
+    public string ScreenManualRoi { get; set; } = "";
+
+    /// <summary>是否用 <see cref="ScreenManualRoi"/> 这块代替 YOLO 框（拖过一次框就自动打开）。</summary>
+    public bool ScreenUseManualRoi { get; set; }
 
     /// <summary>
     /// 本地识别模型多久跑一次（毫秒，150–2000，默认 300）。
@@ -265,13 +377,6 @@ public class AppSettings
     /// <summary>游戏桥的联动幅度（轴行程百分比，5–60，默认 25）。</summary>
     public double BridgeAxisLinkAmount { get; set; } = 25;
 
-    /// <summary>
-    /// 游戏桥是否也遵守「舒适档」的速度上限。
-    /// 默认开：桥原来只有"插值不小于 60ms"这道阀（≈1667/秒），比沉浸档的 360/秒 快四倍多，
-    /// 游戏一条指令就能把设备抽到撞限位。关掉等于回到旧行为。
-    /// </summary>
-    public bool BridgeUseComfortLimits { get; set; } = true;
-
     // 简洁的游戏伴随预设；底层规则仍由 RuleEngine 使用固定的 gallery/reaction 两层执行。
     public string CompanionProcess     { get; set; } = "";
     /// <summary>
@@ -287,6 +392,35 @@ public class AppSettings
     /// 界面改动会同时写本字段与 <see cref="CompanionIntensity"/>，所以迁移不会反过来覆盖用户的新选择。
     /// </summary>
     public double CompanionBaseIntensity { get; set; } = 1.0;
+    /// <summary>
+    /// 伴随动作池（动作页动作 id 列表，不带 stroke: 前缀）：伴随没信号时在这一组里按顺序轮播。
+    /// 空 = 用老的「底色动作」单条（<see cref="CompanionBaseMode"/>），老配置行为不变。
+    /// </summary>
+    public List<string> CompanionPool { get; set; } = new();
+    /// <summary>动作池整体强度（0.5–1.6，默认 1.0）：只作用在池子里抽到的动作上。</summary>
+    public double CompanionPoolIntensity { get; set; } = 1.0;
+
+    /// <summary>
+    /// 播放方式：fixed（默认，钉住用户选的这一个动作）/ pool（只在他自己勾的池子里首尾循环，不加权）。
+    /// 老配置没有这个字段 → 默认 fixed；CompanionBaseMode 里存的动作继续当「选中的那个」。
+    /// </summary>
+    public string CompanionPlayMode { get; set; } = "fixed";
+
+    /// <summary>固定播放时选中的动作 id（空 = 用 CompanionBaseMode / 池子第一条兜底）。</summary>
+    public string CompanionSelectedAction { get; set; } = "";
+
+    /// <summary>底色节奏档：slow / medium（默认）/ fast。只缩放速度，不碰强度。</summary>
+    public string CompanionPace { get; set; } = "medium";
+
+    /// <summary>稳定（默认）/ 自然起伏 —— 起伏只作用在底色，且只改深度，不改用户设的强度上限。</summary>
+    public string CompanionVariation { get; set; } = "stable";
+
+    /// <summary>可选「挣扎连点」（默认关）：只有绑定的游戏在前台、真的快速连按时才加速加深当前动作。</summary>
+    public bool CompanionStruggleEnabled { get; set; }
+    /// <summary>挣扎灵敏度：low / standard / high（每个游戏可在 GameProfile 里单独覆盖）。</summary>
+    public string CompanionStruggleSensitivity { get; set; } = "standard";
+    /// <summary>挣扎反馈强度倍数（独立于灵敏度；0 = 只加节奏不加深）。</summary>
+    public double CompanionStruggleFeedback { get; set; } = 1.0;
     public string CompanionReaction    { get; set; } = "sound";
     public string CompanionSensitivity { get; set; } = "standard";
     public int GameTelemetryPort       { get; set; } = GameTelemetryService.DefaultPort;
@@ -454,8 +588,6 @@ public class AppSettings
     public int    LovenseStrokeTopPercent { get; set; } = Services.LovenseProtocol.DefaultStrokeTopPercent;
     /// <summary>行程条右边的圆点＝「最深」：插到这儿就不再往下。</summary>
     public int    LovenseStrokeDeepPercent { get; set; } = Services.LovenseProtocol.DefaultStrokeDeepPercent;
-    /// <summary>跟游戏时不按档位削速度（只守设置页的轴限位与急停）。默认开。</summary>
-    public bool   LovenseUnlimited { get; set; } = true;
     /// <summary>扭转条的两个端点（% 行程）：R0 只在这段里来回。</summary>
     public int    LovenseRotateTopPercent  { get; set; } = Services.LovenseProtocol.DefaultRotateTopPercent;
     public int    LovenseRotateDeepPercent { get; set; } = Services.LovenseProtocol.DefaultRotateDeepPercent;
@@ -523,6 +655,47 @@ public class AppSettings
     /// </summary>
     public static string DataDirectory =>
         Path.GetDirectoryName(CfgPath) ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+    /// <summary>最近一次写盘的时刻（UTC）。热加载靠它避开「自己刚写出来」的那次文件变动。</summary>
+    public static DateTime LastSaveUtc { get; private set; } = DateTime.MinValue;
+
+    /// <summary>设置文件路径（只读，给热加载/诊断用）。</summary>
+    public static string SettingsFilePath => CfgPath;
+
+    /// <summary>
+    /// 热加载：把磁盘上的设置读回来覆盖「正在用的那个实例」。
+    /// 不能直接换对象 —— 各服务（引擎/画面同步/桥）都缓存着 App.Settings 的引用，换对象等于它们还看旧值。
+    /// 所以逐属性拷贝，只拷公开可读写属性；私有 setter、只读计算属性、静态属性一律不动。
+    /// </summary>
+    public static bool ReloadInto(AppSettings target)
+    {
+        try
+        {
+            if (!File.Exists(CfgPath)) return false;
+            var fresh = Load();
+            if (fresh is null) return false;
+            int copied = 0;
+            foreach (var prop in typeof(AppSettings).GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+            {
+                if (prop.GetIndexParameters().Length > 0) continue;
+                if (prop.SetMethod is not { IsPublic: true } || prop.GetMethod is not { IsPublic: true }) continue;
+                try
+                {
+                    prop.SetValue(target, prop.GetValue(fresh));
+                    copied++;
+                }
+                catch { /* 个别属性拷不过去不影响整体，跳过 */ }
+            }
+            target.Normalize();
+            AppLogger.Info($"设置已热加载（{copied} 项）：{CfgPath}");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Error("设置热加载失败（继续用内存里原来的值）", ex);
+            return false;
+        }
+    }
 
     /// <summary>
     /// 旧版本用过的数据目录名（软件先后叫过 Helix、Spindle）。
@@ -688,6 +861,39 @@ public class AppSettings
         ScreenWatchSensitivity = double.IsFinite(ScreenWatchSensitivity)
             ? Math.Clamp(ScreenWatchSensitivity, ScreenWatchService.SensitivityMin, ScreenWatchService.SensitivityMax)
             : 1.0;
+        // 跟随门槛：四个 0–1 的比例值 + 姿态死区 + 进出确认拍数。坏值一律回默认（别让 NaN 卡死判定）。
+        ScreenSyncMinSceneScore = double.IsFinite(ScreenSyncMinSceneScore) ? Math.Clamp(ScreenSyncMinSceneScore, 0, 0.95) : 0;
+        ScreenSyncMinModelScore = double.IsFinite(ScreenSyncMinModelScore) ? Math.Clamp(ScreenSyncMinModelScore, 0, 0.95) : 0;
+        ScreenSyncMinMotion = double.IsFinite(ScreenSyncMinMotion) ? Math.Clamp(ScreenSyncMinMotion, 0, 0.95) : 0.05;
+        ScreenSyncMinRhythm = double.IsFinite(ScreenSyncMinRhythm) ? Math.Clamp(ScreenSyncMinRhythm, 0, 0.95) : 0;
+        ScreenSyncPoseMinSpeed = double.IsFinite(ScreenSyncPoseMinSpeed) ? Math.Clamp(ScreenSyncPoseMinSpeed, 0, 60) : 4;
+        ScreenSyncEnterFrames = Math.Clamp(ScreenSyncEnterFrames, 1, 60);
+        ScreenSyncExitFrames = Math.Clamp(ScreenSyncExitFrames, 1, 120);
+        // 手动框：写坏了（NaN / 越界 / 太窄）就当没框过，别让一个坏字符串把预览框画到屏幕外。
+        ScreenManualRoi = NormalizeManualRoi(ScreenManualRoi);
+        if (ScreenManualRoi.Length == 0) ScreenUseManualRoi = false;
+
+        // 画面同步的活动范围：两端各夹 0–100，反了就换回来，太窄（<5）按中心各让 2 点，
+        // 免得用户把两条拖到一起后设备只会原地抖。
+        ScreenSyncMinPosition = Math.Clamp(ScreenSyncMinPosition, 0, 100);
+        ScreenSyncMaxPosition = Math.Clamp(ScreenSyncMaxPosition, 0, 100);
+        if (ScreenSyncMinPosition > ScreenSyncMaxPosition)
+            (ScreenSyncMinPosition, ScreenSyncMaxPosition) = (ScreenSyncMaxPosition, ScreenSyncMinPosition);
+        if (ScreenSyncMaxPosition - ScreenSyncMinPosition < 5)
+        {
+            int mid = (ScreenSyncMinPosition + ScreenSyncMaxPosition) / 2;
+            ScreenSyncMinPosition = Math.Max(0, mid - 2);
+            ScreenSyncMaxPosition = Math.Min(100, ScreenSyncMinPosition + 5);
+            ScreenSyncMinPosition = Math.Max(0, ScreenSyncMaxPosition - 5);
+        }
+        // 深度 / 节奏：深度按 5–100%（低于 5 等于不动，没意义），节奏倍率 0.3–3.0。
+        ScreenSyncDepth = double.IsFinite(ScreenSyncDepth) ? Math.Clamp(ScreenSyncDepth, 5, 100) : 50;
+        ScreenSyncSpeed = double.IsFinite(ScreenSyncSpeed) ? Math.Clamp(ScreenSyncSpeed, 0.3, 3.0) : 1.0;
+        AudioDepth = double.IsFinite(AudioDepth) ? Math.Clamp(AudioDepth, 5, 100) : 50;
+        AudioSpeed = double.IsFinite(AudioSpeed) ? Math.Clamp(AudioSpeed, 0.3, 3.0) : 1.0;
+        // 普通按键脉冲已摘掉：老配置里哪怕存着 true 也不再让它加深动作（字段保留只为兼容旧文件）。
+        // 想靠输入带节奏，用「挣扎连点」那条独立通道。
+        ActionLinkEnabled = false;
         // 识别模型的跑动间隔：夹在服务认可的区间里，坏值回落默认值。
         ScreenWatchModelEveryMs = ScreenWatchModelEveryMs is >= ScreenWatchService.ModelIntervalMinMs
             and <= ScreenWatchService.ModelIntervalMaxMs
@@ -711,10 +917,29 @@ public class AppSettings
             AudioSensitivity = 1.0;
         AudioSensitivity = Math.Clamp(AudioSensitivity, 0, 2);
         AudioResponseMode = AudioResponseMode.Trim().ToLowerInvariant();
-        // energy/bass/beat = 音乐律动的三种跟法；voice = 角色声音（呻吟 = 一次抽插）。
-        if (AudioResponseMode is not ("energy" or "bass" or "beat" or "voice")) AudioResponseMode = "energy";
+        // energy/bass/beat = 音乐律动的三种跟法；voice = 角色声音（呻吟 = 一次抽插）；
+        // auto = 自动判断场景（听出呻吟就抽插、听出音乐就跟鼓点、听出碰撞就一下一下地顶）。
+        if (AudioResponseMode is not ("energy" or "bass" or "beat" or "voice" or "auto")) AudioResponseMode = "energy";
         AudioNoiseGate = double.IsFinite(AudioNoiseGate) ? Math.Clamp(AudioNoiseGate, 0, 0.5) : 0.08;
-        AudioMotionRange = double.IsFinite(AudioMotionRange) ? Math.Clamp(AudioMotionRange, 5, 60) : 30;
+        AudioMotionRange = double.IsFinite(AudioMotionRange) ? Math.Clamp(AudioMotionRange, 1, 100) : 30;
+        // 声音响应现在用「最低/最高位置」限定主轴行程：先各自夹到 0–100，min>max 交换，
+        // 再保证 max-min>=5（不够就把两端按中心往外扩，扩到 0/100 为止）。
+        AudioMinPosition = double.IsFinite(AudioMinPosition) ? Math.Clamp(AudioMinPosition, 0, 100) : 20;
+        AudioMaxPosition = double.IsFinite(AudioMaxPosition) ? Math.Clamp(AudioMaxPosition, 0, 100) : 80;
+        if (AudioMinPosition > AudioMaxPosition) (AudioMinPosition, AudioMaxPosition) = (AudioMaxPosition, AudioMinPosition);
+        if (AudioMaxPosition - AudioMinPosition < 5)
+        {
+            double center = (AudioMinPosition + AudioMaxPosition) / 2.0;
+            AudioMinPosition = Math.Max(0, center - 2.5);
+            AudioMaxPosition = Math.Min(100, center + 2.5);
+            double span = AudioMaxPosition - AudioMinPosition;
+            if (span < 5)
+            {
+                double deficit = 5 - span;
+                if (AudioMinPosition <= 0) AudioMaxPosition = Math.Min(100, AudioMaxPosition + deficit);
+                else AudioMinPosition = Math.Max(0, AudioMinPosition - deficit);
+            }
+        }
         MotionCalibrationMs = Math.Clamp(MotionCalibrationMs, -200, 200);
         // 脚本播放增强：幅度与最短空档都夹在界面滑杆的范围内，坏值一律回默认（别把设备推到极端行程）。
         ScriptAxisLinkAmount = double.IsFinite(ScriptAxisLinkAmount)
@@ -758,6 +983,22 @@ public class AppSettings
             profile.Process = key.Trim();
             profile.Intensity = double.IsFinite(profile.Intensity) ? Math.Clamp(profile.Intensity, 0.1, 2.0) : 1.0;
             if (string.IsNullOrWhiteSpace(profile.Mode)) profile.Mode = "organic_flow";
+            string pace = (profile.Pace ?? "").Trim().ToLowerInvariant();
+            profile.Pace = pace is "slow" or "medium" or "fast" ? pace : "";
+            string playMode = (profile.PlayMode ?? "").Trim().ToLowerInvariant();
+            profile.PlayMode = playMode is "fixed" or "pool" ? playMode : "";
+            string variation = (profile.Variation ?? "").Trim().ToLowerInvariant();
+            profile.Variation = variation is "stable" or "natural" ? variation : "";
+            profile.Pool = (profile.Pool ?? new List<string>())
+                .Select(id => (id ?? "").Trim().ToLowerInvariant())
+                .Where(id => id.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase).Take(200).ToList();
+            // 空 / null = 跟全局（老配置本来就没有这几个字段，别把它们洗成「关」）。
+            if (!string.IsNullOrWhiteSpace(profile.StruggleSensitivity))
+                profile.StruggleSensitivity = Services.CompanionPlayPolicy.NormalizeSensitivity(profile.StruggleSensitivity);
+            else profile.StruggleSensitivity = "";
+            if (profile.StruggleFeedback is { } fb && double.IsFinite(fb))
+                profile.StruggleFeedback = Math.Clamp(fb, 0, 1.5);
+            else profile.StruggleFeedback = null;
         }
 
         // ── 媒体同步 / 画面同步 / AI / 日志（2026-09 新增，全部要清洗）──────────
@@ -825,6 +1066,34 @@ public class AppSettings
         CompanionBaseIntensity = double.IsFinite(CompanionBaseIntensity)
             ? Math.Clamp(CompanionBaseIntensity, 0.1, 2.0)
             : 1.0;
+        // 伴随动作池：去空白、转小写、去重、限长。Id 是否存在不在这里校验 ——
+        // 动作库是用户随时可增删的，删掉的动作在取样时自然被过滤掉（见 AutoBehaviorSequencer.PickNext）。
+        CompanionPool = (CompanionPool ?? new List<string>())
+            .Select(id => (id ?? "").Trim().ToLowerInvariant())
+            .Where(id => id.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(200)
+            .ToList();
+        CompanionPoolIntensity = double.IsFinite(CompanionPoolIntensity)
+            ? Math.Clamp(CompanionPoolIntensity, 0.5, 1.6)
+            : 1.0;
+        // 播放方式 / 节奏档 / 起伏：老配置缺字段（空）一律回默认；固定模式选中的动作也清洗成小写 id。
+        CompanionPlayMode = Services.CompanionPlayPolicy.NormalizePlayMode(CompanionPlayMode);
+        CompanionPace = Services.CompanionPlayPolicy.NormalizePace(CompanionPace);
+        CompanionVariation = Services.CompanionPlayPolicy.NormalizeVariation(CompanionVariation);
+        CompanionStruggleSensitivity = Services.CompanionPlayPolicy.NormalizeSensitivity(CompanionStruggleSensitivity);
+        CompanionStruggleFeedback = double.IsFinite(CompanionStruggleFeedback)
+            ? Math.Clamp(CompanionStruggleFeedback, 0, 1.5)
+            : 1.0;
+        CompanionSelectedAction = (CompanionSelectedAction ?? "").Trim().ToLowerInvariant();
+        if (CompanionSelectedAction.Length == 0
+            && CompanionPlayMode == Services.CompanionPlayPolicy.Fixed
+            && string.Equals(CompanionBaseMode, "free_play", StringComparison.OrdinalIgnoreCase))
+        {
+            // 老配置默认就是 free_play（随机换动作）。需求要「默认钉住用户选的那个」，
+            // 所以这里迁移成一个确定的动作：池子第一条，没有池子就用 organic_flow。
+            CompanionSelectedAction = CompanionPool.Count > 0 ? CompanionPool[0] : "organic_flow";
+        }
 
         // ── 游戏桥 ───────────────────────────────────────────────
         GameBridgePort = GameBridgePort is >= 1024 and <= 65535 ? GameBridgePort : 12345;
@@ -957,6 +1226,30 @@ public class AppSettings
     /// 所以这里只校验前缀形状；某个 id 指向的动作真的不存在时，取样阶段自然抽不到，无害。
     /// 返回空列表 = 只用内置波形。
     /// </summary>
+    /// <summary>
+    /// 手动框选字符串的校验：解析 4 个数 → 夹在 0–1 → 太窄（不足 5% 宽/高）当没框过。
+    /// 返回规范化后的 "x,y,w,h"（InvariantCulture），解析不了返回空串。
+    /// </summary>
+    private static string NormalizeManualRoi(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "";
+        string[] parts = text.Split(',');
+        if (parts.Length != 4) return "";
+        var v = new double[4];
+        for (int i = 0; i < 4; i++)
+        {
+            if (!double.TryParse(parts[i].Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out v[i]) || !double.IsFinite(v[i]))
+                return "";
+        }
+        double x = Math.Clamp(v[0], 0, 1);
+        double y = Math.Clamp(v[1], 0, 1);
+        double w = Math.Clamp(v[2], 0, 1 - x);
+        double h = Math.Clamp(v[3], 0, 1 - y);
+        if (w < 0.05 || h < 0.05) return "";
+        return FormattableString.Invariant($"{x:0.000},{y:0.000},{w:0.000},{h:0.000}");
+    }
+
     private static List<string> NormalizeEnabledPatterns(IEnumerable<string>? ids)
     {
         var result = new List<string>();
@@ -1009,6 +1302,8 @@ public class AppSettings
         });
                 File.WriteAllText(tempPath, json);
                 File.Move(tempPath, CfgPath, overwrite: true);
+                // 记下写盘时刻：热加载的监听见自己的写入要跳过，否则「界面改设置 → 触发重读 → 把界面刚改的值冲回去」
+                LastSaveUtc = DateTime.UtcNow;
                 return true;
             }
             catch (Exception ex)

@@ -4,14 +4,12 @@ using Hexa.Models;
 namespace Hexa.Services;
 
 /// <summary>
-/// 动作键联动 — 后台线程轮询 GetAsyncKeyState 检测 W/A/S/D、方向键、空格等高频动作键，
-/// 按下瞬间（边沿触发）对 MotionEngine 施加一次轻量强度脉冲。仅当 ActionLinkEnabled
-/// 且设备可动时生效，不干扰急停/归中。
+/// 动作键轮询 — 后台线程用 GetAsyncKeyState 的低位（"自上次调用以来按下过"）抓真实按下边沿。
 ///
-/// 规则引擎接管<b>不</b>是拒绝条件：游戏伴随接管时用户的按键恰恰是它该跟着反应的东西之一
-/// （伴随是背景层，见 MotionEngine.EffectiveIntensity 的说明）。真正该拒绝的只有
-/// 「被遥测 / 用户自定义规则独占」这一种，那个判断由引擎侧的 TriggerActionPulse 自己把关 ——
-/// 放在这里等于把伴随一起挡掉了，TestLab 上「操作带动机器」就变成一个开了没反应的死开关。
+/// 普通按键的「轻量强度脉冲」已经摘掉了（需求 ⑤）：按键不再直接改强度，而是喂给
+/// <see cref="StruggleAccelerator"/>。它只在「绑定的游戏处于前台」时统计快速连点（按下-松开才算一个新点，
+/// 同键/不同键都算），系统长按重复（还按着）、全局热键（注入/非前台）、切窗打字都不计；
+/// 不读取、不保存任何字符。默认关闭，按游戏可调灵敏度与反馈强度。
 /// </summary>
 public sealed class GameKeyPoller : IDisposable
 {
@@ -27,6 +25,7 @@ public sealed class GameKeyPoller : IDisposable
     private readonly MotionEngine _engine;
     private readonly AppSettings _cfg;
     private readonly bool[] _prevDown = new bool[TrackingKeys.Length];
+    private (bool Enabled, string Sensitivity, double Feedback, string Process) _struggleConfig;
     private readonly object _lock = new();
     private CancellationTokenSource? _cts;
     private Thread? _thread;
@@ -72,24 +71,63 @@ public sealed class GameKeyPoller : IDisposable
         {
             try
             {
-                bool action = false;
-                for (int i = 0; i < TrackingKeys.Length; i++)
+                string process = (_cfg.CompanionProcess ?? "").Trim();
+                string foreground = ForegroundProcess.GetName();
+                bool inBoundGame = process.Length > 0
+                    && string.Equals(process, foreground, StringComparison.OrdinalIgnoreCase);
+                SyncStruggleConfig(process);
+
+                double now = Environment.TickCount64 / 1000.0;
+                List<int>? held = null;
+                // 挣扎没开就不用 15ms 抖动：降频到 40ms，但前台判定照跑（切进切出立刻生效）。
+                // 同时照旧同步「此刻按着哪些键」，避免刚打开挣扎时把已经按住的键当成新点。
+                if (!_struggleConfig.Enabled)
                 {
-                    bool down = (GetAsyncKeyState(TrackingKeys[i]) & 0x8000) != 0;
-                    if (down && !_prevDown[i]) action = true;   // 边沿触发，避免按住的持续增强
-                    _prevDown[i] = down;
+                    List<int>? stillDown = null;
+                    for (int i = 0; i < TrackingKeys.Length; i++)
+                    {
+                        bool down = (GetAsyncKeyState(TrackingKeys[i]) & 0x8000) != 0;
+                        _prevDown[i] = down;
+                        if (down) (stillDown ??= new List<int>(TrackingKeys.Length)).Add(TrackingKeys[i]);
+                    }
+                    _engine.SetStruggleForeground(inBoundGame, stillDown);
+                    Thread.Sleep(40);
+                    continue;
                 }
 
-                // 是否放行交给引擎判断（见类注释）：这里只看「按键边沿 + 开关 + 设备可动」。
-                if (action && _cfg.ActionLinkEnabled && _engine.CanRun)
-                    _engine.TriggerActionPulse();
+                for (int i = 0; i < TrackingKeys.Length; i++)
+                {
+                    short state = GetAsyncKeyState(TrackingKeys[i]);
+                    bool down = (state & 0x8000) != 0;
+                    // 低位 = 自上次调用以来按下过：60ms 轮询也能抓到一瞬即放的快速点按。
+                    bool pressed = (state & 0x0001) != 0 || (down && !_prevDown[i]);
+                    _prevDown[i] = down;
+                    if (down) (held ??= new List<int>(TrackingKeys.Length)).Add(TrackingKeys[i]);
+                    if (pressed) _engine.FeedStruggleKey(TrackingKeys[i], true, now, inBoundGame, injected: false);
+                    else if (!down) _engine.FeedStruggleKey(TrackingKeys[i], false, now, inBoundGame, injected: false);
+                }
+                // 切回绑定游戏时，此刻还按着的键不算新点（要松开再按才算）。
+                _engine.SetStruggleForeground(inBoundGame, held);
             }
             catch
             {
                 // 轮询容错：单个周期失败不中断
             }
-            Thread.Sleep(60);
+            Thread.Sleep(15);
         }
+    }
+
+    /// <summary>按「当前游戏」刷新挣扎参数：GameProfile 覆盖全局，切换游戏时立即生效。</summary>
+    private void SyncStruggleConfig(string process)
+    {
+        GameProfile? profile = null;
+        if (process.Length > 0) _cfg.GameProfiles.TryGetValue(process, out profile);
+        var (enabled, sensitivity, feedback) = CompanionPlayPolicy.ResolveGameStruggle(
+            profile, _cfg.CompanionStruggleEnabled, _cfg.CompanionStruggleSensitivity, _cfg.CompanionStruggleFeedback);
+        var next = (enabled, sensitivity, feedback, process);
+        if (next == _struggleConfig) return;
+        _struggleConfig = next;
+        _engine.ConfigureStruggle(enabled, sensitivity, feedback);
     }
 
     public void Dispose()

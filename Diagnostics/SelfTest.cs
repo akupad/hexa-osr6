@@ -26,6 +26,11 @@ internal static class SelfTest
     private static readonly List<string> Lines = [];
     private static int _passed;
     private static int _failed;
+    /// <summary>最近一次「限位驱动」真正发出去的那一批指令。
+    /// 为什么单独存一批：第二节里「原始位置」这条检查以前用 LastCommandIs 看全局最后一条，
+    /// 但限位驱动发完指令后隔 400ms 还有别的心跳/帧在写设备，最后一条早被覆盖了；
+    /// 改成看「这一批」里有没有 L09999，判定就稳定了。</summary>
+    private static List<string> _lastAxisLimitBatch = [];
 
     /// <summary>自检是否正在跑（界面按钮据此禁用自己，避免重复点）。</summary>
     public static bool Running { get; private set; }
@@ -52,6 +57,17 @@ internal static class SelfTest
             var cfg = App.Settings;
             cfg.SimulationMode = true;
             cfg.AutoConnect = false;
+
+            // 自检沙箱复制的是用户真实设置（App.OnStartup 会把 settings.json 拷进 %TEMP%/hexa-selftest）。
+            // 里面「游戏伴随 / 画面同步」可能是开着的：伴随一开，引擎一连上就会自动接管
+            // （RuleEngine.OnEngineStateChanged），脚本一停又会自动抢回（ResumeAfterManualPlayback），
+            // 还会在后台空转下发（20ms 的 auto 定时器）。这些是正确产品行为，不是回归 ——
+            // 但它们会把第三节「脚本停止后没在动」和第八点五节「观察模式一条指令都不发」
+            // 两条检查污染成假失败。所以开跑前先关成确定态；真正要测伴随的第七节会自己再打开。
+            cfg.RuleEngineEnabled = false;
+            cfg.CompanionProcess = "";
+            cfg.ScreenWatchEnabled = false;
+            App.RuleEngine.Stop();
 
             // 微调波形的「往返保真」规则：**没编辑过的点必须原样写回原始动作点**。
             // 病根：以前时间被量化到 duration/650 网格，>60s 还会被压成 60s（3 分钟脚本导出来只剩 1 分钟）。
@@ -123,7 +139,7 @@ internal static class SelfTest
             Section("二、轴限位实时驱动（用户报的「拖到最大机器不动」）");
             Check("限位驱动在界面安全闸关闭时不发指令", AxisLimitDriveSendsNothing(cfg));
             Check("限位驱动在安全闸打开后真的发出位置指令", AxisLimitDriveSends(cfg));
-            Check("限位指令走的是原始位置（绕开限位映射，才能试到机械两端）", LastCommandIs("L09999"));
+            Check("限位指令走的是原始位置（绕开限位映射，才能试到机械两端）", _lastAxisLimitBatch.Any(cmd => cmd.StartsWith("L09999", StringComparison.Ordinal)));
 
             Section("三、脚本播放");
             string script = WriteTestScript();
@@ -192,12 +208,13 @@ internal static class SelfTest
                 SendWebSocketLinearCmd();
                 bool arrived = SpinWait.SpinUntil(() => App.Bridge.TxCount > before, 3000);
                 Check("游戏指令能落到设备（桥 → TCode）", arrived);
-                // 这两条要看「全新安装的默认值」，不是用户当前设置 —— 用户完全可以按自己喜好关掉；
-                // 2026-10-09 他关掉「舒适档限速」后这条就一直红，那是把用户选择当成了回归。
+                // 这条要看「全新安装的默认值」，不是用户当前设置 —— 用户完全可以按自己喜好打开去抖。
                 var bridgeDefaults = new AppSettings();
                 Check("桥的整形默认关（去抖；90ms 低通让节奏游戏发肉，按 2026-10 决定）", !bridgeDefaults.BridgeInputSmoothing);
-                Check("桥也遵守舒适档限速（默认开）", bridgeDefaults.BridgeUseComfortLimits);
-                Lines.Add($"      （他当前的桥设置：去抖={cfg.BridgeInputSmoothing} · 舒适档限速={cfg.BridgeUseComfortLimits} · 多轴联动={cfg.BridgeAxisLink}）");
+                // 2026-11-24 起桥不再按「舒适档」削速度（用户不要这层限制），恒用旧行为上限。
+                Check("桥不再受舒适档限速（恒用 60ms 上限）",
+                    Hexa.Services.BridgeMotionShaper.LegacyMaxSpeedPerSecond > Hexa.Models.ComfortProfile.Dynamic.MaxAxisSpeedPerSecond);
+                Lines.Add($"      （他当前的桥设置：去抖={cfg.BridgeInputSmoothing} · 多轴联动={cfg.BridgeAxisLink} · 不限速）");
                 // 桥是"直接下发源"，它驱动机器时**不置**任何模式标志位。
                 // 以前"在不在动"只看模式标志，于是桥正在驱动设备时：悬浮窗急停是灰的、侧栏写"已解锁"
                 // —— 和脚本那次同款的安全漏洞（用户以为没在动、其实设备正在动）。这条锁住修复。
@@ -274,6 +291,16 @@ internal static class SelfTest
                 App.RuleEngine.Stop();
                 Thread.Sleep(400);
                 cfg.ActionLinkEnabled = false;
+
+                // 伴随这节已经测完，把「游戏伴随 / 画面同步」关回确定态再往下跑。
+                // 为什么：第八点五节要量「观察模式一条指令都不发」，而伴随一开，
+                // 第八点五节里 ScreenWatchService 的 Start/Stop 会触发引擎状态变化
+                // （OnEngineStateChanged），伴随会自动重启它的 20ms auto 定时器空转下发，
+                // 把「0 条」污染成 75 条 —— 跟第三节是同一种污染，不是产品回归。
+                cfg.RuleEngineEnabled = false;
+                cfg.CompanionProcess = "";
+                cfg.ScreenWatchEnabled = false;
+                App.RuleEngine.Stop();
             }
 
             Section("八、延迟标定");
@@ -295,6 +322,9 @@ internal static class SelfTest
 
                 // 抓自己的窗口：自检跑起来时主窗口是存在的，抓不到也应给出原因而不是抛异常。
                 IntPtr own = System.Diagnostics.Process.GetCurrentProcess().MainWindowHandle;
+                // 自检跑在 App.OnStartup 里，主窗口还没创建，MainWindowHandle 就是 0；
+                // 拿 0 句柄去抓必然报「找不到那个窗口了」—— 这是运行时机，不是产品缺陷。
+                bool noOwnWindow = own == IntPtr.Zero;
                 var probe = new Hexa.Services.ScreenWatchService(App.Settings);
                 probe.ForcedTargetHandleForTest = own;
                 probe.Start();
@@ -304,11 +334,13 @@ internal static class SelfTest
                 // 那不是产品缺陷。判据收窄成：**有明确的抓取错误才算失败**；单纯 0 帧只写「跳过＋原因」。
                 string captureNote = sawFrames
                     ? "抓到了"
-                    : probe.CaptureFailed
-                        ? ("失败：" + probe.FailureReason)
-                        : "已跳过：当前没有可抓的画面内容（自检多为最小化/后台运行）";
+                    : noOwnWindow
+                        ? "已跳过：自检进程还没有主窗口（句柄 0），注入的句柄抓不到东西"
+                        : probe.CaptureFailed
+                            ? ("失败：" + probe.FailureReason)
+                            : "已跳过：当前没有可抓的画面内容（自检多为最小化/后台运行）";
                 Check($"能对着窗口抓到画面（{probe.FrameCount} 帧；{captureNote}）",
-                    sawFrames || !probe.CaptureFailed);
+                    sawFrames || !probe.CaptureFailed || noOwnWindow);
                 if (sawFrames)
                 {
                     Check("画面特征都落在 0–1 且不是 NaN",
@@ -531,6 +563,42 @@ internal static class SelfTest
             });
             Thread.Sleep(200);
 
+            // 播放增强那一行点下去，收的是整张卡（用户 2026-11-24：「这一块折叠而不是折叠那一小块」）。
+            // 只藏三个开关等于没折：播放器行、时间码、A-B 循环、说明、生成按钮必须一起走，只剩一行标题。
+            App.Dispatch(() =>
+            {
+                try
+                {
+                    var page = new Hexa.Views.ScriptLibraryPage();
+                    page.Measure(new System.Windows.Size(970, 700));
+                    page.Arrange(new System.Windows.Rect(0, 0, 970, 700));
+                    page.UpdateLayout();
+                    System.Windows.FrameworkElement? ByName(string n) => page.FindName(n) as System.Windows.FrameworkElement;
+                    var playBody = ByName("PlayBody");
+                    var enhanceBody = ByName("EnhanceBody");
+                    var desc = ByName("EnhanceDesc");
+                    var genBtn = ByName("GenerateToggleBtn");
+                    var title = ByName("EnhanceHeaderTitle") as System.Windows.Controls.TextBlock;
+                    double before = playBody?.ActualHeight ?? 0;
+                    Invoke(page, "ToggleEnhanceCard");
+                    page.UpdateLayout();
+                    bool collapsed = playBody?.Visibility == System.Windows.Visibility.Collapsed
+                        && enhanceBody?.Visibility == System.Windows.Visibility.Collapsed
+                        && desc?.Visibility == System.Windows.Visibility.Collapsed
+                        && genBtn?.Visibility == System.Windows.Visibility.Collapsed
+                        && title != null && title.Text.Contains("▶ 播放");
+                    Check($"点「播放增强」那行收的是整张卡（原来 {before:0}px 高的播放器区也收起来了）", collapsed);
+                    Invoke(page, "ToggleEnhanceCard");
+                    page.UpdateLayout();
+                    Check("再点一下整张卡展开（播放器 / 开关 / 生成按钮都回来）",
+                        playBody?.Visibility == System.Windows.Visibility.Visible
+                        && enhanceBody?.Visibility == System.Windows.Visibility.Visible
+                        && genBtn?.Visibility == System.Windows.Visibility.Visible);
+                }
+                catch (Exception ex) { Check("播放增强整卡折叠", false); Lines.Add("      原因：" + ex.Message); }
+            });
+            Thread.Sleep(200);
+
             // 游玩页排版：以前强度/速度滑杆和「开始自动」按钮在 1280px 下被拉到 800–894px 宽
             // （横跨整屏的长条），右侧 290px 列却几乎空着。这里用真实排版量一遍，防止改回去。
             App.Dispatch(() =>
@@ -554,26 +622,27 @@ internal static class SelfTest
             });
             Thread.Sleep(300);
 
-            // 游戏桥搬到了「游玩」页（用户要求「把游戏桥挪到游玩去」）。搬控件最容易出的事是
-            // 「页面里看着有、其实样式或名字丢了」，所以直接量：卡片与端口框都在游玩页的可视树里、
-            // 端口框显示的是当前设置、提示行常显且写明默认值与范围（用户要求「信息一直显示，不用悬停」）。
+            // 游戏桥现在在「💞 伴随」页（2026-11-24 用户要求「单独创建一个伴随页把这些都搬进去」）。
+            // 搬控件最容易出的事是「页面里看着有、其实样式或名字丢了」，所以直接量：
+            // 卡片与端口框都在这一页的名字域里、端口框显示的是当前设置、提示行常显且写明默认值与范围。
             App.Dispatch(() =>
             {
                 try
                 {
                     int portBefore = App.Settings.GameBridgePort;
                     App.Settings.GameBridgePort = 23456;
-                    var page = new Hexa.Views.PlaygroundPage();
+                    var page = new Hexa.Views.CompanionPage();
                     page.Measure(new System.Windows.Size(1280, 3000));
                     page.Arrange(new System.Windows.Rect(0, 0, 1280, 3000));
                     page.UpdateLayout();
-                    // 桥在游玩页是折叠的：折叠的子树不参与布局，可视树里查不到它的内部控件，
-                    // 所以拿面板实例、用它自己的名字域查（x:Name 在 XAML 解析时就登记好了）。
+                    // 默认看的是 Lovense 卡片，桥这块是收起的；先切过去，摘要与可见性才有意义。
+                    Invoke(page, "ShowCard", "BridgeCard");
+                    page.UpdateLayout();
+                    var card = FindByName(page, "BridgeCard");
                     var host = FindByName(page, "BridgeSectionBody") as System.Windows.FrameworkElement;
-                    var card = host?.FindName("BridgeCard");
                     var portBox = host?.FindName("BridgePortBox") as System.Windows.Controls.TextBox;
                     var hint = host?.FindName("BridgePortHint") as System.Windows.Controls.TextBlock;
-                    Check("游戏桥在游玩页里（桥卡 + 端口框都在可视树中）", card != null && portBox != null);
+                    Check($"游戏桥在伴随页里（卡片 {card?.Visibility} + 端口框都在这一页里）", card != null && portBox != null);
                     Check($"游戏桥端口框显示当前端口（{portBox?.Text ?? "找不到"}）", portBox?.Text == "23456");
                     bool hintOk = hint != null
                         && hint.Visibility == System.Windows.Visibility.Visible
@@ -587,7 +656,91 @@ internal static class SelfTest
                     Check($"指令监视：有日志时空状态文字不再压在日志上（{logList?.Items.Count ?? -1} 行）", noOverlap);
                     App.Settings.GameBridgePort = portBefore;
                 }
-                catch (Exception ex) { Check("游戏桥在游玩页里", false); Lines.Add("      原因：" + ex.Message); }
+                catch (Exception ex) { Check("游戏桥在伴随页里", false); Lines.Add("      原因：" + ex.Message); }
+            });
+            Thread.Sleep(250);
+
+            // 脚本库并进「动作」页（用户 2026-11-24：「把脚本库页融到动作页去」+「创建一个脚本库按钮」）。
+            // 四件事必须成立：顶上两个页签都在、默认是动作那一栏、点脚本库能换成真·脚本库页、能切回来。
+            // Frame 的导航是排队执行的，所以"面板里装的是不是脚本库页"放到下一拍（Sleep 之后）再查。
+            Hexa.Views.StrokesPage? strokesProbe = null;
+            App.Dispatch(() =>
+            {
+                try
+                {
+                    var page = new Hexa.Views.StrokesPage();
+                    strokesProbe = page;
+                    page.Measure(new System.Windows.Size(970, 700));
+                    page.Arrange(new System.Windows.Rect(0, 0, 970, 700));
+                    page.UpdateLayout();
+                    var pane = FindByName(page, "StrokePane") as System.Windows.FrameworkElement;
+                    var host = FindByName(page, "LibraryHost") as System.Windows.Controls.Frame;
+                    var strokesBtn = FindByName(page, "TabStrokesBtn") as System.Windows.Controls.Button;
+                    var libraryBtn = FindByName(page, "TabLibraryBtn") as System.Windows.Controls.Button;
+                    Check($"动作页顶上有「动作 / 脚本库」两个页签（{strokesBtn?.Content} / {libraryBtn?.Content}）",
+                        strokesBtn is not null && libraryBtn is not null
+                        && (strokesBtn.Content as string)?.Contains("动作") == true
+                        && (libraryBtn.Content as string)?.Contains("脚本库") == true);
+                    Check("动作页默认停在动作那一栏（脚本库面板收起）",
+                        pane?.Visibility == System.Windows.Visibility.Visible
+                        && host?.Visibility != System.Windows.Visibility.Visible
+                        && !page.IsLibraryShown);
+                    // 导入的脚本要出现在动作栏里（用户 2026-11-24：「导入的脚本也会出现在动作栏里」）：
+                    // 脚本架排在工具条下面一行，条数必须和脚本库目录里的脚本数一致；
+                    // 每一块的 Tag 是脚本全路径 —— 单击切栏选中、双击直接播都靠它找文件。
+                    var shelf = FindByName(page, "ScriptShelf") as System.Windows.FrameworkElement;
+                    var shelfTitle = FindByName(page, "ShelfTitle") as System.Windows.Controls.TextBlock;
+                    var shelfPanel = FindByName(page, "ShelfPanel") as System.Windows.Controls.WrapPanel;
+                    var shelfScroll = FindByName(page, "ShelfScroll") as System.Windows.Controls.ScrollViewer;
+                    int libCount = Hexa.Models.ScriptLibrary.List().Count;
+                    Check($"动作栏里有「脚本库脚本」脚本架，条数与脚本库一致（{shelfPanel?.Children.Count ?? -1} / {libCount}）",
+                        shelf is not null
+                        && System.Windows.Controls.Grid.GetRow(shelf) == 2
+                        && shelfTitle?.Text.Contains("脚本库脚本（") == true
+                        && (shelfPanel?.Children.Count ?? -1) == libCount);
+                    bool chipsCarryPath = shelfPanel is not null && shelfPanel.Children.OfType<System.Windows.Controls.Border>()
+                        .All(chip => chip.Tag is string path && path.Length > 0 && chip.Cursor == System.Windows.Input.Cursors.Hand);
+                    Check("脚本架默认展开、每一块都带脚本路径（单击切栏选中 / 双击直接播）",
+                        shelfScroll?.Visibility == System.Windows.Visibility.Visible && chipsCarryPath);
+                    page.ShowScriptLibrary();
+                    page.UpdateLayout();
+                    Check("点「脚本库」按钮后整页换成脚本库（动作栏收起）",
+                        page.IsLibraryShown
+                        && host?.Visibility == System.Windows.Visibility.Visible
+                        && pane?.Visibility != System.Windows.Visibility.Visible);
+                    Invoke(page, "ShowLibrary", false);
+                    page.UpdateLayout();
+                    Check("点「动作」按钮能切回动作栏",
+                        !page.IsLibraryShown && pane?.Visibility == System.Windows.Visibility.Visible
+                        && host?.Visibility != System.Windows.Visibility.Visible);
+                }
+                catch (Exception ex) { Check("脚本库并进动作页", false); Lines.Add("      原因：" + ex.Message); }
+            });
+            Thread.Sleep(300);
+
+            App.Dispatch(() =>
+            {
+                try
+                {
+                    strokesProbe!.ShowScriptLibrary();
+                    strokesProbe.UpdateLayout();
+                    var host = FindByName(strokesProbe, "LibraryHost") as System.Windows.Controls.Frame;
+                    // Frame.Navigate 是排队异步的：这一拍 Content 还空着是正常的，最多等 3 秒再看
+                    var waited = System.Diagnostics.Stopwatch.StartNew();
+                    while (host?.Content is not Hexa.Views.ScriptLibraryPage && waited.ElapsedMilliseconds < 3000)
+                    {
+                        App.Dispatch(() => strokesProbe.UpdateLayout());
+                        System.Threading.Thread.Sleep(60);
+                    }
+                    Check($"脚本库面板里装的是脚本库页本身（{(host?.Content as System.Windows.FrameworkElement)?.GetType().Name ?? "空"}，等了 {waited.ElapsedMilliseconds}ms）",
+                        host?.Content is Hexa.Views.ScriptLibraryPage);
+                    // 左侧导航不再有脚本库那一项（并进动作页了，不许留两个入口）
+                    bool navHasNoScripts = true;
+                    if (System.Windows.Application.Current?.MainWindow is Hexa.MainWindow mw)
+                        navHasNoScripts = FindByName(mw, "NavScripts") is null;
+                    Check("左侧导航不再单列「脚本库」（入口只剩动作页顶上那个按钮）", navHasNoScripts);
+                }
+                catch (Exception ex) { Check("脚本库面板装的是脚本库页", false); Lines.Add("      原因：" + ex.Message); }
             });
             Thread.Sleep(250);
 
@@ -722,33 +875,43 @@ internal static class SelfTest
             });
             Thread.Sleep(200);
 
-            // 游玩页：游戏桥默认收起（它整卡带日志列表，摊开半页），点标题行才展开；
-            // 收起时那一行摘要要写着状态，不能是空的。
+            // 伴随页：和「测试台」一样「点哪个就只看哪一块」（2026-11-24 用户要求「伴随页要像测试台那样选择展示」）。
+            // 量两件事：选择区就是三块（Lovense / 桥 / 手柄）；任意时刻只有一张卡片可见，切换后高亮也跟着走。
             App.Dispatch(() =>
             {
                 try
                 {
-                    var page = new Hexa.Views.PlaygroundPage();
+                    var page = new Hexa.Views.CompanionPage();
                     page.Measure(new System.Windows.Size(1280, 3000));
                     page.Arrange(new System.Windows.Rect(0, 0, 1280, 3000));
                     page.UpdateLayout();
-                    var body = FindByName(page, "BridgeSectionBody");
-                    var summary = FindByName(page, "BridgeSectionSummary") as System.Windows.Controls.TextBlock;
-                    Check($"游玩页的游戏桥默认收起（{body?.Visibility}）、摘要写着状态（{summary?.Text}）",
-                        body?.Visibility != System.Windows.Visibility.Visible
-                        && summary is { Text.Length: > 0 });
-                    Invoke(page, "BridgeSection_Click", page, new System.Windows.RoutedEventArgs());
-                    Check("点一下桥标题行就展开（面板可见、摘要让位）",
-                        body?.Visibility == System.Windows.Visibility.Visible
-                        && summary?.Visibility != System.Windows.Visibility.Visible);
-                    Invoke(page, "BridgeSection_Click", page, new System.Windows.RoutedEventArgs());
-                    Check("再点一下收回（收起后摘要重新写状态）",
-                        body?.Visibility != System.Windows.Visibility.Visible
-                        && summary is { Text.Length: > 0 });
+                    var picker = FindByName(page, "FeatureSwitchGrid") as System.Windows.Controls.Grid;
+                    var lovense = FindByName(page, "LovenseCard");
+                    var bridge = FindByName(page, "BridgeCard");
+                    var gamepad = FindByName(page, "GamepadCard");
+                    var lovenseBtn = FindByName(page, "FeatureLovenseBtn") as System.Windows.Controls.Button;
+                    int btns = picker?.Children.OfType<System.Windows.Controls.Button>().Count() ?? -1;
+                    Check($"伴随页功能选择区是三块（{btns} 块）", btns == 3 && picker?.ColumnDefinitions.Count == 2);
+                    Check("伴随页默认只显示「游戏联动」（桥与手柄收起）",
+                        lovense?.Visibility == System.Windows.Visibility.Visible
+                        && bridge?.Visibility != System.Windows.Visibility.Visible
+                        && gamepad?.Visibility != System.Windows.Visibility.Visible);
+                    Invoke(page, "ShowCard", "GamepadCard");
+                    page.UpdateLayout();
+                    var gamepadBtn = FindByName(page, "FeatureGamepadBtn") as System.Windows.Controls.Button;
+                    Check("切到「游戏手柄」后只剩手柄可见（另两块收起、不留空白卡）",
+                        gamepad?.Visibility == System.Windows.Visibility.Visible
+                        && lovense?.Visibility != System.Windows.Visibility.Visible
+                        && bridge?.Visibility != System.Windows.Visibility.Visible);
+                    Check($"选中的功能按钮描边加粗（手柄 {gamepadBtn?.BorderThickness.Left:0}px / Lovense {lovenseBtn?.BorderThickness.Left:0}px）",
+                        gamepadBtn?.BorderThickness.Left == 2 && lovenseBtn?.BorderThickness.Left == 1);
+                    Invoke(page, "ShowCard", "LovenseCard");
+                    page.UpdateLayout();
+                    Check("切回「游戏联动」后恢复默认显示", lovense?.Visibility == System.Windows.Visibility.Visible
+                        && gamepad?.Visibility != System.Windows.Visibility.Visible);
                 }
-                catch (Exception ex) { Check("游玩页游戏桥折叠", false); Lines.Add("      原因：" + ex.Message); }
+                catch (Exception ex) { Check("伴随页功能切换", false); Lines.Add("      原因：" + ex.Message); }
             });
-            Thread.Sleep(250);
 
             // 用户报过"脚本制作页拉太长了""脚本库页列表以外的一堆卡"：这两页要在默认窗口下
             // 不用滚动就看完整页。默认窗口 1180×760：页面区域 ≈ 970 宽 × 700 高
@@ -1283,7 +1446,7 @@ internal static class SelfTest
     private static double MeasureVerticalOverflow(Func<object> factory, double width, double height)
     {
         double overflow = -1;
-        App.Dispatch(() =>
+        DispatchWait(() =>
         {
             try
             {
@@ -1303,7 +1466,6 @@ internal static class SelfTest
             }
             catch (Exception ex) { Lines.Add("      （测量 " + ex.GetBaseException().Message + "）"); overflow = 0; }
         });
-        Thread.Sleep(400);
         return Math.Max(0, overflow);
     }
 
@@ -1326,10 +1488,29 @@ internal static class SelfTest
 
     /// <summary>按给定正文尺寸排一遍页面，取某个具名控件的实测高度（取不到返回 -1）。</summary>
     /// <summary>量某个控件「底部离页面顶部多少像素」——用来确认它在默认窗口的一屏之内（不用滚动就能看到）。</summary>
+    /// <summary>
+    /// 投递到 UI 线程并等它真的跑完（最多 timeoutMs）。
+    /// 早先这些测量都是「投递 + Thread.Sleep(400)」，UI 线程上只要有一件超过 400ms 的活
+    /// （比如脚本库页第一次扫目录），回调还没跑就取结果，量出来的就是 -1，报一堆假的回归。
+    /// </summary>
+    private static bool DispatchWait(Action a, int timeoutMs = 6000)
+    {
+        using var done = new System.Threading.ManualResetEventSlim(false);
+        bool queued = App.Dispatch(() =>
+        {
+            try { a(); }
+            finally { done.Set(); }
+        });
+        if (!queued) return false;
+        bool signaled = done.Wait(timeoutMs);
+        if (!signaled) Lines.Add("      （UI 线程 " + timeoutMs + "ms 内没跑完这段测量，结果按取不到算）");
+        return signaled;
+    }
+
     private static double MeasureElementBottom(Func<object> factory, string elementName, double width, double height)
     {
         double result = -1;
-        App.Dispatch(() =>
+        DispatchWait(() =>
         {
             try
             {
@@ -1347,14 +1528,13 @@ internal static class SelfTest
             }
             catch (Exception ex) { Lines.Add("      （测量 " + elementName + " 失败：" + ex.GetBaseException().Message + "）"); }
         });
-        Thread.Sleep(400);
         return result;
     }
 
     private static double MeasureElementHeight(Func<object> factory, string elementName, double width, double height)
     {
         double result = -1;
-        App.Dispatch(() =>
+        DispatchWait(() =>
         {
             try
             {
@@ -1368,7 +1548,6 @@ internal static class SelfTest
             }
             catch (Exception ex) { Lines.Add("      （测量 " + elementName + " 失败：" + ex.GetBaseException().Message + "）"); }
         });
-        Thread.Sleep(400);
         return result;
     }
 
@@ -1399,12 +1578,6 @@ internal static class SelfTest
     {
         var all = App.Serial.SimulationCommands;
         return index < all.Count ? all.Skip(index).ToList() : [];
-    }
-
-    private static bool LastCommandIs(string prefix)
-    {
-        var all = App.Serial.SimulationCommands;
-        return all.Count > 0 && all[^1].StartsWith(prefix, StringComparison.Ordinal);
     }
 
     /// <summary>用反射走「设置页 → 拖动限位」的真实处理函数（不点鼠标也能测到按钮背后的逻辑）。</summary>
@@ -1441,6 +1614,7 @@ internal static class SelfTest
                 int before = App.Serial.SimulationCommands.Count;
                 Invoke(page, "DriveAxisFromSlider", "L0", 9999);
                 var sent = App.Serial.SimulationCommands.Skip(before).ToList();
+                _lastAxisLimitBatch = sent;
                 result = sent.Any(cmd => cmd.StartsWith("L09999", StringComparison.Ordinal));
                 if (!result) Lines.Add("    （实际发出：" + string.Join(" | ", sent) + "）");
             }

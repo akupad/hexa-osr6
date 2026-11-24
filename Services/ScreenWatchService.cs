@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Media.Imaging;
 using Hexa.Models;
 
 namespace Hexa.Services;
@@ -85,6 +86,8 @@ public sealed class ScreenWatchService : IDisposable
     /// <summary>整帧平均亮度低于这个值（全黑）或高于上限（全白）= 没抓到画面。</summary>
     private const double BlankLumaLow = 2;
     private const double BlankLumaHigh = 252;
+    /// <summary>整帧最亮与最暗之差小于这个值 = 一整片均匀色，当作没抓到（D3D 窗口被 PrintWindow 抓成均匀深灰就靠它认出来）。</summary>
+    private const int BlankSpanMin = 8;
 
     /// <summary>候选窗口的最小尺寸：比这更小的多半是工具栏、输入法候选框、气泡提示。</summary>
     private const int MinWindowWidth = 200;
@@ -317,6 +320,7 @@ public sealed class ScreenWatchService : IDisposable
     /// </summary>
     private void TryAutoBindForeground(Stopwatch clock)
     {
+        if (Volatile.Read(ref _manualEditing) != 0 || ManualBinding.Bound) return;
         if (clock.ElapsedMilliseconds - _lastAutoBindMs < AutoBindIntervalMs) return;
         _lastAutoBindMs = clock.ElapsedMilliseconds;
 
@@ -357,6 +361,12 @@ public sealed class ScreenWatchService : IDisposable
     // 「姿态/场景看不到东西」时先看这张图：抓不到画面（全黑）和模型不认（图是对的）一眼就分开。
     private readonly string? _dumpDir = Environment.GetEnvironmentVariable("HEXA_DUMP_FRAME");
     private int _dumpCount;
+
+    // 预览：最近一帧的 WPF 位图（已 Freeze，跨线程读安全），界面每 150ms 读一次；没抓到画面时是 null。
+    private BitmapSource? _previewImage;
+    private string _previewTarget = "";
+    private string _previewRect = "";
+    private int _previewFrameCounter;
 
     // ── 方向感知（画面整体上下位移）──────────────────────────────────
     /// <summary>每一行的亮度和：0.4ms 量级的互相关输入，比逐像素光流便宜得多。</summary>
@@ -399,7 +409,19 @@ public sealed class ScreenWatchService : IDisposable
     private double _featureScore;
     private int _voiceEvent;
     private int _suspect;
+
+    /// <summary>「画面在动」的连续拍数 / 「没在动」的连续拍数（只抓帧线程写，见 FollowTickCore 的确认拍数）。</summary>
+    private int _liveStreak;
+    private int _deadStreak;
     private int _captureFailed;
+    /// <summary>1 = 这一帧的 160×90 小图是「按手动框裁剪后再放大」得来的，分析坐标已经是框内整幅。</summary>
+    private int _smallZoomed;
+    /// <summary>上一次真正发出去的六轴（挡屏 / 抓不到画面时用它接着动一小会儿）。</summary>
+    private double[]? _lastSentAxes;
+    private long _lastSentMs;
+    private long _holdUntilMs;
+    /// <summary>遮挡后接着刚才动作的最长时间：够撑过「鼠标划过盖住一秒」，又不至于让人以为卡死。</summary>
+    private const int FollowHoldMs = 1200;
     private int _fps;
     private long _frameCount;
     private string _failureReason = "";
@@ -432,6 +454,11 @@ public sealed class ScreenWatchService : IDisposable
     private int _poseJobSlot;                         // 已经交给姿态线程的那一块
     private bool _poseBusy;                           // 姿态线程手里还有没算完的帧
     private long _lastPoseJobMs;
+    /// <summary>上一次排给姿态模型那帧的粗略签名（平均亮度×1000）：一样就不排队，省掉一次 640×640 推理。</summary>
+    private long _lastPoseSig;
+    private int _poseSigValid;
+    private int _poseStillSkips;
+    private const long PoseStillSigMin = 800;
     private AutoResetEvent? _poseWake;
     private Thread? _poseThread;
     private volatile bool _poseStopRequested;
@@ -463,16 +490,23 @@ public sealed class ScreenWatchService : IDisposable
     // 全部是 int/double/long 的原子读写 + 一把小锁保护「状态切换」，不做长操作。
     private readonly Lock _followLock = new();
     private int _followActive;                        // 正在驱动设备（已拿到控制权且这一拍发了指令）
-    private int _followWant;                          // 信号过线了、想驱动设备（规则引擎据它让位）
+    private int _followWant;
+    private long _previewPauseUntil;                  // 拖「活动范围」把手期间让开（TickCount64 到期）                          // 信号过线了、想驱动设备（规则引擎据它让位）
     private int _followEasing;                        // 正在缓降回中
     private long _followEaseStartMs;
     private double _followEaseRange;                  // 缓降的起点幅度
     private double _followEaseHz;                      // 缓降期间用的频率
     private double _followPhase;                      // 跟随相位 0–1（= 动作语汇「抽插」的内部相位）
+    // 降级运行（切窗 / 抓不到画面但目标还在）：0 = 正常，1 = 完全降到慢速小幅。
+    // 用混合系数而不是开关，所以「掉信号」和「切回来」都是平滑过渡，不是跳变。
+    private double _degradeBlend;
+    private string _degradeWhy = "";
     private double _followHz = FollowFallbackHz;      // 当前用的频率
     private double _followDepth;                      // 当前深度 0–1（= 场景强度过线之后的归一化值）
+    private double _followMainAxis = 50;              // 最近一次成功下发的 L0 主轴位置 0–100（预览画条用）
     private double _lastFollowPhaseSeconds;           // 上一拍的时刻（抓帧时钟，秒）
     private double _lastCaptureSeconds;               // 上一帧抓取+分析用了多久（= 这份画面信息到手时已经过时多久）
+    private int _lastCapturePath;                     // 上一帧走的是哪条抓取路：1 = PrintWindow（后台窗口也行），2 = 屏幕抓取（要窗口没被挡）
     private long _lastFollowSendMs;                   // 最近一次成功下发的时刻（看门狗用，TickCount64）
     private int _followPhaseMisses;                   // 连续几拍相位误差过大（到 FollowPhaseResyncBeats 才重锁）
     private string _followReason = "";                // 白话状态（界面直接显示）
@@ -480,6 +514,16 @@ public sealed class ScreenWatchService : IDisposable
 
     // 逐帧位置跟随（画面同步）：吃 320×180 灰度，抓帧线程上毫秒级、缓冲复用零分配。
     // 质量门不过线时 FollowTickCore 退回原来的「节奏 + 语汇」路径（见 FollowTickCore ⑦）。
+    private readonly Lock _manualLock = new();
+    private readonly ManualPointTracker _manualTracker = new(PoseWidth, PoseHeight);
+    private ManualBindingFrame? _manualPreview;
+    private IntPtr _manualWindow;
+    private int _manualWidth, _manualHeight;
+    private string _manualTarget = "";
+    private string _manualProcess = "";
+    private long _manualAtMs;
+    private int _manualEditing;
+    private int _manualFrozen;          // 选择器已定格一帧：后台不要再覆盖这张图
     private readonly ScreenSyncTracker _sync = new();
     private readonly double[] _syncAxes = new double[6];  // 逐帧同步的六轴缓冲（复用，不新建）
 
@@ -611,6 +655,108 @@ public sealed class ScreenWatchService : IDisposable
 
     /// <summary>实测帧率（每秒抓到的帧数），抓不到时是 0。</summary>
     public int Fps => Volatile.Read(ref _fps);
+
+    /// <summary>最近一帧抓到的画面（已 Freeze，可直接给 Image.Source；没抓到或未开启时是 null）。</summary>
+    public BitmapSource? PreviewImage
+    {
+        get { lock (_lock) return _previewImage; }
+    }
+
+    public sealed record ManualBindingFrame(BitmapSource Image, byte[] Pixels, IntPtr Handle,
+        string Target, string ProcessName, int SourceWidth, int SourceHeight, long AtMs);
+
+    public ManualBindingFrame? ManualPreview
+    {
+        get { lock (_manualLock) return _manualPreview; }
+    }
+    public ManualTrackSignal ManualBinding
+    {
+        get { lock (_manualLock) return _manualTracker.Signal; }
+    }
+    public void BeginManualBinding()
+    {
+        lock (_manualLock) { _manualPreview = null; _manualAtMs = 0; }
+        Interlocked.Exchange(ref _manualFrozen, 0);
+        Interlocked.Exchange(ref _manualEditing, 1);
+        StopFollowNow("正在手动选目标：画面跟随暂停");
+    }
+    public void EndManualBinding()
+    {
+        Interlocked.Exchange(ref _manualEditing, 0);
+        Interlocked.Exchange(ref _manualFrozen, 0);
+    }
+    /// <summary>选择器点「换一帧」：丢掉定格图，等抓帧线程送来下一张新图。</summary>
+    public void RefreshManualPreview()
+    {
+        lock (_manualLock) { _manualPreview = null; _manualAtMs = 0; }
+        Interlocked.Exchange(ref _manualFrozen, 0);
+    }
+    public bool TryBindManual(ManualBindingFrame frame, ManualTrackPoint point,
+        ManualTrackPoint shallow, ManualTrackPoint deep, out string message)
+    {
+        lock (_manualLock)
+        {
+            // 固定的是「你正在看的那一帧」，不是「后台最新一帧」：
+            // 后台每 4 帧刷新一次预览，拿两帧时间戳比相等会把正常绑定误判成画面已切换。
+            if (frame.Handle == IntPtr.Zero || frame.SourceWidth <= 0 || frame.SourceHeight <= 0
+                || Environment.TickCount64 - frame.AtMs > 2000)
+            { message = "这一帧已经太旧或窗口已经关了：点「换一帧」取新图再选"; return false; }
+            if (frame.Target != (_cfg.ScreenWatchTarget ?? "").Trim())
+            { message = "画面目标已经换了：点「换一帧」取新图再选"; return false; }
+            ScreenWatchWindow? live = CurrentTarget();
+            if (live is not null && live.Handle != frame.Handle)
+            { message = "画面已切到别的窗口：点「换一帧」取新图再选"; return false; }
+            if (!_manualTracker.TryBind(frame.Pixels, point, shallow, deep, out message)) return false;
+            _manualWindow = frame.Handle; _manualTarget = frame.Target; _manualProcess = frame.ProcessName;
+            _manualWidth = frame.SourceWidth; _manualHeight = frame.SourceHeight;
+            _manualAtMs = 0;
+            return true;
+        }
+    }
+    public void ClearManualBinding()
+    {
+        lock (_manualLock) { _manualTracker.Clear(); _manualAtMs = 0; }
+    }
+    private void TrackManualFrame(ScreenWatchWindow? target, int width, int height)
+    {
+        lock (_manualLock)
+        {
+            if (!_manualTracker.Signal.Bound) return;
+            bool identityChanged = target?.Handle != _manualWindow || width != _manualWidth || height != _manualHeight
+                || _manualTarget != (_cfg.ScreenWatchTarget ?? "").Trim()
+                || !string.Equals(target?.ProcessName ?? "", _manualProcess, StringComparison.OrdinalIgnoreCase);
+            if (identityChanged) _manualTracker.Invalidate("窗口或尺寸变了，请重绑");
+            else _manualTracker.SubmitBgra(_poseBgra);
+            _manualAtMs = Environment.TickCount64;
+        }
+    }
+
+    /// <summary>预览对应的目标窗口显示名（还没对上窗口时是空串）。</summary>
+    public string PreviewTarget
+    {
+        get { lock (_lock) return _previewTarget; }
+    }
+
+    /// <summary>预览对应的抓取范围一句话（例如「1920x1080 · 抓整窗」）。</summary>
+    public string PreviewRect
+    {
+        get { lock (_lock) return _previewRect; }
+    }
+
+    /// <summary>
+    /// 预览要框住的那块分析 ROI（160×90 小图上的像素矩形，X/Y 为左上角、Width/Height 为大小）。
+    /// null = 没定位到/退回整幅 —— 界面就不画框。
+    /// </summary>
+    public (int X, int Y, int Width, int Height)? PreviewRoi
+    {
+        get
+        {
+            // 按框裁剪放大时，预览里那一整小块就是框本身，再画一个满屏的矩形没有意义。
+            if (Volatile.Read(ref _smallZoomed) != 0) return null;
+            if (!TryPoseRoi(out int x0, out int y0, out int x1, out int y1)) return null;
+            return (x0, y0, x1 - x0, y1 - y0);
+        }
+    }
 
     /// <summary>肤色像素占整幅的比例 0–1（已平滑）。</summary>
     public double SkinRatio => Volatile.Read(ref _skinRatio);
@@ -859,6 +1005,12 @@ public sealed class ScreenWatchService : IDisposable
     /// <summary>跟随用的频率（Hz）——速度就由它决定。</summary>
     public double FollowHz => Volatile.Read(ref _followHz);
 
+    /// <summary>跟随方向量：+1 = 主体/画面在靠近（往「推」偏），-1 = 在退开（往「收」偏），0 = 没动。</summary>
+    public double FollowApproach => Volatile.Read(ref _followApproach);
+
+    /// <summary>最近一次成功下发的主轴（L0）位置 0–100（预览右下角那条横条画它）。</summary>
+    public double FollowMainAxis => Volatile.Read(ref _followMainAxis);
+
     /// <summary>跟随状态的白话说明（为什么没在动 / 正在跟什么）。没在跟随时为空串。</summary>
     public string FollowReason => Volatile.Read(ref _followReason);
 
@@ -963,6 +1115,7 @@ public sealed class ScreenWatchService : IDisposable
         // 先让设备停下来再等线程：抓帧线程可能正卡在 PrintWindow 里几秒不回来，
         // 那几秒里设备不能还停在画面同步留下的位置上。
         StopFollowNow("画面同步已停止");
+        lock (_manualLock) _manualPreview = null;
 
         if (thread is not null && thread.IsAlive)
         {
@@ -1271,7 +1424,7 @@ public sealed class ScreenWatchService : IDisposable
         if (PrintWindowToSource(hwnd, sourceWidth, sourceHeight))
         {
             DownscaleToSmall(sourceWidth, sourceHeight);
-            if (!IsBlankFrame()) { AnalyzeFrame(clock); MarkCaptured(clock); return; }
+            if (!IsBlankFrame()) { Volatile.Write(ref _lastCapturePath, 1); AnalyzeFrame(clock); TrackManualFrame(target, width, height); MarkCaptured(clock); PublishPreview(target, width, height); return; }
             // 抓到全黑/全白 = 这条路对这个窗口不管用，往下走屏幕抓取。
         }
 
@@ -1280,7 +1433,7 @@ public sealed class ScreenWatchService : IDisposable
         if (ScreenCopyToSource(rect, sourceWidth, sourceHeight))
         {
             DownscaleToSmall(sourceWidth, sourceHeight);
-            if (!IsBlankFrame()) { AnalyzeFrame(clock); MarkCaptured(clock); return; }
+            if (!IsBlankFrame()) { Volatile.Write(ref _lastCapturePath, 2); AnalyzeFrame(clock); TrackManualFrame(target, width, height); MarkCaptured(clock); PublishPreview(target, width, height); return; }
         }
 
         SetFailure(DefaultFailureText);
@@ -1303,6 +1456,61 @@ public sealed class ScreenWatchService : IDisposable
         }
         _lastFrameMs = now;
         ClearFailure();
+    }
+
+    /// <summary>
+    /// 把最近一帧的 160×90 小图拷成 WPF 的 BitmapSource 给界面预览用。
+    /// 每 4 帧才更新一次（20fps 下约 5 次/秒），省掉不必要的像素拷贝与对象创建；
+    /// 像素拷贝和 Freeze 都在锁外做完，锁里只换引用，绝不在锁里做慢操作。
+    /// </summary>
+    private void PublishPreview(ScreenWatchWindow? target, int width, int height)
+    {
+        if ((_previewFrameCounter++ & 3) != 0) return;   // 节流：每 4 帧更新一次
+
+        BitmapSource frame;
+        try
+        {
+            // _bgra 就是 DownscaleToSmall 里从 _smallBitmap 拷出来的那 160×90 像素（BGRA，4 字节/像素），
+            // 顺序正好对上 WPF 的 Bgra32；拷贝一份新数组再建图，避免后续帧把这块缓冲覆盖掉。
+            var pixels = new byte[FrameWidth * FrameHeight * 4];
+            Array.Copy(_bgra, pixels, pixels.Length);
+            frame = BitmapSource.Create(FrameWidth, FrameHeight, 96, 96,
+                System.Windows.Media.PixelFormats.Bgra32, null, pixels, FrameWidth * 4);
+            frame.Freeze();                              // 冻结后跨线程读安全，界面线程随便用
+        }
+        catch (Exception ex)
+        {
+            AppLogger.Warn($"画面同步：生成预览帧失败 —— {ex.Message}");
+            return;
+        }
+
+        // 整窗大图只在打开选择器或已有手动目标时分配；自动模式维持原来的轻量预览开销。
+        // 选择器定格之后不再覆盖：用户点的那张图必须和确认时是同一张。
+        bool editing = Volatile.Read(ref _manualEditing) != 0;
+        if (editing && Volatile.Read(ref _manualFrozen) != 0) return;
+        if (editing || ManualBinding.Bound)
+        {
+            var manualPixels = (byte[])_poseBgra.Clone();
+            var manualImage = BitmapSource.Create(PoseWidth, PoseHeight, 96, 96,
+                System.Windows.Media.PixelFormats.Bgra32, null, manualPixels, PoseWidth * 4);
+            manualImage.Freeze();
+            lock (_manualLock)
+            {
+                _manualPreview = new(manualImage, manualPixels, target?.Handle ?? IntPtr.Zero,
+                    (_cfg.ScreenWatchTarget ?? "").Trim(), target?.ProcessName ?? "", width, height, Environment.TickCount64);
+            }
+            if (editing) Interlocked.Exchange(ref _manualFrozen, 1);
+        }
+
+        string rectText = $"{width}x{height} · 抓整窗";
+        string targetText = target?.DisplayName ?? "";
+
+        lock (_lock)
+        {
+            _previewImage = frame;
+            _previewTarget = targetText;
+            _previewRect = rectText;
+        }
     }
 
     // ── 抓取的两条路（GDI 对象一律 try/finally 释放）────────────────────
@@ -1363,6 +1571,21 @@ public sealed class ScreenWatchService : IDisposable
     /// </summary>
     private void DownscaleToSmall(int width, int height)
     {
+        // 手动框选时只把框里那块放大到 160×90：用户框出来的往往只占窗口两三成（实测 0.228×0.356
+        // 在整幅缩到 160×90 之后只剩 36×32 像素），动作细节全被平均掉，才显得「框了也识别不准」。
+        // 框内铺满之后同样的动作有约 4–8 倍的像素在工作，运动量和相位都稳得多。
+        int srcX = 0, srcY = 0, srcW = width, srcH = height;
+        bool zoomed = false;
+        if (TryManualRoiNorm(out double nx, out double ny, out double nw, out double nh) && (nw < 0.92 || nh < 0.92))
+        {
+            int cx = Math.Clamp((int)Math.Round(nx * width), 0, width - 2);
+            int cy = Math.Clamp((int)Math.Round(ny * height), 0, height - 2);
+            int cw = Math.Clamp((int)Math.Round(nw * width), 8, width - cx);
+            int ch = Math.Clamp((int)Math.Round(nh * height), 8, height - cy);
+            if (cw >= 16 && ch >= 12) { srcX = cx; srcY = cy; srcW = cw; srcH = ch; zoomed = true; }
+        }
+        Volatile.Write(ref _smallZoomed, zoomed ? 1 : 0);
+
         var small = _smallBitmap!;
         using (var graphics = System.Drawing.Graphics.FromImage(small))
         {
@@ -1371,7 +1594,7 @@ public sealed class ScreenWatchService : IDisposable
             graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
             graphics.DrawImage(_sourceBitmap!,
                 new System.Drawing.Rectangle(0, 0, FrameWidth, FrameHeight),
-                0, 0, width, height, System.Drawing.GraphicsUnit.Pixel);
+                srcX, srcY, srcW, srcH, System.Drawing.GraphicsUnit.Pixel);
         }
 
         // LockBits + Marshal.Copy：绝不能在这个循环里用 GetPixel（慢几十倍）。
@@ -1415,14 +1638,27 @@ public sealed class ScreenWatchService : IDisposable
         finally { pose.UnlockBits(data); }
     }
 
-    /// <summary>整帧几乎全黑 / 全白 = 这一帧没抓到（PrintWindow 对独占全屏、受保护内容就是这样）。</summary>
+    /// <summary>
+    /// 这一帧算不算「没抓到」。两种情况：
+    /// ① 整帧几乎全黑 / 全白（PrintWindow 对独占全屏、受保护内容就是这样）；
+    /// ② 整帧几乎是同一个颜色（最亮和最暗只差一点点）—— D3D 加速的窗口被 PrintWindow 抓到时不返回黑，
+    ///    而是返回一整片均匀的深灰（实测 ffplay 默认渲染就是这样，均值约 16），旧判据只看均值，
+    ///    于是这种空帧被当成「画面很安静」分析下去，信号永远是 0。
+    /// </summary>
     private bool IsBlankFrame()
     {
         long sum = 0;
+        int min = 255, max = 0;
         for (int i = 0; i < _bgra.Length; i += 4)
-            sum += (_bgra[i] * 28 + _bgra[i + 1] * 151 + _bgra[i + 2] * 77) >> 8;
+        {
+            int luma = (_bgra[i] * 28 + _bgra[i + 1] * 151 + _bgra[i + 2] * 77) >> 8;
+            sum += luma;
+            if (luma < min) min = luma;
+            else if (luma > max) max = luma;
+        }
         double mean = sum / (double)(FrameWidth * FrameHeight);
-        return mean < BlankLumaLow || mean > BlankLumaHigh;
+        if (mean < BlankLumaLow || mean > BlankLumaHigh) return true;
+        return max - min < BlankSpanMin;
     }
 
     // ── 特征计算 ──────────────────────────────────────────────────────
@@ -1622,15 +1858,18 @@ public sealed class ScreenWatchService : IDisposable
         else if (suspect && score < ThresholdOff) suspect = false;
         Volatile.Write(ref _suspect, suspect ? 1 : 0);
 
-        // ⑦ 把这一帧排给识别模型（每 300ms 一次；推理在模型线程上做，这里只做一次缩放到短边 236）
-        MaybeQueueModelFrame(clock);
-        // ⑧ 同样的办法把这一帧排给姿态模型（每 250ms 一次，推理在姿态线程上做）
-        MaybeQueuePoseFrame(clock);
-        // 姿态运动：单独那份 320×180 喂给姿态运动源（它自己节流到 10–15fps 并拷一次缓冲）。
-        // 门就是姿态识别的总开关 —— 关着时这一行只是读一个 bool，别的什么都不做。
-        if (_cfg.PoseVisionEnabled) _poseMotion.Submit(_poseBgra, PoseWidth, PoseHeight);
-        // ⑧b 逐帧位置跟随（画面同步）：同一份 320×180 每帧都喂，抓帧线程毫秒级。
-        FeedScreenSync();
+        if (Volatile.Read(ref _manualEditing) == 0 && !ManualBinding.Bound)
+        {
+            // ⑦ 把这一帧排给识别模型（每 300ms 一次；推理在模型线程上做，这里只做一次缩放到短边 236）
+            MaybeQueueModelFrame(clock);
+            // ⑧ 同样的办法把这一帧排给姿态模型（每 250ms 一次，推理在姿态线程上做）
+            MaybeQueuePoseFrame(clock);
+            // 姿态运动：单独那份 320×180 喂给姿态运动源（它自己节流到 10–15fps 并拷一次缓冲）。
+            // 门就是姿态识别的总开关 —— 关着时这一行只是读一个 bool，别的什么都不做。
+            if (_cfg.PoseVisionEnabled) _poseMotion.Submit(_poseBgra, PoseWidth, PoseHeight);
+            // ⑧b 逐帧位置跟随（画面同步）：同一份 320×180 每帧都喂，抓帧线程毫秒级。
+            if (Volatile.Read(ref _manualEditing) == 0 && !ManualBinding.Bound) FeedScreenSync();
+        }
         // ⑨ 画面同步不在这里跑：抓帧线程每拍（成功、抓不到、出错）都会统一跑一次（见 WorkerLoop），
         //    否则「抓不到画面」的那些帧就没人负责把设备缓降回中了。
         Interlocked.Increment(ref _frameCount);
@@ -1920,6 +2159,15 @@ public sealed class ScreenWatchService : IDisposable
     /// 上一帧还没算完就不排队（不堆积）、两块画布交替用（画不到正在读的那一块）。
     /// 设置里关掉了姿态 / 模型没下载 / 模型还没加载起来，这里直接返回：一个字节都不碰。
     /// </summary>
+    /// <summary>这一帧的粗略签名：每隔 32 个像素取一个绿通道，换算成「平均亮度×1000」。用来判「画面几乎没变」。</summary>
+    private long FrameSignature()
+    {
+        long sum = 0;
+        int n = 0;
+        for (int i = 1; i < _bgra.Length; i += 32 * 4) { sum += _bgra[i]; n++; }
+        return n == 0 ? 0 : sum * 1000 / n;
+    }
+
     private void MaybeQueuePoseFrame(Stopwatch clock)
     {
         if (!_cfg.ScreenUsePose) return;
@@ -1930,6 +2178,15 @@ public sealed class ScreenWatchService : IDisposable
 
         long now = clock.ElapsedMilliseconds;
         if (now - _lastPoseJobMs < PoseIntervalDefaultMs) return;
+
+        // 静帧不喂模型：画面几乎没变的时候，姿态结果和上一拍一模一样，推理纯属白烧 CPU
+        //（实测画面同步开着时 5 个 ORT 线程能把 2 个核吃满，大头就是每秒十来次 640×640 推理）。
+        // 但不能彻底停：静着也要每隔 12 拍补一帧，否则一开始动的那一下要等一拍才发现。
+        long sig = FrameSignature();
+        if (_poseSigValid != 0 && Math.Abs(sig - _lastPoseSig) < PoseStillSigMin && (++_poseStillSkips % 12) != 0) return;
+        if (_poseSigValid == 0 || Math.Abs(sig - _lastPoseSig) >= PoseStillSigMin) _poseStillSkips = 0;
+        _lastPoseSig = sig;
+        _poseSigValid = 1;
 
         int sourceWidth = _sourceWidth, sourceHeight = _sourceHeight;
         if (sourceWidth <= 0 || sourceHeight <= 0) return;
@@ -1973,10 +2230,64 @@ public sealed class ScreenWatchService : IDisposable
         catch (Exception ex) { AppLogger.Warn($"画面同步：叫醒姿态线程失败 —— {ex.Message}"); }
     }
 
+    /// <summary>
+    /// 手动框选优先：用户在预览图上亲手拖过一块，就只跟那块 —— 这比 YOLO 猜的框准，
+    /// 所以压过姿态框（<see cref="TryPoseRoi"/> 开头先问它）。坐标是设置里存着的 0–1 归一化值。
+    /// </summary>
+    /// <summary>手动框的归一化矩形（0–1）。没开 / 没框 / 解析失败都返回 false。</summary>
+    private bool TryManualRoiNorm(out double x, out double y, out double w, out double h)
+    {
+        x = y = w = h = 0;
+        if (!_cfg.ScreenUseManualRoi) return false;
+        return TryParseRoi(_cfg.ScreenManualRoi, out x, out y, out w, out h);
+    }
+
+    private bool TryManualRoi(out int x0, out int y0, out int x1, out int y1)
+    {
+        x0 = y0 = x1 = y1 = 0;
+        if (!_cfg.ScreenUseManualRoi) return false;
+        // 已经按框裁剪放大过了：整幅小图就是用户框的那块，不用再切一刀。
+        if (Volatile.Read(ref _smallZoomed) != 0)
+        {
+            x0 = 0; y0 = 0; x1 = FrameWidth; y1 = FrameHeight;
+            return true;
+        }
+        if (!TryParseRoi(_cfg.ScreenManualRoi, out double left, out double top, out double width, out double height)) return false;
+
+        x0 = Math.Clamp((int)Math.Floor(left * FrameWidth), 0, FrameWidth - 1);
+        y0 = Math.Clamp((int)Math.Floor(top * FrameHeight), 0, FrameHeight - 1);
+        x1 = Math.Clamp((int)Math.Ceiling((left + width) * FrameWidth), x0 + 1, FrameWidth);
+        y1 = Math.Clamp((int)Math.Ceiling((top + height) * FrameHeight), y0 + 1, FrameHeight);
+        return x1 - x0 >= 8 && y1 - y0 >= 8;
+    }
+
+    /// <summary>解析设置里的 "x,y,w,h"（0–1 归一化）。解析不了返回 false，调用方退回按整幅/姿态处理。</summary>
+    private static bool TryParseRoi(string? text, out double x, out double y, out double w, out double h)
+    {
+        x = y = w = h = 0;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string[] parts = text.Split(',');
+        if (parts.Length != 4) return false;
+        var v = new double[4];
+        for (int i = 0; i < 4; i++)
+        {
+            if (!double.TryParse(parts[i].Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out v[i]) || !double.IsFinite(v[i]))
+                return false;
+        }
+        x = Math.Clamp(v[0], 0, 1);
+        y = Math.Clamp(v[1], 0, 1);
+        w = Math.Clamp(v[2], 0, 1 - x);
+        h = Math.Clamp(v[3], 0, 1 - y);
+        return w > 0 && h > 0;
+    }
+
     /// <summary>取这一帧要用的 ROI（160×90 小图上的像素矩形）。返回 false = 退回中央 60% 那块。</summary>
     private bool TryPoseRoi(out int x0, out int y0, out int x1, out int y1)
     {
         x0 = y0 = x1 = y1 = 0;
+        // 手动框优先：亲手指的这块比模型猜的准，钩上了就不看 YOLO 框。
+        if (TryManualRoi(out x0, out y0, out x1, out y1)) return true;
         if (!_cfg.ScreenUsePose) return false;
         if (Volatile.Read(ref _poseLocated) == 0) return false;
 
@@ -2094,6 +2405,14 @@ public sealed class ScreenWatchService : IDisposable
     }
 
     /// <summary>每个抓帧周期跑一次：决定这一拍要不要驱动设备、驱动到哪。任何异常都消化在这里。</summary>
+    /// <summary>
+    /// 范围预览：用户拖动「活动范围」把手时，设备要停在指定位置给他看。
+    /// 这一路每 50ms 发一帧，不主动松手的话预览位置下一拍就被冲掉
+    /// （用户原话「滑动时设备也跟着到指定范围」）。到时自己接回来，不用重开。
+    /// </summary>
+    public void PauseForRangePreview(int ms = 1000) =>
+        Interlocked.Exchange(ref _previewPauseUntil, Environment.TickCount64 + Math.Clamp(ms, 200, 5000));
+
     private void FollowTick(Stopwatch clock)
     {
         try { FollowTickCore(clock.Elapsed.TotalSeconds); }
@@ -2115,6 +2434,26 @@ public sealed class ScreenWatchService : IDisposable
         if (engine is null) return;                       // App 还没起来（自检/渲染探针）：不驱动
         long now = Environment.TickCount64;
 
+        if (Volatile.Read(ref _manualEditing) != 0)
+        {
+            SetFollowReason("正在手动选目标：画面跟随暂停");
+            return;
+        }
+
+        // ⓪ 正在调活动范围：先把设备让给预览那一路摆位置。
+        //    不松手的话本类每 50ms 一发，用户拖完看到的还是旧位置（「滑动时设备没跟着到指定范围」）。
+        if (now < Interlocked.Read(ref _previewPauseUntil))
+        {
+            Volatile.Write(ref _followWant, 0);
+            if (Volatile.Read(ref _followActive) != 0)
+            {
+                Volatile.Write(ref _followActive, 0);
+                ReleaseFollowOwnership(engine);
+            }
+            SetFollowReason("正在调活动范围：画面同步先停手（调完自己接回来）");
+            return;
+        }
+
         // 姿态门控一拍只读一次：⑤ 的入场闸门和 ⑦ 的深度/频率必须看同一份裁决。
         // 分开读会出现「这一行判它断了 → 缓降；下一行又判它没断 → 重新接管」，
         // 实测就是每两三秒抖一下（2026-11 真片源复测）。
@@ -2125,17 +2464,14 @@ public sealed class ScreenWatchService : IDisposable
         // ① 正在缓降：先把幅度线性收到中位，收完再交控制权（绝不急停）。
         if (Volatile.Read(ref _followEasing) != 0) { StepFollowEase(engine, now, nowSeconds); return; }
 
-        // ② 用户没让画面驱动设备 —— 默认就是这一条（ScreenWatchEnabled 默认关，伴随默认也关）。
-        //    三道门都要过：伴随开着（这条来源属于伴随）、画面同步开着、来源是「画面内容」或「自动」。
+        // ② 用户没让画面驱动设备 —— 默认就是这一条（ScreenWatchEnabled 默认关）。
+        //    **只看这一个开关**：画面同步是伴随里独立的一路，不再看「动作来源」，
+        //    也不再要求伴随开着 —— 开画面就跟画面，开声音就跟声音，两个都开时画面优先。
         string source = (_cfg.CompanionSource ?? "").Trim().ToLowerInvariant();
-        bool sourceAllows = source is "screen" or "auto";
-        if (!_cfg.ScreenWatchEnabled || !_cfg.RuleEngineEnabled || !sourceAllows)
+        if (!_cfg.ScreenWatchEnabled)
         {
-            string why = !_cfg.ScreenWatchEnabled
-                ? "要跟着画面动：先在上面点「开启同步」"
-                : !_cfg.RuleEngineEnabled
-                    ? "要跟着画面动：先在「游戏伴随」里点「开启游戏伴随」"
-                    : "要让画面驱动设备：在「游戏伴随」里把「动作来源」选成「画面内容 · 跟着画面里的动作走」";
+            // 用户说过「你搞的门槛太复杂了我都不知道怎么让它动起来」：原因一律先给一键按钮。
+            string why = "要跟着画面动：点上面那个「一键：让画面直接带动设备」，或者手工点「开启同步」";
             Volatile.Write(ref _followWant, 0);
             // 本来在驱动（用户刚把开关关掉 / 换了来源）就走缓降，别让设备停在半路 ——
             // 更别把控制权握在手里（那会让声音响应、游戏桥都发不出去）。
@@ -2149,33 +2485,89 @@ public sealed class ScreenWatchService : IDisposable
         if (blocker is not null)
         {
             Volatile.Write(ref _followWant, 0);
+            // 主动暂停 / 急停 / 关停：原地等，不要缓降（那等于在用户喊停的时候还动一下）。
+            // 只有「别人正在用设备」这种让位才收尾缓降。
+            FollowLossKind blockerKind = engine.EmergencyStopped || engine.IsPaused
+                ? FollowLossKind.StoppedByUser
+                : FollowLossKind.TargetExited;
+            if (FollowContinuityPolicy.Decide(blockerKind) == FollowLossResponse.Wait)
+            {
+                SetFollowReason(blocker);
+                return;
+            }
             if (Volatile.Read(ref _followActive) != 0) BeginFollowEase(engine, now, blocker);
             else SetFollowReason(blocker);
             return;
         }
 
         // ④ 目标：绑定的那个程序在前台，而且看的正是它的窗口。
-        string targetProblem = FollowTargetProblem();
+        //    丢信号必须分三种：切窗/遮挡（降级继续跑，切回来平滑接上）、真退出（缓降收场）、
+        //    主动暂停/关停（不动、不自动重启）。原来一刀切「缓降回中」，
+        //    切个窗口再切回来就得从零重新起势，手感是断的。
+        bool manualBound = ManualBinding.Bound;
+        string targetProblem = manualBound ? ManualTargetProblem() : FollowTargetProblem();
         if (targetProblem.Length > 0)
         {
+            FollowLossKind kind = ClassifyTargetProblem(targetProblem);
+            if (FollowContinuityPolicy.Decide(kind) == FollowLossResponse.Degrade
+                && TryDriveDegraded(engine, now, nowSeconds, kind, targetProblem))
+                return;
             Volatile.Write(ref _followWant, 0);
             if (Volatile.Read(ref _followActive) != 0) BeginFollowEase(engine, now, targetProblem);
             else SetFollowReason(targetProblem);
             return;
         }
 
+        // 手动绑定已经明确指定目标，不再依赖自动分类/姿态；丢失也不改跟别的对象。
+        if (TryFollowManual(engine, now)) return;
+
         // ⑤ 入场闸门：像素分过线 **或** 姿态信号正新鲜 —— 二者任一成立就继续。
         //    只用像素分会把「人动得很轻/几乎是静止」判成没事发生，姿态信号根本没机会发力；
         //    姿态开着且这一拍有信号时，直接放行（复位/兜底仍走 ⑦ 的 poseGate 裁决）。
-        // 姿态「还算数」：这一拍有效，或还在 PoseHoldMs 保持窗口里（和 ⑦ 用的是同一份裁决）。
-        bool poseLive = _cfg.PoseVisionEnabled && !poseGate.Fallback;
+        // 姿态「还算数」：这一拍有效（或还在 PoseHoldMs 保持窗口里），<b>并且</b>速度过了死区。
+        // 原来只看「信号有没有」：角色站着不动，姿态关键点自己也会抖，抖出来的速度就能过 1–3 /秒，
+        // 于是人没做动作设备也在跟（2026-11-23 用户实测「我角色没有性动作啊」）。
+        bool poseValid = _cfg.PoseVisionEnabled && !poseGate.Fallback;
+        bool poseLive = poseValid && poseGate.Speed >= Math.Max(0, _cfg.ScreenSyncPoseMinSpeed);
         //    姿态不可用时再看「主体块」：2D 游戏/手绘画面里角色动得很轻，整幅像素分根本不过线（实测 10/10 采样
         //    suspect=false、设备一动不动），而全屏特效又会把它顶过线 —— 只看整幅分两头都不对。
-        if ((Volatile.Read(ref _suspect) == 0 && !poseLive && !blobLive) || Volatile.Read(ref _captureFailed) != 0)
+        // 像素这一路还要过四条可拖动的门槛（0 = 不筛）：这是「画面里到底有没有人在干」的第二道闸。
+        bool pixelsPass = Volatile.Read(ref _suspect) != 0
+            && PassesMin(_cfg.ScreenSyncMinSceneScore, Volatile.Read(ref _sceneScore))
+            && PassesMin(_cfg.ScreenSyncMinModelScore, Volatile.Read(ref _modelScore))
+            && PassesMin(_cfg.ScreenSyncMinMotion, Volatile.Read(ref _motion))
+            && PassesMin(_cfg.ScreenSyncMinRhythm, Volatile.Read(ref _rhythm));
+        bool liveNow = pixelsPass || poseLive || blobLive;
+        if (Volatile.Read(ref _captureFailed) != 0) liveNow = false;
+
+        // 确认拍数（迟滞）：进门前要连续几拍都在动、收手前要连续几拍都没动，
+        // 否则分数在门槛上下漂就会「开始要动 → 没事发生 → 开始要动」每两三秒抽一下。
+        if (liveNow) { _liveStreak = Math.Min(_liveStreak + 1, 10000); _deadStreak = 0; }
+        else { _deadStreak = Math.Min(_deadStreak + 1, 10000); _liveStreak = 0; }
+        int enterFrames = Math.Clamp(_cfg.ScreenSyncEnterFrames, 1, 60);
+        int exitFrames = Math.Clamp(_cfg.ScreenSyncExitFrames, 1, 120);
+        bool engagedNow = Volatile.Read(ref _followWant) != 0;
+        bool live = engagedNow ? _deadStreak < exitFrames : _liveStreak >= enterFrames;
+
+        if (!live)
         {
+            // 抓不到帧 = 遮挡/最小化：按「抓取丢失」降级跑（慢速小幅），不是退出。
+            if (Volatile.Read(ref _captureFailed) != 0
+                && TryDriveDegraded(engine, now, nowSeconds, FollowLossKind.CaptureLost,
+                    $"抓不到画面（{_failureReason}）"))
+                return;
+
+            // 先别一帧判死：刚还在动、这几帧却「没事发生」，最常见的原因是那块画面被别的窗口盖住了
+            // （用户实测：框在浏览器上，鼠标一切窗口就整块变黑，抓回来的不是他的画面）。
+            // 这时拿上次真正下发的位置接着跑一小会儿，比当场顿住再重新起势自然得多。
+            if (HoldLastMotion(engine, now)) return;
+
+            // 画面好好的、本来就没在动：**不是丢信号**，别缓降、别放控制权 ——
+            // 停在原处等着，动起来就平滑接上（急停/暂停/主动关闭由上面几道开关拦住，不会走到这里）。
+            if (HoldStill(engine, now)) return;
             Volatile.Write(ref _followWant, 0);
-            if (Volatile.Read(ref _followActive) != 0) BeginFollowEase(engine, now, "画面里没事发生了：缓降回中");
-            else SetFollowReason("画面里没事发生时不动（场景强度过线才动）");
+            if (Volatile.Read(ref _followActive) != 0) BeginFollowEase(engine, now, "画面本来没在动，设备还在过渡：先收回到中位");
+            else SetFollowReason("画面里本来就没在动：不动，等它动起来（不是退出）");
             return;
         }
 
@@ -2204,6 +2596,27 @@ public sealed class ScreenWatchService : IDisposable
         // ⑦ 逐帧位置跟随（画面同步）优先：质量门过线就按画面位置逐帧下发。
         //    过不了（周期自相关不够 / ROI 几乎没动）才退回原来的「节奏 + 语汇」路径 ——
         //    那条路原样保留，作为信号丢失、周期太差时的兜底。
+        // ⑦a 位置镜像（真同步）：框里人往下沉多少，设备就推到那个位置；人动到哪就跟到哪。
+        double[]? mirrorAxes = TryBuildMirrorAxes(engine, poseGate, out string mirrorText);
+        if (mirrorAxes is not null)
+        {
+            if (engine.TrySendDirectAxes(mirrorAxes, Math.Clamp(_frameIntervalEmaMs / 1000.0, 0.02, 0.25)))
+            {
+                Volatile.Write(ref _followActive, 1);
+                Volatile.Write(ref _followMainAxis, Math.Clamp(mirrorAxes[0], 0, 100));
+                _lastFollowSendMs = now;
+                NoteSentAxes(mirrorAxes, now);
+                SetFollowReason(mirrorText);
+            }
+            else
+            {
+                SetFollowReason("已经过线了，但这一拍没能下发（设备正在过渡），下一拍再试");
+                if (Volatile.Read(ref _followActive) == 0 && Volatile.Read(ref _followEasing) == 0)
+                    ReleaseFollowOwnership(engine);
+            }
+            return;
+        }
+
         double[]? syncAxes = TryBuildSyncAxes(engine, out double syncInterpolation, out string syncText);
         if (syncAxes is not null)
         {
@@ -2212,7 +2625,9 @@ public sealed class ScreenWatchService : IDisposable
                 Volatile.Write(ref _followActive, 1);
                 Volatile.Write(ref _followDepth, _sync.RelativeDepth);
                 Volatile.Write(ref _followHz, _sync.Hz);
+                Volatile.Write(ref _followMainAxis, Math.Clamp(syncAxes[0], 0, 100));
                 _lastFollowSendMs = now;
+                NoteSentAxes(syncAxes, now);
                 SetFollowReason(syncText);
             }
             else
@@ -2236,6 +2651,45 @@ public sealed class ScreenWatchService : IDisposable
         double range = FollowComputeRange(engine, depth);
         double hz = FollowComputeHz(engine, range, drive);
         double dt = FollowDeltaSeconds(nowSeconds);
+
+        // 画面 + 声音同开：两路**各自**都给一份（深度, 节奏），交给 SignalFusion 互证融合 ——
+        // 说的是同一件事就取几何平均、分歧就按置信度用强的那一路，弱的那一路只留轻牵引。
+        // 不再「声音一有 BPM 就把画面节奏硬覆盖」：那是盲从鼓点，配乐快的素材会把动作带飞。
+        bool audioRhythm = TryReadAudioRhythm(out double audioBump, out double audioHz, out double audioConf, out string audioSource);
+        string fuseDriver = "画面";
+        if (audioRhythm)
+        {
+            var screenLane = new SignalLane(true, depth, hz, 0.80);
+            double audioDepth = Math.Clamp(_cfg.AudioDepthEffective / 100.0 * (0.55 + 0.45 * audioBump), 0.05, 1.0);
+            var audioLane = new SignalLane(audioHz > 0, audioDepth,
+                audioHz * Math.Clamp(_cfg.AudioSpeedEffective, 0.3, 3.0), audioConf);
+            var fused = SignalFusion.Fuse(screenLane, audioLane, true, true);
+            if (fused.Confidence > 0)
+            {
+                depth = SlewFollowDepth(Math.Clamp(fused.Depth, 0.05, 1.0));
+                range = FollowComputeRange(engine, depth);
+                hz = Math.Clamp(fused.Hz, FollowHzMin, FollowHzMax);
+                fuseDriver = audioSource.Length > 0 ? fused.Driver + "（" + audioSource + "）" : fused.Driver;
+            }
+        }
+
+        // 降级中（刚切走过窗口 / 画面抓不到）：恢复正常这一拍就开始平滑回到原来的深度与节奏。
+        if (_degradeBlend > 0) _degradeBlend = FollowContinuityPolicy.Smooth(_degradeBlend, 0, dt, FollowContinuityPolicy.ResumeSeconds);
+        if (_degradeBlend > 0.001)
+        {
+            depth *= 1 - _degradeBlend * (1 - FollowContinuityPolicy.DegradedDepthScale);
+            range = FollowComputeRange(engine, depth);
+            hz *= 1 - _degradeBlend * (1 - FollowContinuityPolicy.DegradedSpeedScale);
+        }
+
+        // 挣扎连点：只在绑定的游戏在前台、用户真的在连点时才有加成。加在当前这个动作上、不换招，
+        // 停手后由 StruggleAccelerator 自己衰减回原状态；两路口径统一用引擎暴露的倍数。
+        if (engine.StruggleSpeedScale > 1.0001 || engine.StruggleDepthBoost > 0.0001)
+        {
+            depth = Math.Clamp(depth * (1 + engine.StruggleDepthBoost), 0.05, 1.0);
+            range = FollowComputeRange(engine, depth);
+            hz = Math.Clamp(hz * Math.Clamp(engine.StruggleSpeedScale, 1.0, 1.4), FollowHzMin, FollowHzMax);
+        }
 
         // 相位推进 + 有界修正：
         //   ① 先按自己的频率走一拍（φ += f·dt）；
@@ -2286,12 +2740,19 @@ public sealed class ScreenWatchService : IDisposable
         if (Math.Abs(lean) > 0.01)
             values[0] = Math.Clamp(values[0] + lean, 0, 100);
 
+        // 声音的强弱叠在行程上：响的时候这一下顶得更深，安静时收回浅处。
+        if (audioRhythm && audioBump > 0)
+            values[0] = Math.Clamp(values[0] + audioBump * range * FollowAudioPush, 0, 100);
+
+        ApplySyncRange(values);
         if (engine.TrySendDirectAxes(values, interpolation))
         {
             Volatile.Write(ref _followActive, 1);
             Volatile.Write(ref _followDepth, depth);
             Volatile.Write(ref _followHz, hz);
+            Volatile.Write(ref _followMainAxis, Math.Clamp(values[0], 0, 100));
             _lastFollowSendMs = now;
+            NoteSentAxes(values, now);
             double lockPercent = Math.Clamp(_cfg.ScreenPhaseLock, 0, 1);
             // 用主体尺寸判的时候就说「主体在靠近」，退回整幅位移兜底时老实说「画面在靠近」。
             bool fromSubject = Volatile.Read(ref _subjectDirection);
@@ -2483,6 +2944,13 @@ public sealed class ScreenWatchService : IDisposable
     /// 断超过保持期（<see cref="PoseHoldMs"/>）→ 回落画面分。这是唯一的回落点，
     /// 回落日志只在「跟姿态 → 回落」翻转的那一刻写一条，之后每一拍静默。
     /// </summary>
+    /// <summary>
+    /// 门槛判定：<paramref name="min"/> 是用户拖出来的线，0 = 不筛（老行为）；
+    /// 非 0 时实际值必须达到它才算「过线」。用「大于等于」而不是严格大于：拖到正好等于当前值时就该放行。
+    /// </summary>
+    private static bool PassesMin(double min, double value)
+        => !(min > 0) || value >= min;
+
     private PoseMotionSource.PoseFollowSignal ReadPoseGate(long nowMs)
     {
         bool poseOk = TryPoseMotion(out double poseDepth, out double poseSpeed);
@@ -2544,16 +3012,182 @@ public sealed class ScreenWatchService : IDisposable
     /// 为什么开方：深度是按场景分线性归一化的，线性乘上去会让「刚过线」永远只有十几点；
     /// 开方把中低深度整体抬起来（过线那一刻 already ≈0.39×基准），高深度还是封在基准上。
     /// </summary>
+    /// <summary>
+    /// 把 0–100 的轴值搬进用户设的「画面同步活动范围」：主轴（L0）按 [下限, 上限] 线性铺满，
+    /// 其它轴（旋转 / 倾斜）按同一个比例围绕中位收放 —— 否则缩了范围之后侧轴还是原幅度，看着就不协调。
+    /// 为什么不是直接夹：直接夹会把正弦削成梯形，设备在两端「顶住」一下再回来，手感是撞墙。
+    /// </summary>
+    private static double MapIntoRange(double value, int min, int max, bool mainAxis)
+    {
+        double lo = Math.Clamp(min, 0, 100);
+        double hi = Math.Clamp(max, lo, 100);
+        double span = hi - lo;
+        double v = Math.Clamp(value, 0, 100);
+        if (span >= 99.5) return v;
+        if (mainAxis) return Math.Clamp(lo + v * span / 100.0, lo, hi);
+        double center = (lo + hi) / 2.0;
+        return Math.Clamp(center + (v - 50) * span / 100.0, 0, 100);
+    }
+
+    /// <summary>这一拍下发前统一过一遍活动范围（L0 铺满，其余按比例收）。</summary>
+private void ApplySyncRange(double[] values)
+    {
+        int lo = _cfg.ScreenSyncMinPosition, hi = _cfg.ScreenSyncMaxPosition;
+        for (int i = 0; i < values.Length; i++)
+            values[i] = MapIntoRange(values[i], lo, hi, i == 0);
+    }
+
+
+    // ── 位置镜像（真同步）+「画面给位置、声音给节奏」──────────────────────
+    private const double MirrorDeadzone = 0.010;   // 竖直位置死区（0–1）：小于它当没动，免得设备一直小抖
+    private const double FollowAudioPush = 0.30;   // 声音顶多把这一下再推 30% 行程
+    private double _mirrorPosition = double.NaN;   // 平滑后的竖直位置 0–1
+    private double _mirrorSent = double.NaN;       // 上次真正下发的竖直位置（死区用）
+
+    /// <summary>
+    /// 读一眼声音侧：画面和声音同开时，声音负责「节奏」，画面负责「位置」。
+    /// 返回 false = 声音没在响（或者这条配合被关掉了），画面就自己按画面节奏走。
+    /// </summary>
+    private bool TryReadAudioRhythm(out double bump, out double hz, out double confidence, out string source)
+    {
+        bump = 0;
+        hz = 0;
+        confidence = 0;
+        source = "";
+        if (!_cfg.ScreenSyncAudioRhythm || !_cfg.AudioReactiveEnabled) return false;
+        AudioReactiveService? audio = App.AudioReactive;
+        if (audio is null) return false;
+        double energy = Math.Clamp(audio.Energy, 0, 1);
+        double pulse = Math.Clamp(audio.BeatPulse, 0, 1);
+        // 静音时不掺和：声音一停就纯跟画面，免得「没声音了反而顶得更深」这种怪事。
+        if (!audio.WantsDevice && energy <= 0.05 && pulse <= 0.05) return false;
+        bump = Math.Clamp(Math.Max(pulse, energy * 0.7), 0, 1);
+
+        // 节奏不直接拿谱通量 BPM：先看这一帧的分类型结论（主体 / 配乐 / 只有配乐要打折）。
+        RhythmHint hint = audio.GetRhythmHint();
+        if (hint.Valid && hint.Hz > 0)
+        {
+            hz = hint.Hz;
+            confidence = Math.Clamp(hint.Confidence, 0, 1);
+            source = hint.Source;
+        }
+        return true;
+    }
+
+    private bool TryReadAudioRhythm(out double bump, out double bpm)
+    {
+        bool ok = TryReadAudioRhythm(out bump, out double hz, out _, out _);
+        bpm = hz * 60.0;
+        return ok && bpm >= 20;
+    }
+
+    /// <summary>
+    /// 位置镜像（画面同步的「真同步」路径）：框里人往下沉多少，设备就推到多深 —— 不是「深度 × 正弦」来回抽。
+    /// 返回 null = 这一拍不能镜像（没人在框里 / 用户关掉了），调用方往下退。
+    /// </summary>
+    private bool TryFollowManual(MotionEngine engine, long now)
+    {
+        ManualTrackSignal signal;
+        lock (_manualLock)
+        {
+            signal = _manualTracker.Signal;
+            if (!signal.Bound) return false;
+            if (_manualAtMs > 0 && now - _manualAtMs > 500)
+            {
+                _manualTracker.Invalidate("画面停更了，请重绑");
+                signal = _manualTracker.Signal;
+            }
+        }
+        if (!signal.Located || signal.Lost)
+        {
+            Volatile.Write(ref _followWant, 0);
+            if (Volatile.Read(ref _followActive) != 0) BeginFollowEase(engine, now, signal.Status);
+            else SetFollowReason(signal.Status);
+            return true;
+        }
+        Volatile.Write(ref _followWant, 1);
+        if (!engine.CanAcceptDirectInput || !engine.TryClaimDirectInput(FollowOwner))
+        { SetFollowReason("手动目标已跟住，等待设备让位"); return true; }
+        double position = _cfg.ScreenSyncInvertDirection ? 1 - signal.Position : signal.Position;
+        double range = Math.Clamp(FollowComputeRange(engine, 1.0), 5, 50);
+        double[] values = _syncAxes;
+        Array.Fill(values, 50);
+        values[0] = Math.Clamp(50 + (position - 0.5) * 2 * range, 0, 100);
+        if (_cfg.AutoTwistEnabled && engine.MultiAxisMotion) values[3] = AutoTwistLink.ComputeLinked(values[0],
+            _cfg.AutoTwistAmplitudePercent, _cfg.LovenseRotateTopPercent, _cfg.LovenseRotateDeepPercent);
+        ApplySyncRange(values);
+        if (engine.TrySendDirectAxes(values, Math.Clamp(_frameIntervalEmaMs / 1000.0, 0.02, 0.25)))
+        {
+            Volatile.Write(ref _followActive, 1);
+            Volatile.Write(ref _followDepth, position);
+            Volatile.Write(ref _followMainAxis, Math.Clamp(values[0], 0, 100));
+            Volatile.Write(ref _followHz, 0);
+            _lastFollowSendMs = now;
+            _holdUntilMs = 0;
+            NoteSentAxes(values, now);
+            SetFollowReason($"手动目标 · 位置 {position * 100:0}% · 匹配 {signal.Confidence * 100:0}%");
+        }
+        else SetFollowReason("手动目标已跟住，设备暂未接收位置");
+        return true;
+    }
+
+    private double[]? TryBuildMirrorAxes(MotionEngine engine, PoseMotionSource.PoseFollowSignal poseGate, out string statusText)
+    {
+        statusText = "";
+        if (!_cfg.ScreenSyncMirrorPose) return null;
+        if (poseGate.Fallback) return null;            // 框里没人：不镜像，交给下面的兜底/缓降
+        double norm = Math.Clamp(poseGate.Depth / 100.0, 0, 1);
+        if (_cfg.ScreenSyncInvertDirection) norm = 1 - norm;
+        // 平滑：关键点逐帧会抖，直接映射就是设备小抖；0.45 约两三帧跟上，手感还跟手。
+        _mirrorPosition = double.IsNaN(_mirrorPosition) ? norm : _mirrorPosition + (norm - _mirrorPosition) * 0.45;
+        if (!double.IsNaN(_mirrorSent) && Math.Abs(_mirrorPosition - _mirrorSent) < MirrorDeadzone)
+            _mirrorPosition = _mirrorSent;             // 抖不到 1% 就当没动
+        _mirrorSent = _mirrorPosition;
+
+        double range = Math.Clamp(FollowComputeRange(engine, _mirrorPosition), 5, 90);
+        bool audioOn = TryReadAudioRhythm(out double audioBump, out double audioBpm);
+        double[] values = _syncAxes;
+        double pos = 50 + (_mirrorPosition - 0.5) * 2.0 * range;
+        if (audioOn && audioBump > 0) pos += audioBump * range * FollowAudioPush;   // 声音越响，这一下顶得更深
+        values[0] = Math.Clamp(pos, 0, 100);
+        values[1] = 50;
+        values[2] = 50;
+        values[3] = 50;
+        if (_cfg.AutoTwistEnabled && engine.MultiAxisMotion)
+        {
+            values[3] = AutoTwistLink.ComputeLinked(
+                values[0], _cfg.AutoTwistAmplitudePercent,
+                _cfg.LovenseRotateTopPercent, _cfg.LovenseRotateDeepPercent);
+        }
+        values[4] = 50;
+        values[5] = 50;
+        if (_cfg.ScreenSyncTiltEnabled && engine.MultiAxisMotion)
+        {
+            values[4] = Math.Clamp(_sync.R1, 0, 100);
+            values[5] = Math.Clamp(_sync.R2, 0, 100);
+        }
+        ApplySyncRange(values);
+        string audioText = audioOn
+            ? (audioBpm > 0 ? $" · 跟声音的拍子 {audioBpm:0} BPM" : " · 跟着声音的强弱加重")
+            : "";
+        statusText = $"正在跟着人同步：人沉到 {_mirrorPosition * 100:0}% · 推 {values[0]:0}%{audioText}";
+        return values;
+    }
+
     private double FollowComputeRange(MotionEngine engine, double depth)
     {
         double comfort = Math.Clamp(engine.ActiveComfortProfile.MaxIntensity, 0.3, 1.0);
         double presence = Math.Sqrt(Math.Max(0.15, Math.Clamp(depth, 0, 1)));
-        return Math.Clamp(FollowAmplitudeBase * comfort * presence, 5, 60);
+        // 深度：50 = 原来的幅度基准；100 = 两倍行程，5 = 几乎不动。只缩放行程，不动活动范围的上下限（那是 MapIntoRange 的事）。
+        double depthScale = _cfg.ScreenDepthEffective / 50.0;
+        return Math.Clamp(FollowAmplitudeBase * comfort * presence * depthScale, 5, 90);
     }
 
     private double FollowComputeHz(MotionEngine engine, double range, PoseMotionSource.PoseFollowSignal poseGate)
     {
         double hz;
+        // 节奏倍率（界面「节奏」滑条）：1 = 原速，0.3 = 三倍慢，3 = 三倍快。机械上限仍由下面的 maxHz 兜住。
+        double speedScale = _cfg.ScreenSpeedEffective;
         if (!poseGate.Fallback)
         {
             // 姿态模式（含保持期）：频率由「相邻帧位移的速度」直接定 —— 这一拍要走的半幅已经在 range 里，
@@ -2568,13 +3202,13 @@ public sealed class ScreenWatchService : IDisposable
             hz = Volatile.Read(ref _rhythmHz);
             if (!double.IsFinite(hz) || hz < RhythmMinHz) hz = FollowFallbackHz;   // 节奏没测出来：用兜底频率，别定住不动
         }
-        hz = Math.Clamp(hz, FollowHzMin, FollowHzMax);
+        hz = Math.Clamp(hz * speedScale, FollowHzMin, FollowHzMax * speedScale);
 
         // travel 必须和实际下发的 range 用同一个数：用 depth 估会让上限偏高，
         // 于是实得行程被限速器吃掉（仿真：30@1.9Hz 只走出 87%，深处还会掉到 53%）。
         double travel = Math.Max(5, range);
         double maxHz = engine.ActiveComfortProfile.MaxAxisSpeedPerSecond / (Math.Tau * travel);
-        return Math.Clamp(Math.Min(hz, maxHz), FollowHzMin, FollowHzMax);
+        return Math.Clamp(Math.Min(hz, maxHz), FollowHzMin, FollowHzMax * speedScale);
     }
 
     /// <summary>
@@ -2587,6 +3221,14 @@ public sealed class ScreenWatchService : IDisposable
         interpolationSeconds = 1.0 / TargetFps;
         statusText = "";
         if (!_sync.Ok) return null;
+        // 整幅画面在平移（摇镜/推拉）时，画面里的东西全都在动，跟着它抽就是把镜头运动当角色动作。
+        // 这一拍先不出位置信号，让上层按原来的节奏路径处理，并如实说明原因。
+        if (_sync.PanDominant)
+        {
+            statusText = $"镜头在平移（每帧 {_sync.PanPixels:0}px，位移 {_sync.PanFraction * 100:0}% 来自整幅移动）：先不把整幅移动当成动作";
+            return null;
+        }
+
 
         if (!_sync.TryGetNormalizedPosition(_cfg.ScreenSyncInvertDirection, out double norm)) return null;
 
@@ -2613,6 +3255,7 @@ public sealed class ScreenWatchService : IDisposable
             values[4] = Math.Clamp(_sync.R1, 0, 100);
             values[5] = Math.Clamp(_sync.R2, 0, 100);
         }
+        ApplySyncRange(values);
         interpolationSeconds = Math.Clamp(_frameIntervalEmaMs / 1000.0, 0.02, 0.25);
         string tiltText = _cfg.ScreenSyncTiltEnabled && engine.MultiAxisMotion
             ? $" · 倾斜 R1 {values[4]:0} / R2 {values[5]:0}"
@@ -2680,6 +3323,42 @@ public sealed class ScreenWatchService : IDisposable
     /// 为什么两条都要：只看前台的话，「绑着游戏、却在看浏览器窗口」会拿浏览器的画面去驱动游戏的动作；
     /// 只看窗口的话，游戏切到后台了设备还在动 —— 这违反这条信号一直以来的「离开前台就停」语义。
     /// </summary>
+    private string ManualTargetProblem()
+    {
+        if (Volatile.Read(ref _captureFailed) != 0) return $"抓不到画面（{_failureReason}），画面同步不动";
+        ScreenWatchWindow? target = CurrentTarget();
+        if (target is null) return "找不到已手动绑定的窗口：重新选窗并重绑";
+        string expectedTarget = (_cfg.ScreenWatchTarget ?? "").Trim();
+        if (!string.Equals(expectedTarget, _manualTarget, StringComparison.Ordinal))
+            return "画面目标已更改，请重新手动绑定";
+        string process = target.ProcessName;
+        if (_manualProcess.Length > 0 && !string.Equals(process, _manualProcess, StringComparison.OrdinalIgnoreCase))
+            return "画面进程已更改，请重新手动绑定";
+        if (target.Handle != _manualWindow || target.Width != _manualWidth || target.Height != _manualHeight)
+            return "窗口或尺寸已更改，请重新手动绑定";
+
+        bool ignoreForeground = _cfg.SimulationMode
+            && string.Equals(Environment.GetEnvironmentVariable("HEXA_IGNORE_FOREGROUND"), "1", StringComparison.Ordinal);
+        bool needForeground = _cfg.ScreenFollowOnlyWhenForeground || Volatile.Read(ref _lastCapturePath) == 2;
+        if (needForeground && !ignoreForeground)
+        {
+            string foreground = "";
+            try
+            {
+                IntPtr hwnd = GetForegroundWindow();
+                if (hwnd != IntPtr.Zero)
+                {
+                    GetWindowThreadProcessId(hwnd, out uint pid);
+                    if (pid != 0) foreground = ProcessNameOf(pid);
+                }
+            }
+            catch { /* 读不到就当不在前台，宁可不驱动 */ }
+            if (!string.Equals(foreground, _manualProcess, StringComparison.OrdinalIgnoreCase))
+                return "手动绑定的窗口不在前台，画面同步停着（切回它就自己接上）";
+        }
+        return "";
+    }
+
     private string FollowTargetProblem()
     {
         string bound = GameTelemetryProtocol.NormalizeProcessName(_cfg.CompanionProcess);
@@ -2691,7 +3370,11 @@ public sealed class ScreenWatchService : IDisposable
         // 不绕过的话 serial.commands 永远是 0。其余检查（绑定了没有 / 抓不抓得到画面 / 看的是不是它）都保留。
         bool ignoreForeground = _cfg.SimulationMode
             && string.Equals(Environment.GetEnvironmentVariable("HEXA_IGNORE_FOREGROUND"), "1", StringComparison.Ordinal);
-        if (!ignoreForeground)
+        // 默认不要求前台：PrintWindow 抓的是窗口自己的内容，切到别的窗口（包括点开 Hexa 自己看信号）
+        // 画面照样是对的。只有「屏幕抓取」这条兜底路必须要求前台 —— 被别的窗口挡住就抓到挡住它的东西。
+        // 想要旧语义（离开前台就停）就在设置里勾「只在前台时动」。
+        bool needForeground = _cfg.ScreenFollowOnlyWhenForeground || Volatile.Read(ref _lastCapturePath) == 2;
+        if (needForeground && !ignoreForeground)
         {
             string foreground = "";
             try
@@ -2720,6 +3403,119 @@ public sealed class ScreenWatchService : IDisposable
     /// 开始离场缓降：从当前幅度线性收回中位再交控制权。<b>不是急停</b>。
     /// 只有「本来就在驱动设备（或已经握着控制权）」时才需要缓降；没在驱动就只是记个原因。
     /// </summary>
+    /// <summary>记住这一拍发出去的六轴 —— 遮挡续跑要用它。</summary>
+    private void NoteSentAxes(double[] values, long now)
+    {
+        if (values.Length < 6) return;
+        var copy = _lastSentAxes ?? new double[6];
+        for (int i = 0; i < 6; i++) copy[i] = values[i];
+        _lastSentAxes = copy;
+        _lastSentMs = now;
+        _holdUntilMs = 0;                       // 有新动作了，续跑窗口重来
+    }
+
+    /// <summary>
+    /// 画面突然「看不见了」时的续跑：把上一次真正下发的位置原样再发几拍（最多 <see cref="FollowHoldMs"/>）。
+    /// 只在「刚才还在发」的情况下生效（400ms 内有过真实下发），真的停下来时不会硬撑。
+    /// </summary>
+    private bool HoldLastMotion(MotionEngine engine, long now)
+    {
+        if (_lastSentAxes is null) return false;
+        if (now - _lastSentMs > 400) { _holdUntilMs = 0; return false; }
+        if (_holdUntilMs == 0) _holdUntilMs = now + FollowHoldMs;
+        if (now >= _holdUntilMs) { _holdUntilMs = 0; return false; }
+        if (!engine.TryClaimDirectInput(FollowOwner)) { _holdUntilMs = 0; return false; }
+        Volatile.Write(ref _followWant, 1);
+        if (!engine.TrySendDirectAxes(_lastSentAxes, Math.Clamp(_frameIntervalEmaMs / 1000.0, 0.02, 0.30)))
+        {
+            _holdUntilMs = 0;
+            return false;
+        }
+        Volatile.Write(ref _followActive, 1);
+        SetFollowReason("这块画面这会儿看不见（被窗口盖住或抓不到）：先按刚才的动作接着走 1 秒，再缓降");
+        return true;
+    }
+
+    /// <summary>内容本来静止、但又没有「刚才那一拍」可以续：停在原地不动（位置照发，看门狗不误判掉线）。</summary>
+    private bool HoldStill(MotionEngine engine, long now)
+    {
+        if (_lastSentAxes is null) return false;
+        if (!engine.TryClaimDirectInput(FollowOwner)) return false;
+        Volatile.Write(ref _followWant, 1);
+        if (!engine.TrySendDirectAxes(_lastSentAxes, Math.Clamp(_frameIntervalEmaMs / 1000.0, 0.02, 0.30)))
+            return false;
+        Volatile.Write(ref _followActive, 1);
+        _lastFollowSendMs = now;
+        SetFollowReason(FollowContinuityPolicy.Describe(FollowLossKind.ContentStill));
+        return true;
+    }
+
+    /// <summary>
+    /// 把目标检查的中文原因归到「丢信号的哪一种」。字符串是同一处生成的，所以这里匹配的是
+    /// ManualTargetProblem / FollowTargetProblem 的原话；认不出来就按真退出处理（缓降，最保守）。
+    /// </summary>
+    private static FollowLossKind ClassifyTargetProblem(string problem)
+    {
+        if (problem.Length == 0) return FollowLossKind.None;
+        if (problem.Contains("不在前台", StringComparison.Ordinal)) return FollowLossKind.ForegroundLost;
+        if (problem.Contains("抓不到画面", StringComparison.Ordinal)) return FollowLossKind.CaptureLost;
+        if (problem.Contains("找不到", StringComparison.Ordinal)) return FollowLossKind.TargetExited;
+        return FollowLossKind.TargetExited;
+    }
+
+    /// <summary>
+    /// 切窗 / 抓不到时的降级运行：目标没变，只是这一路的信号暂时断了。
+    /// 接着刚才的相位，用降级后的深度（×0.35）与速度（×0.55）继续慢速小幅地走，
+    /// 混合系数随拍平滑逼近目标 —— 断和接都是渐变，不重起势、不回到中位。
+    /// 从没驱动过时不凭空起势，老实等着。
+    /// </summary>
+    private bool TryDriveDegraded(MotionEngine engine, long now, double nowSeconds, FollowLossKind kind, string detail)
+    {
+        if (_lastSentAxes is null && Volatile.Read(ref _followActive) == 0)
+        {
+            _degradeWhy = detail;
+            SetFollowReason(detail);
+            return true;
+        }
+        if (!engine.CanAcceptDirectInput || !engine.TryClaimDirectInput(FollowOwner))
+        {
+            SetFollowReason(detail + " · 等设备让出来");
+            return true;
+        }
+
+        double dt = FollowDeltaSeconds(nowSeconds);
+        _degradeBlend = FollowContinuityPolicy.Smooth(_degradeBlend, 1.0, dt, 0.6);
+        double baseDepth = Math.Clamp(Volatile.Read(ref _followDepth), 0.10, 1.0);
+        double baseHz = Math.Clamp(Volatile.Read(ref _followHz), FollowHzMin, FollowHzMax);
+        double depth = baseDepth * (1 - _degradeBlend * (1 - FollowContinuityPolicy.DegradedDepthScale));
+        double range = FollowComputeRange(engine, Math.Max(0.10, depth));
+        double hz = baseHz * (1 - _degradeBlend * (1 - FollowContinuityPolicy.DegradedSpeedScale));
+        // 降级慢动时也一样吃挣扎加成：连点本来就是在"游戏在前台、我在动"的时候，这时降级不该装没听见。
+        if (engine.StruggleSpeedScale > 1.0001 || engine.StruggleDepthBoost > 0.0001)
+        {
+            depth = Math.Clamp(depth * (1 + engine.StruggleDepthBoost), 0.05, 1.0);
+            range = FollowComputeRange(engine, depth);
+            hz = Math.Clamp(hz * Math.Clamp(engine.StruggleSpeedScale, 1.0, 1.4), FollowHzMin, FollowHzMax);
+        }
+
+        _followPhase = Frac(_followPhase + hz * dt);
+        double[] values = MotionVocabulary.Render(MotionEventKind.Swell, 1.0, _followPhase, range, engine.MultiAxisMotion);
+        ApplySyncRange(values);
+        if (!engine.TrySendDirectAxes(values, Math.Clamp(dt * 1.6, 0.06, 0.30))) return false;
+
+        Volatile.Write(ref _followActive, 1);
+        Volatile.Write(ref _followWant, 1);
+        Volatile.Write(ref _followDepth, depth);
+        Volatile.Write(ref _followHz, hz);
+        Volatile.Write(ref _followMainAxis, Math.Clamp(values[0], 0, 100));
+        _lastFollowSendMs = now;
+        _degradeWhy = detail;
+        NoteSentAxes(values, now);
+        SetFollowReason(FollowContinuityPolicy.Describe(kind) +
+            $" · 深度 {depth * 100:0}% · 每秒 {hz:0.0} 下");
+        return true;
+    }
+
     private void BeginFollowEase(MotionEngine engine, long now, string reason)
     {
         _followDepthSmooth = double.NaN;      // 缓降后重新接管从当拍的深度起算，不从上一次留下的值爬
@@ -2982,6 +3778,12 @@ public sealed class ScreenWatchService : IDisposable
 
     private void ResetAnalysis()
     {
+        lock (_manualLock)
+        {
+            _manualTracker.Invalidate("同步已重启，请重绑或回到自动");
+            _manualPreview = null;
+            _manualAtMs = 0;
+        }
         ResetFrameState();
         ClearPoseState();
         Volatile.Write(ref _skinRatio, 0);
@@ -3002,11 +3804,17 @@ public sealed class ScreenWatchService : IDisposable
         Volatile.Write(ref _followActive, 0);
         Volatile.Write(ref _followWant, 0);
         Volatile.Write(ref _followEasing, 0);
+        _liveStreak = 0;
+        _deadStreak = 0;
         Volatile.Write(ref _followDepth, 0);
         _followPhase = 0;
         _followPhaseMisses = 0;
+        _mirrorPosition = double.NaN;
+        _mirrorSent = double.NaN;
         _lastFollowPhaseSeconds = 0;
         _lastFollowSendMs = 0;
+        _degradeBlend = 0;
+        _degradeWhy = "";
         _followReason = "";
         _lastFrameMs = 0;
         _frameIntervalEmaMs = 1000.0 / TargetFps;
@@ -3017,6 +3825,7 @@ public sealed class ScreenWatchService : IDisposable
     private void SetFailure(string reason)
     {
         _failureReason = reason;
+        lock (_manualLock) _manualTracker.Invalidate("抓图中断，请重绑");
         Volatile.Write(ref _captureFailed, 1);
     }
 

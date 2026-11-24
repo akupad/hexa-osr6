@@ -1,0 +1,80 @@
+{
+  "date": "2026-11-24",
+  "purpose": "核查现状，不代表需求验收通过",
+  "checks": [
+    {
+      "name": "小位移持续200帧仍未跟随",
+      "confirmed": true
+    },
+    {
+      "name": "镜像两侧行程不对称",
+      "confirmed": true
+    },
+    {
+      "name": "镜像速度倍率未影响输出",
+      "confirmed": true
+    },
+    {
+      "name": "事件速度倍率未影响时长",
+      "confirmed": true
+    },
+    {
+      "name": "无节拍时音量仍影响频率",
+      "confirmed": true
+    },
+    {
+      "name": "无节拍时人声强度仍影响频率",
+      "confirmed": true
+    },
+    {
+      "name": "动作池覆盖影响全部独立实例",
+      "confirmed": true
+    },
+    {
+      "name": "合成60/180 BPM只改文字未改镜像位置",
+      "confirmed": true
+    },
+    {
+      "name": "无采集且有效响度为零仍接纳合成声音快照",
+      "confirmed": true
+    }
+  ],
+  "sourceHashes": [
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\Services\\ScreenWatchService.cs",
+      "sha256": "277e5c3f9796eb68cbc121e4a92cff8673b451b564c47c1f1f8a2ea292d82242"
+    },
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\Services\\AudioReactiveService.cs",
+      "sha256": "0c683af5f9d187d6a346c6a38fec2c5d7c586bf56a6c86e387564ab786f57d26"
+    },
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\Services\\AutoBehaviorSequencer.cs",
+      "sha256": "cfdbede522694b8fe0610ef06651776bdc3d29953aa020f055ea2e27870a8029"
+    },
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\Services\\RuleEngine.cs",
+      "sha256": "8ea0608f874985e72ff0bbc1d928798ace26479bedf95f9efc215ea2ae6e6807"
+    },
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\Services\\GameCompanionRules.cs",
+      "sha256": "0811ed8c083e9c26804d3a4d6714db402ce1ba860fcf8745e3fe16126a579aef"
+    },
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\Models\\AppSettings.cs",
+      "sha256": "db25708e873d07a067ec4cf941da448e26182f200a4d6e6d24d76b20617c5db5"
+    },
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\Views\\TestLabPage.xaml",
+      "sha256": "fd80f2cf447bd4498e2a9d2c2e715b02e0d22cd5f0b47c0ddea5f5d7e0c8f2a6"
+    },
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\Views\\TestLabPage.xaml.cs",
+      "sha256": "89d5c604d82e34134c796d8881f130670bb89d2242670dfca5225c1421b0f76c"
+    },
+    {
+      "path": "D:\\用户文件\\Desktop\\Agent\\_work\\projects\\Hermes\\Hexa\\tests\\Hexa.RequirementsAudit\\Program.cs",
+      "sha256": "f9197be91cb13c8c6b2a22d10363d47a01a2ad2642d3c413292624cf10caffff"
+    }
+  ]
+}

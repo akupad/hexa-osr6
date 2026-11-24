@@ -1,0 +1,97 @@
+{
+  "mirror_small_sustained_move": {
+    "initialDepth": 50,
+    "requestedDepth": 51.5,
+    "frames": 200,
+    "initialOutput": 50,
+    "finalOutput": 50,
+    "filteredPosition": 0.5
+  },
+  "mirror_asymmetric_mapping": {
+    "top": 33.733469945928846,
+    "center": 50,
+    "bottom": 92,
+    "upperTravel": 16.266530054071154,
+    "lowerTravel": 42
+  },
+  "mirror_speed_slider": {
+    "speedSlow": 0.3,
+    "speedFast": 3,
+    "equalOutputs": true,
+    "slow": [
+      38.73021739340106,
+      40.500569280214734,
+      46.11894330394414,
+      56.24126031684725,
+      45.54297245806869
+    ],
+    "fast": [
+      38.73021739340106,
+      40.500569280214734,
+      46.11894330394414,
+      56.24126031684725,
+      45.54297245806869
+    ]
+  },
+  "event_speed_slider": {
+    "speedSlow": 0.5,
+    "speedFast": 2,
+    "durationSlow": 0.26,
+    "durationFast": 0.26
+  },
+  "volume_loudness_changes_rate_without_tempo": {
+    "quietHz": 0.69,
+    "loudHz": 1.4100000000000004
+  },
+  "voice_loudness_changes_rate_without_tempo": {
+    "quietHz": 0.72,
+    "loudHz": 1.6800000000000002
+  },
+  "pool_override_affects_every_sequencer": {
+    "independentSequencers": 8,
+    "picks": [
+      "deep_pulse",
+      "deep_pulse",
+      "deep_pulse",
+      "deep_pulse",
+      "deep_pulse",
+      "deep_pulse",
+      "deep_pulse",
+      "deep_pulse"
+    ]
+  },
+  "mirror_audio_bpm_changes_label_only": {
+    "syntheticSnapshot": true,
+    "lowBpm": 60,
+    "highBpm": 180,
+    "equalOutputs": true,
+    "slow": [
+      41.885756523248766,
+      44.30034156812884,
+      50.743181069457506,
+      61.68959356304283,
+      50.10446635578246
+    ],
+    "fast": [
+      41.885756523248766,
+      44.30034156812884,
+      50.743181069457506,
+      61.68959356304283,
+      50.10446635578246
+    ],
+    "labels": [
+      "\u6B63\u5728\u8DDF\u7740\u4EBA\u540C\u6B65\uFF1A\u4EBA\u6C89\u5230 32% \u00B7 \u63A8 45% \u00B7 \u8DDF\u58F0\u97F3\u7684\u62CD\u5B50 60 BPM",
+      "\u6B63\u5728\u8DDF\u7740\u4EBA\u540C\u6B65\uFF1A\u4EBA\u6C89\u5230 32% \u00B7 \u63A8 45% \u00B7 \u8DDF\u58F0\u97F3\u7684\u62CD\u5B50 180 BPM"
+    ]
+  },
+  "audio_snapshot_validity_guard": {
+    "syntheticSnapshot": true,
+    "capturing": false,
+    "wantsDevice": false,
+    "gate": 0.95,
+    "rawEnergy": 0.2,
+    "effectiveEnvelope": 0,
+    "accepted": true,
+    "bump": 0.13999999999999999
+  }
+}

@@ -51,6 +51,13 @@
                             HorizontalContentAlignment="Left"
                             Padding="12,9" Margin="0,0,0,3"
                             Click="Nav_Click" Tag="playground"/>
+                    <Button x:Name="NavCompanion" Content="💞  伴随"
+                            Style="{StaticResource BtnBase}"
+                            Background="Transparent"
+                            HorizontalAlignment="Stretch"
+                            HorizontalContentAlignment="Left"
+                            Padding="12,9" Margin="0,0,0,3"
+                            Click="Nav_Click" Tag="companion"/>
                     <Button x:Name="NavManual" Content="🕹  手动动轴"
                             Style="{StaticResource BtnBase}"
                             Background="Transparent"
@@ -79,13 +86,6 @@
                             HorizontalContentAlignment="Left"
                             Padding="12,9" Margin="0,0,0,3"
                             Click="Nav_Click" Tag="ai"/>
-                    <Button x:Name="NavScripts" Content="📚  脚本库"
-                            Style="{StaticResource BtnBase}"
-                            Background="Transparent"
-                            HorizontalAlignment="Stretch"
-                            HorizontalContentAlignment="Left"
-                            Padding="12,9"
-                            Click="Nav_Click" Tag="scripts"/>
                     <Button x:Name="NavSettings" Content="⚙️  设置"
                             Style="{StaticResource BtnBase}"
                             Background="Transparent"

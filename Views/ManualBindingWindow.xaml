@@ -1,0 +1,46 @@
+<Window x:Class="Hexa.Views.ManualBindingWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="手动绑定 · 备用" Width="900" Height="650" MinWidth="620" MinHeight="480"
+        WindowStartupLocation="CenterOwner" Background="#15151D" Foreground="#E8E8F0"
+        ShowInTaskbar="False">
+    <Grid Margin="18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <StackPanel>
+            <TextBlock Text="点目标，再点它来回运动的两端" FontSize="19" FontWeight="SemiBold"/>
+            <TextBlock Text="这是定格画面；选轮廓或花纹，别选纯色。浅端 / 深端代表设备方向，横向、竖向、斜向都行。"
+                       TextWrapping="Wrap" Opacity="0.72" Margin="0,6,0,12"/>
+        </StackPanel>
+        <WrapPanel Grid.Row="1" Margin="0,0,0,10">
+            <Button x:Name="TargetStep" Tag="0" Content="① 点目标" Click="SelectStep_Click" Padding="12,6" Margin="0,0,8,4"/>
+            <Button x:Name="ShallowStep" Tag="1" Content="② 浅端" Click="SelectStep_Click" Padding="12,6" Margin="0,0,8,4"/>
+            <Button x:Name="DeepStep" Tag="2" Content="③ 深端" Click="SelectStep_Click" Padding="12,6" Margin="0,0,8,4"/>
+            <Button x:Name="RefreshFrameButton" Content="换一帧 / 重选" Click="RefreshFrame_Click" Padding="12,6" Margin="0,0,8,4"/>
+            <Button x:Name="SwapEndsButton" Content="交换浅深" Click="SwapEnds_Click" Padding="12,6" Margin="0,0,0,4" IsEnabled="False"/>
+        </WrapPanel>
+        <Border Grid.Row="2" Background="#09090F" BorderBrush="#393949" BorderThickness="1" Padding="5">
+            <Viewbox Stretch="Uniform">
+                <Grid Width="320" Height="180" ClipToBounds="True">
+                    <Image x:Name="FrozenImage" Stretch="Fill"/>
+                    <Canvas x:Name="PickCanvas" Width="320" Height="180" Background="Transparent"
+                            Cursor="Cross" MouseLeftButtonDown="PickCanvas_Click"/>
+                </Grid>
+            </Viewbox>
+        </Border>
+        <StackPanel Grid.Row="3" Margin="0,10,0,8">
+            <TextBlock x:Name="StepHint" FontSize="13" TextWrapping="Wrap" Foreground="#7DDFE0"/>
+            <TextBlock Text="绑定后只跟这个目标；跟丢、切窗或改尺寸时提示重绑。取消保留原模式，绑定不会替你开启同步。"
+                       Opacity="0.68" TextWrapping="Wrap" Margin="0,5,0,0" FontSize="11"/>
+        </StackPanel>
+        <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+            <Button Content="取消" IsCancel="True" Padding="20,7" Margin="0,0,10,0"/>
+            <Button x:Name="ApplyBindingButton" Content="绑定这个目标" Click="Apply_Click" IsDefault="True" IsEnabled="False" Padding="20,7"/>
+        </StackPanel>
+    </Grid>
+</Window>

@@ -536,6 +536,9 @@ public static class NsfwClassifier
                     IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount - 1, 1, 8),
                     InterOpNumThreads = 1,
                 };
+                // 同 PoseTracker：关掉线程自旋，别让几个核在两次推理之间空转。
+                options.AddSessionConfigEntry("session.intra_op.allow_spinning", "0");
+                options.AddSessionConfigEntry("session.inter_op.allow_spinning", "0");
                 var watch = Stopwatch.StartNew();
                 var session = new InferenceSession(ModelPath, options);
                 watch.Stop();

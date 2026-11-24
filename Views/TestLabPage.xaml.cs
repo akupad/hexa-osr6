@@ -2,6 +2,8 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.Windows.Input;
+using Rectangle = System.Windows.Shapes.Rectangle;
 using Hexa.Services;
 
 namespace Hexa.Views;
@@ -71,8 +73,16 @@ public partial class TestLabPage : Page
     private Border? _screenModelScoreFill;
     private Border? _screenModelProgressFill;
     private Border? _screenPoseProgressFill;
+    private Rectangle? _screenModelScoreThresholdLine;
+    private Rectangle? _screenMotionThresholdLine;
+    private Rectangle? _screenRhythmThresholdLine;
+    private Rectangle? _screenScoreThresholdLine;
+    private bool _thresholdDrag;
+    private bool _syncingThreshold;
     private bool _loadingScreenUi;
     private bool _lastScreenToggleState;
+    // 「更多设置」折叠状态：只记在内存里（用户展开/收起的选择），不写进 AppSettings。
+    private bool _screenMoreSettingsOpen;
     // 识别模型的下载：只由用户点「下载模型」触发（先弹确认框写清档位和体积），进度在 150ms 的刷新里画。
     private bool _modelDownloading;
     private double _modelDownloadProgress;
@@ -89,6 +99,7 @@ public partial class TestLabPage : Page
         BuildScreenBars();
         LoadUi();
         LoadScreenWatchUi();
+        UpdateManualRoiUi();
         // 需求3/4：游戏伴随（简易/进阶）+ 动作键联动的开关
         // 「做法」二选一：简易（进游戏套用一套动作）/ 进阶（按规则 + 声音反应）。
         // 背后还是原来两个设置（CompanionAuto / RuleEngineEnabled），所以老配置文件照样能用。
@@ -133,9 +144,6 @@ public partial class TestLabPage : Page
             App.Settings.Save();
             _audio.Refresh();   // 这个开关决定要不要采集系统声音（安静判断靠它）
         };
-        ActionLinkCheck.Checked += (_, _) => { if (!_loadingUi) SaveAutoFollow(); };
-        AmbientOverlayCheck.Checked += (_, _) => { if (!_loadingUi) { SyncAmbientUi(); SaveAmbient(); } };
-        AmbientOverlayCheck.Unchecked += (_, _) => { if (!_loadingUi) { SyncAmbientUi(); SaveAmbient(); } };
         AutoFollowScreenCheck.Checked += (_, _) => { if (!_loadingUi) ApplyAutoFollowScreen(true); };
         AutoFollowScreenCheck.Unchecked += (_, _) => { if (!_loadingUi) ApplyAutoFollowScreen(false); };
         ScreenPoseEnableCheck.Checked += (_, _) =>
@@ -152,13 +160,6 @@ public partial class TestLabPage : Page
             App.Settings.Save();
             UpdatePoseRow();
         };
-        AmbientOverlaySlider.ValueChanged += (_, e) =>
-        {
-            AmbientOverlayLabel.Text = $"±{(int)Math.Round(e.NewValue)}%";
-            if (_loadingUi) return;
-            SaveAmbient();
-        };
-        ActionLinkCheck.Unchecked += (_, _) => { if (!_loadingUi) SaveAutoFollow(); };
         // 「伴随关闭时，也在进入游戏时自动套用底色动作」（设置里的 CompanionAuto）：
         // 它和伴随不是两个独立效果 —— 伴随开着时这一路整段跳过，所以界面会把它置灰并说明。
         AutoPresetCheck.Checked += (_, _) => { if (!_loadingUi) SaveAutoPreset(); };
@@ -274,8 +275,8 @@ public partial class TestLabPage : Page
     {
         if (AudioEventLabel is null) return;
 
-        // 角色声音模式不看「事件化动作」那个勾选（人声是连续抽插），所以先说清这一路正在干什么。
-        if (IsVoiceTargetSelected)
+        // 角色声音模式（或自动模式此刻听成呻吟）不看「事件化动作」那个勾选（人声是连续抽插），所以先说清这一路正在干什么。
+        if (IsVoiceTargetSelected || (IsAutoTargetSelected && _audio.SceneKind == AudioSceneKind.Voice))
         {
             AudioEventLabel.Text = App.Settings.AudioReactiveEnabled
                 ? "角色声音模式：每次呻吟算一次抽插（上面「已响应」的次数就是插了多少下），不看「事件化动作」那个勾选。"
@@ -334,12 +335,17 @@ public partial class TestLabPage : Page
             return;
         }
 
+        // 自动模式下"算不算人声"要看它此刻听成什么，而不是看下拉选了什么。
+        bool voiceNow = IsVoiceTargetSelected || (IsAutoTargetSelected && _audio.SceneKind == AudioSceneKind.Voice);
+
         if (_audio.MotionActive)
         {
             AudioStateLabel.Foreground = (Brush)FindResource("Success");
-            AudioStateLabel.Text = IsVoiceTargetSelected
+            AudioStateLabel.Text = voiceNow
                 ? $"正在抽插（人声强度 {_audio.Envelope:P0}）：越响插得越深、越快跟得越紧；人声没了还会再抽 1.5 秒、一下比一下浅。"
-                : $"正在跟着声音动（当前强度 {_audio.Envelope:P0}）：声音变小动作就变浅，安静 0.7 秒后慢慢回中停下。";
+                : IsAutoTargetSelected
+                    ? $"自动模式正在跟（听成「{_audio.SceneLabel}」，强度 {_audio.Envelope:P0}）：场景一变跟法就自己换。"
+                    : $"正在跟着声音动（当前强度 {_audio.Envelope:P0}）：声音变小动作就变浅，安静 0.7 秒后慢慢回中停下。";
             return;
         }
 
@@ -347,7 +353,7 @@ public partial class TestLabPage : Page
         if (_audio.Energy > 0.05)
         {
             AudioStateLabel.Foreground = (Brush)FindResource("Warning");
-            AudioStateLabel.Text = IsVoiceTargetSelected
+            AudioStateLabel.Text = voiceNow
                 ? "听到了，但没到「算一次呻吟」的大小：把「灵敏度」调到高，或让她再响一点（这一路只看人声频段，背景音乐再响也不算）。"
                 : App.Settings.AudioEventMotion
                     ? "听到了（上面的条在动），但声音还没够到「触发一次动作」的大小。把「灵敏度」调到高，或者关掉「事件化动作」改成跟着音量一直动。"
@@ -367,11 +373,24 @@ public partial class TestLabPage : Page
             AudioDeviceCombo.Items.Add(device);
         AudioDeviceCombo.SelectedItem = AudioDeviceCombo.Items.Cast<AudioOutputDevice>().FirstOrDefault(device =>
             string.Equals(device.Id, App.Settings.AudioDeviceId, StringComparison.OrdinalIgnoreCase));
-        if (!_audioRangeLoaded && AudioRangeSlider != null)
+        if (!_audioRangeLoaded && AudioRange != null)
         {
-            // 设置里存的是半幅值（设备在 50±值 之间），界面按「占全程的百分比」显示，所以乘 2
-            AudioRangeSlider.Value = Math.Clamp(App.Settings.AudioMotionRange * 2, 10, 100);
-            AudioRangeLabel.Text = $"{AudioRangeSlider.Value:0}%";
+            // 声音响应用项目统一的双滑块限定主轴行程：左=最低位置、右=最高位置（0–100 的百分比）。
+            double minPos = Math.Clamp(App.Settings.AudioMinPosition, 0, 95);
+            double maxPos = Math.Clamp(App.Settings.AudioMaxPosition, Math.Min(100, minPos + AudioRangeGap), 100);
+            AudioRange.LowerValue = minPos;
+            AudioRange.UpperValue = maxPos;
+            AudioRangeLabel.Text = $"{minPos:0}% – {maxPos:0}%";
+            AudioGateSlider.Value = Math.Clamp(App.Settings.AudioNoiseGate, 0, 0.4);
+            AudioGateLabel.Text = $"{AudioGateSlider.Value * 100:0}%";
+            // 深度不再单独调：这一条两端就是最浅/最深，深度倍率固定回自动基准（旧版存的值不再当第二层）
+            if (App.Settings.AudioDepth != 50) { App.Settings.AudioDepth = 50; ScheduleSave(); }
+            // 「自定义节奏」整块去掉了（用户 2026-11-24：「我觉得没意义」）：
+            // 节奏永远由声音自己算；把旧设置里残留的「自定义」标记熄掉，
+            // 否则界面上看不见的倍率还在悄悄生效。
+            if (App.Settings.AudioCustom) { App.Settings.AudioCustom = false; ScheduleSave(); }
+            _audioRangePrevLower = minPos;
+            _audioRangePrevUpper = maxPos;
             _audioRangeLoaded = true;
         }
         if (AudioDeviceCombo.SelectedItem == null && AudioDeviceCombo.Items.Count > 0)
@@ -391,12 +410,14 @@ public partial class TestLabPage : Page
         // 空状态：一个播放设备都没有时，别让用户对着一片空白找原因
         AudioDeviceHint.Visibility = AudioDeviceCombo.Items.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         // 「响应对象」+「律动方式」两行合成一个设置（AudioResponseMode）：
-        // 设置里是 voice → 选「角色声音」；是 energy/bass/beat → 选「音乐律动」并把律动方式摆上。
-        bool voiceMode = string.Equals(App.Settings.AudioResponseMode, "voice", StringComparison.OrdinalIgnoreCase);
-        if (!voiceMode) _lastMusicMode = App.Settings.AudioResponseMode;
+        // voice → 角色声音；auto → 自动；energy/bass/beat → 音乐律动（并把律动方式摆上）。
+        string audioMode = App.Settings.AudioResponseMode;
+        bool voiceMode = string.Equals(audioMode, "voice", StringComparison.OrdinalIgnoreCase);
+        bool autoMode = string.Equals(audioMode, "auto", StringComparison.OrdinalIgnoreCase);
+        if (!voiceMode && !autoMode) _lastMusicMode = audioMode;
         SelectByTag(AudioModeCombo, _lastMusicMode);
-        SelectByTag(AudioTargetCombo, voiceMode ? "voice" : "music");
-        SyncAudioModeVisibility(voiceMode);
+        SelectByTag(AudioTargetCombo, voiceMode ? "voice" : autoMode ? "auto" : "music");
+        SyncAudioModeVisibility(voiceMode ? "voice" : autoMode ? "auto" : "music");
         SelectByTag(AudioSensitivityCombo, SensitivityFor(App.Settings.AudioSensitivity));
         _loadingUi = false;
     }
@@ -408,12 +429,17 @@ public partial class TestLabPage : Page
         SelectByTag(CompanionBaseCombo, App.Settings.CompanionBaseMode);
         SelectByTag(CompanionReactionCombo, App.Settings.CompanionReaction);
         SelectByTag(CompanionSensitivityCombo, App.Settings.CompanionSensitivity);
+        // 伴随底色怎么跑：播放方式 / 固定动作 / 节奏档 / 起伏档（老配置没有这些字段时已由 Normalize 补默认）
+        SelectByTag(CompanionPlayModeCombo, CompanionPlayPolicy.NormalizePlayMode(App.Settings.CompanionPlayMode));
+        SelectByTag(CompanionPaceCombo, CompanionPlayPolicy.NormalizePace(App.Settings.CompanionPace));
+        SelectByTag(CompanionVariationCombo, CompanionPlayPolicy.NormalizeVariation(App.Settings.CompanionVariation));
+        LoadStruggleUi();
         // 动作来源（旧配置里没有这个字段时，AppSettings 已按旧「做法」迁移好）
         SelectByTag(CompanionKindCombo, App.Settings.CompanionSource);
-        ActionLinkCheck.IsChecked = App.Settings.ActionLinkEnabled;
         AutoPresetCheck.IsChecked = App.Settings.CompanionAuto;
         // 底色动作/强度：两条路共用的一套
         SelectByTag(CompanionIntensityCombo, IntensityTagFor(App.Settings.CompanionBaseIntensity));
+        BuildCompanionPoolList();
         UpdateCompanionPanels();
         _loadingUi = false;
         _applyProcessOnLostFocus = false;
@@ -431,6 +457,97 @@ public partial class TestLabPage : Page
         _ => "1.0",
     };
 
+
+    // ── 伴随动作池：动作页的动作勾选成一组，伴随没信号时轮播 ─────────────────
+    private bool _loadingCompanionPool;
+
+    /// <summary>按动作库现况重建勾选列表（动作页新建/改名的动作会立刻出现在这里）。</summary>
+    private void BuildCompanionPoolList()
+    {
+        if (CompanionPoolList is null) return;
+        var selected = new HashSet<string>(App.Settings.CompanionPool ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+        _loadingCompanionPool = true;
+        try
+        {
+            CompanionPoolList.Children.Clear();
+            foreach (var preset in Hexa.ViewModels.StrokesViewModel.AllPresets)
+            {
+                if (string.IsNullOrWhiteSpace(preset.Id)) continue;
+                string label = string.IsNullOrWhiteSpace(preset.Cat) ? preset.Label : $"{preset.Label} · {preset.Cat}";
+                var box = new CheckBox
+                {
+                    Content = label,
+                    Tag = preset.Id,
+                    FontSize = 12,
+                    Margin = new Thickness(0, 1, 0, 1),
+                    IsChecked = selected.Contains(preset.Id),
+                    ToolTip = $"id：{preset.Id}",
+                };
+                box.Checked += CompanionPoolItem_Changed;
+                box.Unchecked += CompanionPoolItem_Changed;
+                CompanionPoolList.Children.Add(box);
+            }
+        }
+        finally
+        {
+            _loadingCompanionPool = false;
+        }
+        CompanionPoolIntensitySlider.Value = Math.Clamp(App.Settings.CompanionPoolIntensity, 0.5, 1.6);
+        UpdateCompanionPoolCount();
+    }
+
+    private void UpdateCompanionPoolCount()
+    {
+        if (CompanionPoolCountText is null) return;
+        int count = App.Settings.CompanionPool?.Count ?? 0;
+        CompanionPoolCountText.Text = count == 0
+            ? $"没勾（默认自然流动）· 动作库 {CompanionPoolList?.Children.Count ?? 0} 个"
+            : $"已选 {count} 个 · 动作库 {CompanionPoolList?.Children.Count ?? 0} 个";
+        CompanionPoolIntensityLabel.Text = $"{Math.Clamp(App.Settings.CompanionPoolIntensity, 0.5, 1.6):0.0}×";
+    }
+
+    private void CompanionPoolItem_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loadingCompanionPool) return;
+        var ids = new List<string>();
+        foreach (object child in CompanionPoolList.Children)
+            if (child is CheckBox { IsChecked: true, Tag: string id }) ids.Add(id);
+        App.Settings.CompanionPool = ids;
+        // 池子进的是规则引擎的动作（GameCompanionRules 会把它编译成 free_play + 池子强度），
+        // 所以这里必须走 ApplyCompanionRules：只 Save 的话要等下一次改设置才生效。
+        ApplyCompanionRules();
+        UpdateCompanionPoolCount();
+    }
+
+    private void CompanionPoolAll_Click(object sender, RoutedEventArgs e) => SetCompanionPoolAll(true);
+
+    private void CompanionPoolNone_Click(object sender, RoutedEventArgs e) => SetCompanionPoolAll(false);
+
+    private void SetCompanionPoolAll(bool on)
+    {
+        _loadingCompanionPool = true;
+        try
+        {
+            foreach (object child in CompanionPoolList.Children)
+                if (child is CheckBox box) box.IsChecked = on;
+        }
+        finally
+        {
+            _loadingCompanionPool = false;
+        }
+        CompanionPoolItem_Changed(this, new RoutedEventArgs());
+    }
+
+    private void CompanionPoolIntensity_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (CompanionPoolIntensityLabel is null) return;
+        App.Settings.CompanionPoolIntensity = Math.Clamp(e.NewValue, 0.5, 1.6);
+        CompanionPoolIntensityLabel.Text = $"{App.Settings.CompanionPoolIntensity:0.0}×";
+        if (_loadingCompanionPool) return;
+        GameCompanionRules.Apply(App.Settings);   // 只重编规则，不写盘 —— 拖动时每秒几十次写文件没意义
+        ScheduleSave();
+        if (App.Settings.RuleEngineEnabled) _rules.Refresh();
+    }
     private static void SelectByTag(ComboBox combo, string tag)
     {
         combo.SelectedItem = combo.Items.Cast<ComboBoxItem>().FirstOrDefault(item =>
@@ -466,20 +583,21 @@ public partial class TestLabPage : Page
     {
         if (_loadingUi || SelectedItem(AudioModeCombo) is not { Tag: string mode }) return;
         _lastMusicMode = mode;
-        // 角色声音下「律动方式」是收起来的：这时候它不该去改设置（改了会把 voice 顶掉）。
-        if (IsVoiceTargetSelected) return;
+        // 角色声音 / 自动模式下「律动方式」是收起来的：这时候它不该去改设置（改了会把 voice / auto 顶掉）。
+        if (!IsMusicTargetSelected) return;
         App.Settings.AudioResponseMode = mode;
         ScheduleSave();
     }
 
-    /// <summary>「响应对象」二选一：角色声音（voice）/ 音乐律动（用「律动方式」那一项）。</summary>
+    /// <summary>「响应对象」三选一：角色声音（voice）/ 音乐律动（用「律动方式」那一项）/ 自动（auto）。</summary>
     private void AudioTarget_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingUi || SelectedItem(AudioTargetCombo) is not { Tag: string target }) return;
         bool voice = string.Equals(target, "voice", StringComparison.Ordinal);
-        // 一个设置字段表示两种模式：角色声音写死 "voice"，音乐律动写「律动方式」那一项。
-        App.Settings.AudioResponseMode = voice ? "voice" : _lastMusicMode;
-        SyncAudioModeVisibility(voice);
+        bool auto = string.Equals(target, "auto", StringComparison.Ordinal);
+        // 一个设置字段表示三种模式：角色声音 "voice"、自动 "auto"、音乐律动写「律动方式」那一项。
+        App.Settings.AudioResponseMode = voice ? "voice" : auto ? "auto" : _lastMusicMode;
+        SyncAudioModeVisibility(target);
         // 换对象 = 换一路信号源：让采集从干净状态重新起步（和「事件化动作」那个勾选的做法一致），
         // 否则检测器里可能还留着很久以前的统计量，切过去头几帧会算出一个假的跃升。
         _audio.Refresh();
@@ -490,18 +608,30 @@ public partial class TestLabPage : Page
     private bool IsVoiceTargetSelected =>
         AudioTargetCombo?.SelectedItem is ComboBoxItem { Tag: string tag } && tag == "voice";
 
+    /// <summary>「响应对象」现在选的是不是「自动」（Tag = auto）。</summary>
+    private bool IsAutoTargetSelected =>
+        AudioTargetCombo?.SelectedItem is ComboBoxItem { Tag: string tag } && tag == "auto";
+
+    /// <summary>「响应对象」现在选的是不是「音乐律动」（Tag = music）—— 只有它才让「律动方式」改设置。</summary>
+    private bool IsMusicTargetSelected =>
+        AudioTargetCombo?.SelectedItem is ComboBoxItem { Tag: string tag } && tag == "music";
+
     /// <summary>
     /// 切「响应对象」时只改可见性，不删控件：「律动方式」在人声模式下没有意义
     ///（人声走的是抽插，不分自然起伏/低音/鼓点），但它的选择值要留着，切回音乐时接着用。
     /// </summary>
-    private void SyncAudioModeVisibility(bool voice)
+    private void SyncAudioModeVisibility(string target)
     {
         if (AudioMusicModePanel is null) return;    // XAML 解析中途可能还没建好
-        AudioMusicModePanel.Visibility = voice ? Visibility.Collapsed : Visibility.Visible;
+        bool voice = target == "voice";
+        bool auto = target == "auto";
+        AudioMusicModePanel.Visibility = voice || auto ? Visibility.Collapsed : Visibility.Visible;
         AudioVoiceNote.Visibility = voice ? Visibility.Visible : Visibility.Collapsed;
         AudioTargetHint.Text = voice
             ? "只认人声频段（150–1200Hz）：呻吟、喘息、说话会让设备动，鼓点、低音、爆炸声推不动它。每次呻吟 = 一次抽插（插进去、再抽出来）：越响抽得越深、越快跟得越紧；声音停了还会再抽约 1.5 秒、一下比一下浅，然后停住。"
-            : "跟着鼓点和低音持续律动：安静时不动，有声音就一直在动。选下面的「律动方式」决定怎么跟。";
+            : auto
+                ? "自动判断：它自己在听 —— 听出呻吟就按「一次发声 = 一次抽插」，听出音乐就跟着鼓点律动，听出肉体碰撞就一下一下地顶，安静时不动。判定结果实时显示在下面「当前听到」。"
+                : "跟着鼓点和低音持续律动：安静时不动，有声音就一直在动。选下面的「律动方式」决定怎么跟。";
     }
 
     private void AudioSensitivity_Changed(object sender, SelectionChangedEventArgs e)
@@ -522,15 +652,224 @@ public partial class TestLabPage : Page
         RefreshAudioState();
     }
 
-    /// <summary>行程滑块：写回设置（声音最大时主轴来回的幅度）。</summary>
-    private void AudioRange_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    // ── 声音活动范围：用项目统一的双滑块控件（Controls\RangeSlider）─────
+    // 用户原话「我要的是一个条调整两个值」：一条轨两个把手，左=最低位置、右=最高位置。
+    private bool _audioRangeSync;      // 正在把值写回控件，别让它再触发一次自己
+    private const double AudioRangeGap = 5;
+
+    // ── 画面同步：活动范围（一条轨两个把手） ───────────────────────────
+    private bool _screenRangeLoaded;
+    private bool _screenRangeSync;
+    private const double ScreenRangeGap = 5;
+
+    // ── 活动范围：拖把手时设备直接跟到指定位置（用户原话「滑动时设备也跟着到指定范围」）──
+    private DispatcherTimer? _rangeSweepTimer;       // 松手后扫一遍：最低 → 最高 → 回到中间
+    private DispatcherTimer? _rangeSettleTimer;      // 松手判定（600ms 没再动才算拖完）
+    private double _rangeSweepLower, _rangeSweepUpper, _rangeSweepT;
+    private double _rangeSettleLower, _rangeSettleUpper;
+    private double _screenRangePrevLower = -1, _screenRangePrevUpper = -1;
+    private double _audioRangePrevLower = -1, _audioRangePrevUpper = -1;
+
+    /// <summary>把设置里的 [最低, 最高] 灌进两个把手（页面初始化时一次）。</summary>
+    private void InitScreenRange()
     {
-        // XAML 解析阶段（Minimum 生效）会先触发一次 ValueChanged，此时标签还没建好，
-        // 不能把那次的值当成用户设置写回磁盘（否则行程会被记成最小值 5%）。
-        if (AudioRangeLabel is null || !_audioRangeLoaded) return;
-        AudioRangeLabel.Text = $"{e.NewValue:0}%";
-        // 界面是「占全程百分比」，设置存的是半幅值：100% 全程 → 半幅 50。老配置行为不变。
-        App.Settings.AudioMotionRange = Math.Clamp(e.NewValue / 2, 5, 60);
+        if (ScreenRange is null) return;
+        _screenRangeSync = true;
+        try
+        {
+            ScreenRange.LowerValue = Math.Clamp(App.Settings.ScreenSyncMinPosition, 0, 100);
+            ScreenRange.UpperValue = Math.Clamp(App.Settings.ScreenSyncMaxPosition, 0, 100);
+        }
+        finally { _screenRangeSync = false; }
+        _screenRangePrevLower = App.Settings.ScreenSyncMinPosition;
+        _screenRangePrevUpper = App.Settings.ScreenSyncMaxPosition;
+        _screenRangeLoaded = true;
+        if (ScreenRangeLabel is not null)
+            ScreenRangeLabel.Text = $"{App.Settings.ScreenSyncMinPosition:0}% – {App.Settings.ScreenSyncMaxPosition:0}%";
+        {
+            // 深浅由「深度范围」两个把手定，深度倍率固定回自动基准
+            if (App.Settings.ScreenSyncDepth != 50) { App.Settings.ScreenSyncDepth = 50; ScheduleSave(); }
+            // 和声音那边一样：自定义节奏整块去掉，节奏始终由画面自己算；旧的标记熄掉。
+            if (App.Settings.ScreenSyncCustom) { App.Settings.ScreenSyncCustom = false; ScheduleSave(); }
+        }
+    }
+
+    /// <summary>拖动就写回设置：画面同步每帧都读它，拖完立刻生效，不用点保存。</summary>
+    private void ScreenRange_Changed(object sender, EventArgs e)
+    {
+        if (!_screenRangeLoaded || ScreenRange is null || ScreenRangeLabel is null) return;
+        if (_screenRangeSync) return;
+        double min = Math.Round(Math.Clamp(ScreenRange.LowerValue, 0, 100));
+        double max = Math.Round(Math.Clamp(ScreenRange.UpperValue, 0, 100));
+        if (max - min < ScreenRangeGap)
+        {
+            // 两个把手挨到一起时按这次动的是哪一端把另一端推开，永远留 5% 余量。
+            if (Math.Abs(ScreenRange.LowerValue - min) >= Math.Abs(ScreenRange.UpperValue - max))
+                min = Math.Max(0, max - ScreenRangeGap);
+            else
+                max = Math.Min(100, min + ScreenRangeGap);
+            _screenRangeSync = true;
+            ScreenRange.LowerValue = min;
+            ScreenRange.UpperValue = max;
+            _screenRangeSync = false;
+        }
+        ScreenRangeLabel.Text = $"{min:0}% – {max:0}%";
+        App.Settings.ScreenSyncMinPosition = (int)min;
+        App.Settings.ScreenSyncMaxPosition = (int)max;
+        // 拖的那一端立刻让设备走过去，「拖到哪就停在哪」；松手后再把整段扫一遍。
+        if (_screenRangePrevLower >= 0)
+            PreviewAxisTo(Math.Abs(min - _screenRangePrevLower) >= Math.Abs(max - _screenRangePrevUpper) ? min : max);
+        _screenRangePrevLower = min;
+        _screenRangePrevUpper = max;
+        ScheduleRangeSweep(min, max);
+        if (_loadingUi) return;
+        ScheduleSave();
+    }
+
+    private void AudioRange_Changed(object sender, EventArgs e)
+    {
+        if (!_audioRangeLoaded || AudioRange is null || AudioRangeLabel is null) return;
+        if (_audioRangeSync) return;
+        double min = Math.Round(Math.Clamp(AudioRange.LowerValue, 0, 100));
+        double max = Math.Round(Math.Clamp(AudioRange.UpperValue, 0, 100));
+        if (max - min < AudioRangeGap)
+        {
+            // 两个把手挤到一起时，按这次动的是哪一端把另一端推开，永远留 5% 余量。
+            if (Math.Abs(AudioRange.LowerValue - min) >= Math.Abs(AudioRange.UpperValue - max))
+                min = Math.Max(0, max - AudioRangeGap);
+            else
+                max = Math.Min(100, min + AudioRangeGap);
+            _audioRangeSync = true;
+            AudioRange.LowerValue = min;
+            AudioRange.UpperValue = max;
+            _audioRangeSync = false;
+        }
+        AudioRangeLabel.Text = $"{min:0}% – {max:0}%";
+        App.Settings.AudioMinPosition = min;
+        App.Settings.AudioMaxPosition = max;
+        // 声音这条同样要求「滑到哪设备就到哪」，松手后扫一遍让人看见边界。
+        if (_audioRangePrevLower >= 0)
+            PreviewAxisTo(Math.Abs(min - _audioRangePrevLower) >= Math.Abs(max - _audioRangePrevUpper) ? min : max);
+        _audioRangePrevLower = min;
+        _audioRangePrevUpper = max;
+        ScheduleRangeSweep(min, max);
+        if (_loadingUi) return;
+        ScheduleSave();
+    }
+
+    // 拖动预览的“脉冲”：每 50ms 重发一次目标位置。
+    // 为什么不是只发一次：伴随/画面/声音任何一路只要插进来一帧，单次 BlendTo 就被盖掉了，
+    // 用户看到的就是「拖了没反应」。连发到松手为止，谁来盖都被下一拍拉回来。
+    private DispatcherTimer? _previewPulseTimer;
+    private double _previewTarget = double.NaN;
+    private long _previewUntilMs;
+
+    /// <summary>
+    /// 把设备主轴直接摆到 percent%：拖「活动范围」把手时用（连发到 holdMs 之后）。
+    /// </summary>
+    private void PreviewAxisTo(double percent, int holdMs = 1000)
+    {
+        ScreenWatch.PauseForRangePreview(holdMs);
+        _audio.PauseForRangePreview(holdMs);
+        _rules.PauseForRangePreview(holdMs);
+
+        double l0 = Math.Clamp(percent, 0, 100);
+        bool targetChanged = double.IsNaN(_previewTarget) || Math.Abs(_previewTarget - l0) >= 1;
+        _previewTarget = l0;
+        _previewUntilMs = Environment.TickCount64 + Math.Clamp(holdMs, 200, 5000);
+
+        bool can = App.Engine.CanRun;
+        bool ok = false;
+        if (can)
+        {
+            try { ok = App.Engine.BlendTo([l0, 50, 50, 50, 50, 50], 0.12); }
+            catch (Exception ex) { AppLogger.Warn($"范围预览：摆位置出错 —— {ex.Message}"); }
+        }
+
+        if (RangePreviewHint is not null)
+            RangePreviewHint.Text = can
+                ? $"预览：设备摆到 {l0:0}%{(ok ? "" : "（引擎没接这一帧，正在重试）")} · 松手后自动扫一遍：最低 → 最高 → 回中"
+                : "预览：设备现在动不了（没连上 / 急停 / 输出锁着），范围改了但没发指令";
+
+        // 只在开始新的目标时记一条，免得拖一下刷几百行日志。
+        if (targetChanged || !can) AppLogger.Info($"范围预览：目标 L0={l0:0}% · CanRun={can} · 下发={ok}");
+
+        if (_previewPulseTimer is null)
+        {
+            _previewPulseTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+            _previewPulseTimer.Tick += PreviewPulse_Tick;
+        }
+        _previewPulseTimer.Start();
+    }
+
+    /// <summary>脉冲：把目标位置按住不放，任何一路插帧都会被下一拍压回来。</summary>
+    private void PreviewPulse_Tick(object? sender, EventArgs e)
+    {
+        if (Environment.TickCount64 > _previewUntilMs || double.IsNaN(_previewTarget))
+        {
+            _previewPulseTimer?.Stop();
+            return;
+        }
+        if (!App.Engine.CanRun) return;
+        try { App.Engine.BlendTo([_previewTarget, 50, 50, 50, 50, 50], 0.12); }
+        catch (Exception) { /* 设备刚断开：下一拍再说 */ }
+    }
+    /// <summary>松手 600ms 后扫一遍这段范围：最低 → 最高 → 回到中间，一眼看出边界在哪。</summary>
+    private void ScheduleRangeSweep(double lower, double upper)
+    {
+        _rangeSweepTimer?.Stop();
+        if (_rangeSettleTimer is null)
+        {
+            _rangeSettleTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(600) };
+            _rangeSettleTimer.Tick += RangeSettle_Tick;
+        }
+        _rangeSettleLower = lower;
+        _rangeSettleUpper = upper;
+        _rangeSettleTimer.Stop();
+        _rangeSettleTimer.Start();
+    }
+
+    private void RangeSettle_Tick(object? sender, EventArgs e)
+    {
+        _rangeSettleTimer?.Stop();
+        StartRangeSweep(_rangeSettleLower, _rangeSettleUpper);
+    }
+
+    private void StartRangeSweep(double lower, double upper)
+    {
+        if (upper - lower < 1) return;
+        _rangeSweepLower = lower;
+        _rangeSweepUpper = upper;
+        _rangeSweepT = 0;
+        if (_rangeSweepTimer is null)
+        {
+            _rangeSweepTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+            _rangeSweepTimer.Tick += RangeSweep_Tick;
+        }
+        _rangeSweepTimer.Start();
+    }
+
+    private void RangeSweep_Tick(object? sender, EventArgs e)
+    {
+        const double total = 2.4;
+        _rangeSweepT += 0.05;
+        if (_rangeSweepT >= total)
+        {
+            _rangeSweepTimer?.Stop();
+            PreviewAxisTo((_rangeSweepLower + _rangeSweepUpper) / 2, 800);   // 收在中位，别停在边界
+            return;
+        }
+        double u = _rangeSweepT / total;
+        double k = u < 0.5 ? u * 2 : (1 - u) * 2;                            // 往复一趟
+        PreviewAxisTo(_rangeSweepLower + (_rangeSweepUpper - _rangeSweepLower) * k);
+    }
+
+    /// <summary>声音门槛滑块：写回设置（多大声音才算「有声音」）。</summary>
+    private void AudioGate_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (AudioGateLabel is null || !_audioRangeLoaded) return;
+        AudioGateLabel.Text = $"{e.NewValue * 100:0}%";
+        App.Settings.AudioNoiseGate = Math.Clamp(e.NewValue, 0, 0.4);
         if (_loadingUi) return;
         App.Settings.Save();
     }
@@ -538,42 +877,120 @@ public partial class TestLabPage : Page
     /// <summary>声音响应卡片旁的「■ 停止」：复用底部一键停止（含急停与关闭自动跟随）。</summary>
     private void AudioStopBtn_Click(object sender, RoutedEventArgs e) => StopBtn_Click(sender, e);
 
-    private async void CaptureProcess_Click(object sender, RoutedEventArgs e)
+    /// <summary>播放方式 / 节奏档 / 起伏档：只写这几个字段，再让规则引擎重算底色。</summary>
+    private void CompanionBasePolicy_Changed(object sender, SelectionChangedEventArgs e)
     {
-        CaptureProcessBtn.IsEnabled = false;
-        CaptureHint.Foreground = (Brush)FindResource("Muted");
-        CaptureHint.Text = "现在切到游戏窗口去，3 秒后自动记下当时最前面的那个程序…";
+        if (_loadingUi) return;
+        App.Settings.CompanionPlayMode = CompanionPlayPolicy.NormalizePlayMode(SelectedItem(CompanionPlayModeCombo)?.Tag as string);
+        App.Settings.CompanionPace = CompanionPlayPolicy.NormalizePace(SelectedItem(CompanionPaceCombo)?.Tag as string);
+        App.Settings.CompanionVariation = CompanionPlayPolicy.NormalizeVariation(SelectedItem(CompanionVariationCombo)?.Tag as string);
+        App.Settings.Save();
+        ApplyCompanionRules();
+        RefreshBoundEngine();
+        RefreshCompanionBoard();
+        RefreshGameProfileText();
+    }
+
+    /// <summary>挣扎连点：回填开关 / 灵敏度 / 反馈强度（反馈强度滑条默认 1.0）。</summary>
+    private void LoadStruggleUi()
+    {
+        if (StruggleCheck is null) return;
+        bool wasLoading = _loadingUi;
+        _loadingUi = true;
         try
         {
-            await Task.Delay(3000);
-            string captured = _rules.ReadForegroundProcessName();
-            if (string.IsNullOrWhiteSpace(captured))
-            {
-                // P1：抓取失败不能清空已绑定的游戏名。
-                CaptureHint.Foreground = (Brush)FindResource("Warning");
-                CaptureHint.Text = $"没读到前台窗口，原来的绑定没动：{App.Settings.CompanionProcess}。再点一次「3 秒后抓取」，这次记得切到游戏里去。";
-                return;
-            }
-            CompanionProcessBox.Text = captured.Trim();
-            _applyProcessOnLostFocus = false;
-            App.Settings.CompanionProcess = CompanionProcessBox.Text.Trim();
-            App.Settings.Save();
-            GameEngineInfo engine = _rules.DetectEngine(App.Settings.CompanionProcess);
-            CaptureHint.Foreground = (Brush)FindResource("Muted");
-            CaptureHint.Text = $"已绑定 {App.Settings.CompanionProcess} · 识别为 {engine.DisplayName}。只有它在前台时设备才会动。";
-            ApplyCompanionRules();
-            RefreshBoundEngine();
+            StruggleCheck.IsChecked = App.Settings.CompanionStruggleEnabled;
+            SelectByTag(StruggleSensitivityCombo, CompanionPlayPolicy.NormalizeSensitivity(App.Settings.CompanionStruggleSensitivity));
+            double feedback = double.IsFinite(App.Settings.CompanionStruggleFeedback)
+                ? Math.Clamp(App.Settings.CompanionStruggleFeedback, 0, 1.5) : 1.0;
+            StruggleFeedbackSlider.Value = feedback;
+            StruggleFeedbackLabel.Text = feedback.ToString("0.0");
+            SyncStruggleUi();
         }
-        finally
+        finally { _loadingUi = wasLoading; }
+    }
+
+    private void SyncStruggleUi()
+    {
+        bool enabled = StruggleCheck?.IsChecked == true;
+        if (StrugglePanel is not null) StrugglePanel.IsEnabled = enabled;
+    }
+
+    private void SaveStruggle()
+    {
+        App.Settings.CompanionStruggleEnabled = StruggleCheck?.IsChecked == true;
+        App.Settings.CompanionStruggleSensitivity = CompanionPlayPolicy.NormalizeSensitivity(SelectedItem(StruggleSensitivityCombo)?.Tag as string);
+        App.Settings.CompanionStruggleFeedback = double.IsFinite(StruggleFeedbackSlider.Value)
+            ? Math.Clamp(StruggleFeedbackSlider.Value, 0, 1.5) : 1.0;
+        App.Settings.Save();
+        // 让正在跑的那台设备立刻按新灵敏度统计；游戏专属配置优先，键位轮询器自己会在切前台时重算。
+        App.Engine?.ConfigureStruggle(App.Settings.CompanionStruggleEnabled,
+            App.Settings.CompanionStruggleSensitivity, App.Settings.CompanionStruggleFeedback);
+        SyncStruggleUi();
+    }
+
+    private void Struggle_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loadingUi) return;
+        SaveStruggle();
+        RefreshCompanionBoard();
+    }
+
+    private void StruggleSensitivity_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingUi) return;
+        SaveStruggle();
+    }
+
+    private void StruggleFeedback_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (StruggleFeedbackLabel is null || _loadingUi) return;
+        StruggleFeedbackLabel.Text = e.NewValue.ToString("0.0");
+        SaveStruggle();
+    }
+
+    /// <summary>
+    /// 状态行：现在跟谁 / 在等什么 / 是不是只剩底色。融合与等待的判定与引擎保持一致，
+    /// 免得界面说「跟画面」而设备其实在等游戏信号。
+    /// </summary>
+    private void RefreshCompanionRoute()
+    {
+        if (CompanionRouteText is null) return;
+        string source = CompanionSource;                                  // auto / screen / sound / telemetry
+        bool screenWanted = source is "auto" or "screen";
+        bool audioWanted = source is "auto" or "sound";
+        bool followScreen = screenWanted && App.Settings.ScreenWatchEnabled;
+        bool followAudio = audioWanted && App.Settings.AudioReactiveEnabled;
+        bool companionOn = App.Settings.RuleEngineEnabled || App.Settings.CompanionAuto;
+        bool waitingForGameSignal = source == "telemetry" && !App.RuleEngine.TelemetryActive;
+        string route = CompanionPlayPolicy.DescribeRoute(followScreen, followAudio, companionOn, waitingForGameSignal);
+        CompanionBaseChoice choice = CompanionPlayPolicy.Resolve(App.Settings, App.Settings.CompanionProcess);
+        string play = choice.PlayMode == CompanionPlayPolicy.Pool
+            ? $"轮流（{choice.Pool.Count} 个动作，首尾循环）"
+            : $"固定「{ModeLabel(choice.Mode)}」";
+        // 切窗降级要说清楚：不是退出，只是先慢一点、小一点，切回就接上。
+        if (App.Engine?.IsBackgroundDegraded == true) route += "（切窗了：先慢速小幅动着，切回就平滑接上）";
+        string pace = choice.Pace switch
         {
-            CaptureProcessBtn.IsEnabled = true;
-        }
+            CompanionPlayPolicy.Slow => "慢",
+            CompanionPlayPolicy.Fast => "快",
+            _ => "中",
+        };
+        string variation = choice.Variation == CompanionPlayPolicy.Natural ? "自然起伏" : "稳定";
+        string struggle = App.Settings.CompanionStruggleEnabled
+            ? $" · 挣扎连点开（灵敏度 {CompanionPlayPolicy.NormalizeSensitivity(App.Settings.CompanionStruggleSensitivity)}）"
+            : " · 挣扎连点关";
+        string text = $"跟谁：{route} · 底色：{play} · 节奏{pace} · {variation} · 强度 {choice.Intensity:0.0}{struggle}";
+        if (CompanionRouteText.Text != text) CompanionRouteText.Text = text;
     }
 
     private void CompanionSetting_Changed(object sender, SelectionChangedEventArgs e)
     {
         if (_loadingUi) return;
-        App.Settings.CompanionBaseMode = (SelectedItem(CompanionBaseCombo)?.Tag as string) ?? "organic_flow";
+        string pickedBase = (SelectedItem(CompanionBaseCombo)?.Tag as string) ?? "organic_flow";
+        App.Settings.CompanionBaseMode = pickedBase;
+        // 「固定」模式下用户挑的这一个就是底色动作：记下来，下次进来还跑它（轮流模式不看它）。
+        App.Settings.CompanionSelectedAction = pickedBase;
         App.Settings.CompanionReaction = (SelectedItem(CompanionReactionCombo)?.Tag as string) ?? "sound";
         App.Settings.CompanionSensitivity = (SelectedItem(CompanionSensitivityCombo)?.Tag as string) ?? "standard";
         App.Settings.Save();
@@ -601,19 +1018,6 @@ public partial class TestLabPage : Page
         SaveAutoFollow();
     }
 
-    /// <summary>氛围叠加：勾选状态与滑杆可用性。</summary>
-    private void SyncAmbientUi() => AmbientOverlaySlider.IsEnabled = AmbientOverlayCheck.IsChecked == true;
-
-    private void SaveAmbient()
-    {
-        bool enabled = AmbientOverlayCheck.IsChecked == true;
-        App.Settings.AmbientOverlay = enabled;
-        App.Settings.AmbientOverlayAmount = AmbientOverlaySlider.Value;
-        App.Settings.Save();
-        // 这个开关决定要不要采集系统声音（叠加层靠音频特征吃饭）：
-        // 不调 Refresh 的话，单独勾上它什么都不会发生（"勾了没反应"的死开关）。
-        App.AudioReactive.Refresh();
-    }
 
     /// <summary>
     /// 测「设备到位时间」：用当前舒适档把安全限速器真跑一遍，算出设备走 60 个行程点要多久，
@@ -643,15 +1047,12 @@ public partial class TestLabPage : Page
     {
         _loadingUi = true;
         SilenceGateCheck.IsChecked = App.Settings.GateCompanionOnSilence;
-        AmbientOverlayCheck.IsChecked = App.Settings.AmbientOverlay;
-        AmbientOverlaySlider.Value = Math.Clamp(App.Settings.AmbientOverlayAmount,
-            AmbientOverlaySlider.Minimum, AmbientOverlaySlider.Maximum);
-        AmbientOverlayLabel.Text = $"±{(int)Math.Round(AmbientOverlaySlider.Value)}%";
-        SyncAmbientUi();
         AudioEventCheck.IsChecked = App.Settings.AudioEventMotion;
         MultiAxisCheck.IsChecked = App.Settings.MotionMultiAxis;
         ScreenPoseEnableCheck.IsChecked = App.Settings.PoseVisionEnabled;
         AutoFollowScreenCheck.IsChecked = App.Settings.AutoFollowScreen;
+        ScreenFollowForegroundCheck.IsChecked = App.Settings.ScreenFollowOnlyWhenForeground;
+        InitScreenRange();
         AlignmentSlider.Value = Math.Clamp(App.Settings.MotionCalibrationMs, -200, 200);
         AlignmentLabel.Text = $"{App.Settings.MotionCalibrationMs:+#;-#;0} ms";
         _loadingUi = false;
@@ -663,7 +1064,7 @@ public partial class TestLabPage : Page
         string process = (App.Settings.CompanionProcess ?? "").Trim();
         if (process.Length == 0)
         {
-            GameProfileText.Text = "先在「目标游戏」里填进程名（或点「3 秒后抓取」），才能给它单独记住一套配置。";
+            GameProfileText.Text = "先在「目标游戏」下拉里选一个窗口，才能给它单独记住一套配置。";
             SaveProfileBtn.IsEnabled = false;
             ClearProfileBtn.IsEnabled = false;
             return;
@@ -681,7 +1082,20 @@ public partial class TestLabPage : Page
                 >= 1.2 => "激烈",
                 _ => "常规",
             };
-            GameProfileText.Text = $"已给「{process}」存了专属配置：进这个游戏时自动套用「{label}」、强度{intensity}（伴随开着时也用它）。";
+            string play = string.Equals(profile.PlayMode, CompanionPlayPolicy.Pool, StringComparison.OrdinalIgnoreCase)
+                ? $"动作池轮流（{profile.Pool?.Count ?? 0} 个）"
+                : $"固定「{label}」";
+            string pace = CompanionPlayPolicy.NormalizePace(profile.Pace) switch
+            {
+                CompanionPlayPolicy.Slow => "节奏慢",
+                CompanionPlayPolicy.Fast => "节奏快",
+                _ => "节奏中",
+            };
+            string variation = CompanionPlayPolicy.NormalizeVariation(profile.Variation) == CompanionPlayPolicy.Natural ? "自然起伏" : "稳定";
+            string struggle = profile.StruggleEnabled is { } own
+                ? (own ? "挣扎连点开" : "挣扎连点关")
+                : "挣扎跟全局";
+            GameProfileText.Text = $"已给「{process}」存了专属底色：{play} · {pace} · {variation} · 强度{intensity} · {struggle}（伴随开着时也用它）。";
             ClearProfileBtn.IsEnabled = true;
         }
         else
@@ -703,6 +1117,8 @@ public partial class TestLabPage : Page
         string process = (App.Settings.CompanionProcess ?? "").Trim();
         if (process.Length == 0) return;
 
+        // 保存「这个游戏的底色」：动作 / 播放方式 / 节奏 / 起伏 / 池子 / 挣扎都一起固化。
+        // 临时调整（热键换的招、拖滑条的临时值）不会走到这里，所以不会被悄悄写死。
         App.Settings.GameProfiles[process] = new Hexa.Models.GameProfile
         {
             Process = process,
@@ -710,6 +1126,13 @@ public partial class TestLabPage : Page
             Intensity = SelectedItem(CompanionIntensityCombo)?.Tag is string tag && double.TryParse(tag, out double value)
                 ? value
                 : App.Settings.CompanionBaseIntensity,
+            Pace = CompanionPlayPolicy.NormalizePace(SelectedItem(CompanionPaceCombo)?.Tag as string),
+            PlayMode = CompanionPlayPolicy.NormalizePlayMode(SelectedItem(CompanionPlayModeCombo)?.Tag as string),
+            Variation = CompanionPlayPolicy.NormalizeVariation(SelectedItem(CompanionVariationCombo)?.Tag as string),
+            Pool = (App.Settings.CompanionPool ?? new List<string>()).ToList(),
+            StruggleEnabled = StruggleCheck?.IsChecked == true,
+            StruggleSensitivity = CompanionPlayPolicy.NormalizeSensitivity(SelectedItem(StruggleSensitivityCombo)?.Tag as string),
+            StruggleFeedback = Math.Clamp(StruggleFeedbackSlider.Value, 0, 1.5),
         };
         App.Settings.Save();
         // 规则引擎那条路是「生成规则时」读专属配置的：存完必须重新生成一次，否则要等下次改设置才生效。
@@ -801,7 +1224,9 @@ public partial class TestLabPage : Page
 
     private void SaveAutoFollow()
     {
-        App.Settings.ActionLinkEnabled = ActionLinkCheck.IsChecked == true;
+        // 普通按键脉冲已经摘掉：ActionLinkEnabled 只作为老配置的残留字段保留（恒为 false），
+        // 交互改成「挣扎连点」那套，见 Struggle_Changed。
+        App.Settings.ActionLinkEnabled = false;
         // 底色动作/强度：这是两条路共用的一套设置。旧的 CompanionIntensity 只是跟着写一份，
         // 让 AppSettings.Normalize 的「老配置迁移」不会再把用户的新选择覆盖回去。
         if (SelectedItem(CompanionIntensityCombo)?.Tag is string tag && double.TryParse(tag, out double value))
@@ -815,10 +1240,9 @@ public partial class TestLabPage : Page
         RefreshGameProfileText();
         if (AutoFollowNote.Text.Length > 0) AutoFollowNote.Visibility = Visibility.Visible;
         // 用户重新开启自动跟随/操作联动后，隐藏停止提示，避免误导。
-        if (App.Settings.CompanionAuto || App.Settings.RuleEngineEnabled || ActionLinkCheck.IsChecked == true)
+        if (App.Settings.CompanionAuto || App.Settings.RuleEngineEnabled)
         {
             _autoFollowStoppedByEmergency = false;
-            StopHintText.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -834,7 +1258,6 @@ public partial class TestLabPage : Page
         {
             // 用户自己又把它打开了：设备确实会在进游戏时动起来，「不会再自动启动」的提示要撤掉。
             _autoFollowStoppedByEmergency = false;
-            StopHintText.Visibility = Visibility.Collapsed;
         }
         RefreshCompanionBoard();
     }
@@ -952,7 +1375,6 @@ public partial class TestLabPage : Page
             App.Settings.Save();
             UpdateCompanionPanels();
             RefreshCompanionBoard();
-            StopHintText.Visibility = Visibility.Collapsed;
             return;
         }
 
@@ -961,8 +1383,8 @@ public partial class TestLabPage : Page
         if (string.IsNullOrWhiteSpace(CompanionProcessBox.Text))
         {
             CaptureHint.Foreground = (Brush)FindResource("Muted");
-            CaptureHint.Text = "还没绑游戏：先在左边填进程名，或点「3 秒后抓取」。不绑的话设备永远不动。";
-            CompanionProcessBox.Focus();
+            CaptureHint.Text = "还没选游戏：先在上面「目标游戏」下拉里挑一个窗口，列表里没有就点「↻ 刷新」。不选的话设备永远不动。";
+            CompanionWindowCombo.Focus();
             return;
         }
         ApplyCompanionRules();
@@ -1113,6 +1535,10 @@ public partial class TestLabPage : Page
         AudioLevelLabel.Text = capturing
             ? $"现在 {energy:P0} · 最近 15 秒最高 {PeakLevel:P0} · 低频 {_audio.Bass:F2}"
             : "还没在听（下面一行会说为什么）";
+        if (AudioSceneLabel != null)
+            AudioSceneLabel.Text = capturing
+                ? "当前听到：" + _audio.SceneDescribe()
+                : "当前听到：—（还没在听）";
         if (_levelFill != null && LevelTrack.ActualWidth > 0)
             _levelFill.Width = Math.Clamp(energy, 0, 1) * LevelTrack.ActualWidth;
         RefreshAudioState();
@@ -1144,6 +1570,12 @@ public partial class TestLabPage : Page
         _screenModelScoreFill = MakeScoreFill(ScreenModelScoreTrack, 14);
         _screenModelProgressFill = MakeBarFill(ScreenModelProgressTrack, 6, (Brush)FindResource("Primary"));
         _screenPoseProgressFill = MakeBarFill(ScreenPoseProgressTrack, 6, (Brush)FindResource("Primary"));
+
+        // 四条信号的门槛竖线：叠在填充条之上，左边缘按门槛百分比定位。
+        _screenModelScoreThresholdLine = AddThresholdLine(ScreenModelScoreTrack);
+        _screenMotionThresholdLine = AddThresholdLine(ScreenMotionTrack);
+        _screenRhythmThresholdLine = AddThresholdLine(ScreenRhythmTrack);
+        _screenScoreThresholdLine = AddThresholdLine(ScreenScoreTrack);
     }
 
     private static Border MakeBarFill(Border track, double height, Brush brush)
@@ -1156,7 +1588,10 @@ public partial class TestLabPage : Page
             Width = 0,
             HorizontalAlignment = HorizontalAlignment.Left,
         };
-        track.Child = fill;
+        // 轨道只装一个孩子（填充条），门槛竖线要叠在填充上面，所以先包一层 Grid。
+        var host = new Grid();
+        host.Children.Add(fill);
+        track.Child = host;
         return fill;
     }
 
@@ -1174,6 +1609,174 @@ public partial class TestLabPage : Page
     private Color ThemeColor(string key) =>
         FindResource(key) is SolidColorBrush brush ? brush.Color : Colors.Gray;
 
+    /// <summary>在轨道里叠一条 3px 门槛竖线（填充条已包在 Grid 里，竖线加进同一层、叠在填充之上）。</summary>
+    private Rectangle AddThresholdLine(Border track)
+    {
+        var line = new Rectangle
+        {
+            Width = 3,
+            Fill = (Brush)FindResource("Text"),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Stretch,
+            Visibility = Visibility.Collapsed,
+            IsHitTestVisible = false,
+            RadiusX = 1.5,
+            RadiusY = 1.5,
+        };
+        if (track.Child is Grid host) host.Children.Add(line);
+        return line;
+    }
+
+    private static void PositionThresholdLine(Rectangle? line, Border? track, double threshold)
+    {
+        if (line is null || track is null) return;
+        double width = track.ActualWidth;
+        if (width <= 1 || threshold <= 0)
+        {
+            line.Visibility = Visibility.Collapsed;
+            return;
+        }
+        line.Visibility = Visibility.Visible;
+        double left = Math.Clamp(threshold, 0, 0.95) * width - 1.5;   // 3px 线居中在门槛点
+        line.Margin = new Thickness(Math.Max(0, left), 0, 0, 0);
+    }
+
+    private static string ThresholdText(double value) =>
+        value <= 0 ? "门槛 · 不筛" : $"门槛 {value * 100:0}%";
+
+    /// <summary>把某条信号的门槛刷到滑条 + 文字 + 竖线（程序回填 / 条上拖动共用）。</summary>
+    private void SetThresholdUi(Slider slider, TextBlock label, Border track, Rectangle? line, double value)
+    {
+        value = Math.Clamp(value, 0, 0.95);
+        _syncingThreshold = true;
+        try { slider.Value = value; }
+        finally { _syncingThreshold = false; }
+        label.Text = ThresholdText(value);
+        PositionThresholdLine(line, track, value);
+    }
+
+    /// <summary>RefreshScreenWatch 每 150ms 把四条门槛同步回来；拖动中 ValueChanged 靠 _syncingThreshold 跳过回写。</summary>
+    private void SyncThresholds()
+    {
+        if (ScreenModelScoreThresholdSlider is null) return;
+        SetThresholdUi(ScreenModelScoreThresholdSlider, ScreenModelScoreThresholdLabel, ScreenModelScoreTrack, _screenModelScoreThresholdLine, App.Settings.ScreenSyncMinModelScore);
+        SetThresholdUi(ScreenMotionThresholdSlider, ScreenMotionThresholdLabel, ScreenMotionTrack, _screenMotionThresholdLine, App.Settings.ScreenSyncMinMotion);
+        SetThresholdUi(ScreenRhythmThresholdSlider, ScreenRhythmThresholdLabel, ScreenRhythmTrack, _screenRhythmThresholdLine, App.Settings.ScreenSyncMinRhythm);
+        SetThresholdUi(ScreenScoreThresholdSlider, ScreenScoreThresholdLabel, ScreenScoreTrack, _screenScoreThresholdLine, App.Settings.ScreenSyncMinSceneScore);
+    }
+
+    private void ApplyTrackThreshold(Border track, double value)
+    {
+        value = Math.Round(value / 0.01) * 0.01;   // 吸附到 0.01
+        value = Math.Clamp(value, 0, 0.95);
+
+        if (ReferenceEquals(track, ScreenModelScoreTrack))
+        {
+            App.Settings.ScreenSyncMinModelScore = value;
+            SetThresholdUi(ScreenModelScoreThresholdSlider, ScreenModelScoreThresholdLabel, track, _screenModelScoreThresholdLine, value);
+        }
+        else if (ReferenceEquals(track, ScreenMotionTrack))
+        {
+            App.Settings.ScreenSyncMinMotion = value;
+            SetThresholdUi(ScreenMotionThresholdSlider, ScreenMotionThresholdLabel, track, _screenMotionThresholdLine, value);
+        }
+        else if (ReferenceEquals(track, ScreenRhythmTrack))
+        {
+            App.Settings.ScreenSyncMinRhythm = value;
+            SetThresholdUi(ScreenRhythmThresholdSlider, ScreenRhythmThresholdLabel, track, _screenRhythmThresholdLine, value);
+        }
+        else if (ReferenceEquals(track, ScreenScoreTrack))
+        {
+            App.Settings.ScreenSyncMinSceneScore = value;
+            SetThresholdUi(ScreenScoreThresholdSlider, ScreenScoreThresholdLabel, track, _screenScoreThresholdLine, value);
+        }
+        ScheduleSave();
+    }
+
+    private void SetThresholdFromTrack(Border track, MouseEventArgs e)
+    {
+        double width = track.ActualWidth;
+        if (width <= 1) return;
+        double frac = Math.Clamp(e.GetPosition(track).X / width, 0, 1);
+        ApplyTrackThreshold(track, frac * 0.95);   // 条最右端 = 门槛 0.95
+    }
+
+    private void ScreenThresholdTrack_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is not Border track) return;
+        _thresholdDrag = true;
+        track.CaptureMouse();
+        SetThresholdFromTrack(track, e);
+        e.Handled = true;
+    }
+
+    private void ScreenThresholdTrack_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_thresholdDrag || sender is not Border track) return;
+        if (!track.IsMouseCaptured) { _thresholdDrag = false; return; }
+        if (e.LeftButton != MouseButtonState.Pressed) { EndThresholdTrackDrag(track); return; }
+        SetThresholdFromTrack(track, e);
+    }
+
+    private void ScreenThresholdTrack_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        EndThresholdTrackDrag(sender as Border);
+    }
+
+    private void EndThresholdTrackDrag(Border? track)
+    {
+        if (track is not null && track.IsMouseCaptured) track.ReleaseMouseCapture();
+        _thresholdDrag = false;
+        App.Settings.Save();   // 松手立刻落盘
+    }
+
+    private void ThresholdSlider_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_loadingScreenUi || _syncingThreshold) return;
+
+        if (ReferenceEquals(sender, ScreenModelScoreThresholdSlider))
+        {
+            if (ScreenModelScoreThresholdLabel is null) return;
+            UpdateThresholdReadout(ScreenModelScoreThresholdLabel, _screenModelScoreThresholdLine, ScreenModelScoreTrack, e.NewValue);
+            App.Settings.ScreenSyncMinModelScore = Math.Clamp(e.NewValue, 0, 0.95);
+        }
+        else if (ReferenceEquals(sender, ScreenMotionThresholdSlider))
+        {
+            if (ScreenMotionThresholdLabel is null) return;
+            UpdateThresholdReadout(ScreenMotionThresholdLabel, _screenMotionThresholdLine, ScreenMotionTrack, e.NewValue);
+            App.Settings.ScreenSyncMinMotion = Math.Clamp(e.NewValue, 0, 0.95);
+        }
+        else if (ReferenceEquals(sender, ScreenRhythmThresholdSlider))
+        {
+            if (ScreenRhythmThresholdLabel is null) return;
+            UpdateThresholdReadout(ScreenRhythmThresholdLabel, _screenRhythmThresholdLine, ScreenRhythmTrack, e.NewValue);
+            App.Settings.ScreenSyncMinRhythm = Math.Clamp(e.NewValue, 0, 0.95);
+        }
+        else if (ReferenceEquals(sender, ScreenScoreThresholdSlider))
+        {
+            if (ScreenScoreThresholdLabel is null) return;
+            UpdateThresholdReadout(ScreenScoreThresholdLabel, _screenScoreThresholdLine, ScreenScoreTrack, e.NewValue);
+            App.Settings.ScreenSyncMinSceneScore = Math.Clamp(e.NewValue, 0, 0.95);
+        }
+        ScheduleSave();
+    }
+
+    private void UpdateThresholdReadout(TextBlock? label, Rectangle? line, Border track, double value)
+    {
+        if (label is null) return;
+        label.Text = ThresholdText(value);
+        PositionThresholdLine(line, track, value);
+    }
+
+    private void ScreenPoseDeadZone_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (ScreenPoseDeadZoneLabel is null) return;
+        ScreenPoseDeadZoneLabel.Text = $"{e.NewValue:0.0} /秒";
+        if (_loadingScreenUi) return;
+        App.Settings.ScreenSyncPoseMinSpeed = Math.Clamp(e.NewValue, 0, 30);
+        ScheduleSave();
+    }
+
     private void LoadScreenWatchUi()
     {
         _loadingScreenUi = true;
@@ -1182,14 +1785,22 @@ public partial class TestLabPage : Page
             ScreenSensitivitySlider.Value = Math.Clamp(App.Settings.ScreenWatchSensitivity,
                 ScreenWatchService.SensitivityMin, ScreenWatchService.SensitivityMax);
             ScreenFollowLockSlider.Value = Math.Clamp(App.Settings.ScreenPhaseLock, 0, 1);
+            ScreenPoseDeadZoneSlider.Value = Math.Clamp(App.Settings.ScreenSyncPoseMinSpeed, 0, 30);
             ScreenSyncInvertCheck.IsChecked = App.Settings.ScreenSyncInvertDirection;
             ScreenSyncTiltCheck.IsChecked = App.Settings.ScreenSyncTiltEnabled;
+            ScreenMirrorPoseCheck.IsChecked = App.Settings.ScreenSyncMirrorPose;
+            ScreenAudioRhythmCheck.IsChecked = App.Settings.ScreenSyncAudioRhythm;
             SelectModelTier(App.Settings.NsfwModelTier);   // 档位下拉选回上次那一档
         }
         finally { _loadingScreenUi = false; }
+        // 「更多设置」折叠状态只记内存字段：页面重新载入时按用户上次的选择恢复，不写 AppSettings。
+        ScreenMoreSettingsExpander.IsExpanded = _screenMoreSettingsOpen;
         ScreenSensitivityLabel.Text = $"{ScreenSensitivitySlider.Value:0.0}×";
         ScreenFollowLockLabel.Text = $"{ScreenFollowLockSlider.Value:0.00}";
+        ScreenPoseDeadZoneLabel.Text = $"{ScreenPoseDeadZoneSlider.Value:0.0} /秒";
+        SyncThresholds();        // 四条门槛滑条 + 竖线，从设置回填
         ReloadScreenWindows();
+        ReloadCompanionWindows();
         UpdateScreenToggle();
         UpdateModelButtons();     // 模型按钮的初始状态（没装模型时「删除模型」是灰的）
         UpdatePoseButtons();
@@ -1243,6 +1854,18 @@ public partial class TestLabPage : Page
     {
         if (_loadingScreenUi) return;
         ApplyScreenSelection();
+        // 用户手动选了窗口 = 明确要盯着这个窗口：顺手把「换窗口自动跟」关掉，
+        // 否则一切前台它就被带走（用户原话「我希望是紧紧锁在我所选择的窗口而不是当前这种我切窗它就跟」）。
+        if (App.Settings.AutoFollowScreen)
+        {
+            App.Settings.AutoFollowScreen = false;
+            _loadingUi = true;
+            try { AutoFollowScreenCheck.IsChecked = false; } finally { _loadingUi = false; }
+            ScheduleSave();
+            if (ScreenWatch.IsRunning) ScreenWatch.Refresh();
+            if (ScreenWindowHint is not null)
+                ScreenWindowHint.Text = "已锁在你选的这个窗口：切到别的窗口也不会跟着变";
+        }
         RefreshScreenWatch();
     }
 
@@ -1253,7 +1876,128 @@ public partial class TestLabPage : Page
         RefreshScreenWatch();
     }
 
+    // ── 游戏伴随：目标游戏下拉 ───────────────────────────────────────────
+    // 用户原话「伴随的窗口选择我希望也是和画面同步那个一样可以直接选择」：
+    // 不再让他记进程名、也不再「3 秒后抓取」，直接把桌面上开着的窗口列出来选。
+    private bool _loadingCompanionWindowUi;
+
+    /// <summary>重新列一遍窗口，并尽量选回上次绑定的那个进程（进程名对得上就算）。</summary>
+    private void ReloadCompanionWindows()
+    {
+        _loadingCompanionWindowUi = true;
+        try
+        {
+            ScreenWatch.Refresh();
+            IReadOnlyList<ScreenWatchWindow> windows = ScreenWatch.Windows;
+            CompanionWindowCombo.Items.Clear();
+            foreach (ScreenWatchWindow window in windows) CompanionWindowCombo.Items.Add(window);
+
+            string want = (App.Settings.CompanionProcess ?? "").Trim();
+            ScreenWatchWindow? pick = null;
+            if (want.Length > 0)
+            {
+                foreach (ScreenWatchWindow window in windows)
+                {
+                    if (string.Equals(window.ProcessName, want, StringComparison.OrdinalIgnoreCase)) { pick = window; break; }
+                }
+            }
+            if (pick is not null) CompanionWindowCombo.SelectedItem = pick;
+
+            if (windows.Count == 0)
+            {
+                CaptureHint.Text = "现在桌面上没有能选的窗口：把游戏打开（别最小化），再点「↻ 刷新」。";
+            }
+            else if (want.Length > 0 && pick is null)
+            {
+                CaptureHint.Text = $"当前绑定的是 {want}（这个程序现在没开着）。想换就点上面下拉挑一个。";
+            }
+            else
+            {
+                CaptureHint.Text = "下拉里选你要玩的窗口就行（读的是它的进程名）。列表里没有？先把它从最小化还原、别用独占全屏，再点「↻ 刷新」。";
+            }
+        }
+        finally { _loadingCompanionWindowUi = false; }
+    }
+
+    /// <summary>下拉换了一个窗口：把进程名写进 CompanionProcessBox（老逻辑唯一的真值来源），再走老应用路径。</summary>
+    private void CompanionWindow_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (_loadingCompanionWindowUi || _loadingUi) return;
+        if (CompanionWindowCombo.SelectedItem is not ScreenWatchWindow picked) return;
+        string process = GameTelemetryProtocol.NormalizeProcessName(picked.ProcessName ?? "");
+        if (process.Length == 0) return;
+
+        bool wasLoading = _loadingUi;
+        _loadingUi = true;
+        try { CompanionProcessBox.Text = process; }
+        finally { _loadingUi = wasLoading; }
+
+        ApplyCompanionRules();     // 写设置 + 重新套伴随规则 + 存盘
+        RefreshBoundEngine();      // 重新识别引擎（Unity / Unreal / 其它）
+        RefreshStatus();
+        RefreshCompanionBoard();
+        CaptureHint.Text = $"已绑定 {App.Settings.CompanionProcess}（窗口：{picked.Title}）· 识别为 {_boundEngineDisplay}。";
+    }
+
+    private void CompanionWindowRefresh_Click(object sender, RoutedEventArgs e) => ReloadCompanionWindows();
+
     /// <summary>「开启同步 / 关闭同步」——只控制看不看画面，不碰设备（这里没有任何设备调用）。</summary>
+    /// <summary>
+    /// 一键让画面带动设备：用户原话「你搞的门槛太复杂了我都不知道怎么让它动起来」。
+    /// 一个按钮把挡住信号的几层一次放开，别让他自己找原因：
+    /// ① 四条门槛 + 姿态死区全部清零（什么都不拦）；② 进场 1 拍、退场 8 拍（马上动、迟点停）；
+    /// ③ 只开画面同步这一路：伴随/操作联动不碰（用户原话「这个按钮怎么还是会连伴随一起开」）；
+    /// ④ 立刻启动服务。之后想细调都在「更多设置」里，不影响这次一键的结果。
+    /// </summary>
+    private void ScreenOneKey_Click(object sender, RoutedEventArgs e)
+    {
+        var cfg = App.Settings;
+        cfg.ScreenSyncMinSceneScore = 0;
+        cfg.ScreenSyncMinModelScore = 0;
+        cfg.ScreenSyncMinMotion = 0;
+        cfg.ScreenSyncMinRhythm = 0;
+        cfg.ScreenSyncPoseMinSpeed = 0;
+        cfg.ScreenSyncEnterFrames = 1;
+        cfg.ScreenSyncExitFrames = 8;
+        // 不再顺手打开「跟着当前窗口自动动」：那会让设备在切到任何绑过的窗口时自己动起来，
+        // 用户要单独用手动控制时会被抢。要跟当前窗口，自己在下面勾。
+        cfg.ScreenWatchEnabled = true;
+        // 画面同步是独立的一路：来源保持「自动」，声音/遥测都还能用（以前这里写 "screen"，
+        // 等于把声音响应那条路整个关掉，用户看到的就是「开画面声音就不响了」）。
+        cfg.CompanionSource = "auto";
+        // 一键只管「画面 → 设备」这一条：伴随（RuleEngine）必须他自己点「开启游戏伴随」才开，
+        // 否则一点一键就被伴随接管，想单独用手动控制还得先找地方关。
+        cfg.Save();
+
+        ScreenWatch.Refresh();
+        ScreenWatch.Start();
+        LoadScreenWatchUi();
+        RefreshScreenWatch();
+        if (ScreenOneKeyHint is not null)
+            ScreenOneKeyHint.Text = "已经开好了：现在画面里有人动，设备就跟着动。没反应就看下面那句原因（它会说清是哪一层没通）。"
+                + " 这一下只开了画面同步，「游戏伴随」没动。";
+    }
+
+    /// <summary>
+    /// 「单独使用设备」：把会自动接管的几路一次关干净——游戏伴随、画面同步、跟随前台窗口、
+    /// 进游戏自动套预设、氛围叠加、声音反应——设备只剩手动/脚本/网页这几条路。
+    /// 用的是「全部停止」同一条逻辑（<see cref="StopBtn_Click"/>），不另写一份。
+    /// </summary>
+    private void StandaloneOnly_Click(object sender, RoutedEventArgs e)
+    {
+        StopBtn_Click(sender, e);
+        App.Settings.AutoFollowScreen = false;
+        _loadingUi = true;
+        try { if (AutoFollowScreenCheck is not null) AutoFollowScreenCheck.IsChecked = false; }
+        finally { _loadingUi = false; }
+        App.Settings.Save();
+        if (ScreenOneKeyHint is not null)
+            ScreenOneKeyHint.Text = "已经切成单独使用：伴随、画面同步、跟随前台窗口、自动套预设都关了，"
+                + "设备现在只听手动控制、脚本和网页的。要用画面带动，再点上面那个一键。";
+        RefreshScreenWatch();
+        RefreshCompanionBoard();
+    }
+
     private void ScreenWatchToggle_Click(object sender, RoutedEventArgs e)
     {
         if (ScreenWatch.IsRunning)
@@ -1276,6 +2020,56 @@ public partial class TestLabPage : Page
         App.Settings.Save();
         ScreenWatch.Refresh();     // 从选完到点开启可能过了一会儿：开之前再把窗口对一遍
         ScreenWatch.Start();
+        UpdateScreenToggle();
+        RefreshScreenWatch();
+    }
+
+    /// <summary>
+    /// 伴随里的「声音响应」：只写它自己的开关，不动画面、不动来源（以前两条共用一个来源，开一个就把另一个顶掉）。
+    /// </summary>
+    private void CompanionSoundCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loadingUi || CompanionSoundCheck is null) return;
+        bool on = CompanionSoundCheck.IsChecked == true;
+        if (App.Settings.AudioReactiveEnabled == on) return;
+        App.Settings.AudioReactiveEnabled = on;
+        App.Settings.Save();
+        _audio.Refresh();
+        UpdateAudioToggle();
+        RefreshAudioState();
+    }
+
+    /// <summary>
+    /// 伴随里的「画面同步」：同样只写自己的开关。第一次打开时顺手把窗口选中 + 服务起来，
+    /// 免得用户打了勾却因为「没选窗口」一动不动（没窗口就把勾退回去，并说清下一步点哪）。
+    /// </summary>
+    private void CompanionScreenCheck_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loadingScreenUi || CompanionScreenCheck is null) return;
+        bool on = CompanionScreenCheck.IsChecked == true;
+        if (App.Settings.ScreenWatchEnabled == on) return;
+
+        if (on)
+        {
+            ApplyScreenSelection();
+            if (ScreenWindowCombo.SelectedItem is not ScreenWatchWindow)
+            {
+                CompanionChannelsHint.Text = "画面同步：先在下面「🖥 画面同步」里挑一个窗口，再回来打这个勾（或者直接点那边的一键按钮）。";
+                _loadingScreenUi = true;
+                CompanionScreenCheck.IsChecked = false;
+                _loadingScreenUi = false;
+                return;
+            }
+            App.Settings.ScreenWatchEnabled = true;
+            ScreenWatch.Refresh();
+            ScreenWatch.Start();
+        }
+        else
+        {
+            App.Settings.ScreenWatchEnabled = false;
+            ScreenWatch.Stop();
+        }
+        App.Settings.Save();
         UpdateScreenToggle();
         RefreshScreenWatch();
     }
@@ -1308,6 +2102,20 @@ public partial class TestLabPage : Page
     }
 
     /// <summary>方向反转：画面里哪边算「插入」无法自动判断，默认不反转。</summary>
+
+    private void ScreenMirrorPose_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loadingScreenUi) return;
+        App.Settings.ScreenSyncMirrorPose = ScreenMirrorPoseCheck.IsChecked == true;
+        ScheduleSave();
+    }
+
+    private void ScreenAudioRhythm_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loadingScreenUi) return;
+        App.Settings.ScreenSyncAudioRhythm = ScreenAudioRhythmCheck.IsChecked == true;
+        ScheduleSave();
+    }
     private void ScreenSyncInvert_Changed(object sender, RoutedEventArgs e)
     {
         if (ScreenSyncInvertCheck is null || _loadingScreenUi) return;
@@ -1327,6 +2135,17 @@ public partial class TestLabPage : Page
 
     private void UpdateScreenToggle()
     {
+        // 伴随卡里那个勾跟设置走（从别处关掉同步时也要跟着回去，不然两处显示打架）。
+        if (CompanionScreenCheck is not null && !_loadingScreenUi)
+        {
+            bool wantScreen = App.Settings.ScreenWatchEnabled;
+            if (CompanionScreenCheck.IsChecked != wantScreen)
+            {
+                _loadingScreenUi = true;
+                CompanionScreenCheck.IsChecked = wantScreen;
+                _loadingScreenUi = false;
+            }
+        }
         bool running = ScreenWatch.IsRunning;
         if (running == _lastScreenToggleState) return;
         _lastScreenToggleState = running;
@@ -1334,14 +2153,39 @@ public partial class TestLabPage : Page
         ScreenWatchToggleBtn.Style = (Style)FindResource(running ? "BtnDanger" : "BtnSecondary");
     }
 
+    /// <summary>「更多设置」Expander 展开/收起：只记内存字段，不写设置。</summary>
+    private void MoreSettings_Expanded(object sender, RoutedEventArgs e) => _screenMoreSettingsOpen = true;
+    private void MoreSettings_Collapsed(object sender, RoutedEventArgs e) => _screenMoreSettingsOpen = false;
+
     /// <summary>刷新画面卡：状态行 + 六个数值 + 模型状态 + 判定灯（150ms 一次，和页面其它卡片同一个节拍）。</summary>
     private void RefreshScreenWatch()
     {
         // 页面构造/ XAML 解析中途也可能被调到，控件还没齐就直接跳过
         if (ScreenStatusText is null || ScreenScoreLabel is null) return;
 
+        SyncThresholds();        // 门槛文字 + 滑条位置 + 竖线位置，跟着设置走
+
         UpdateScreenToggle();   // 按钮文案跟着真实状态走（比如回到页面时自动续上观察）
         bool running = ScreenWatch.IsRunning;
+        var manual = ScreenWatch.ManualBinding;
+        if (ScreenManualBindBtn is not null)
+        {
+            ScreenManualBindBtn.IsEnabled = running;
+            ScreenManualBindBtn.Content = manual.Bound ? "重新绑定…" : "手动绑定…";
+        }
+        if (ScreenManualAutoBtn is not null)
+            ScreenManualAutoBtn.Visibility = manual.Bound ? Visibility.Visible : Visibility.Collapsed;
+        if (ScreenManualBindHint is not null)
+            ScreenManualBindHint.Text = manual.Bound
+                ? manual.Located ? $"手动目标 · 位置 {manual.Position * 100:0}% · 匹配 {manual.Confidence * 100:0}%" : manual.Status
+                : "自动识别；识别不准时可手动绑定一个目标。";
+        if (ScreenManualPoint is not null)
+        {
+            ScreenManualPoint.Visibility = running && manual.Located ? Visibility.Visible : Visibility.Collapsed;
+            ScreenManualPoint.Margin = new Thickness(Math.Clamp(manual.X * 319 - 7, 0, 306),
+                Math.Clamp(manual.Y * 179 - 7, 0, 166), 0, 0);
+        }
+        if (manual.Bound && ScreenManualRoiRect is not null) ScreenManualRoiRect.Visibility = Visibility.Collapsed;
         if (!running)
         {
             SetScreenStatus("未开启", "Muted",
@@ -1358,6 +2202,71 @@ public partial class TestLabPage : Page
             string frames = ScreenWatch.Fps > 0 ? $"每秒 {ScreenWatch.Fps} 帧" : "正在抓第一帧…";
             SetScreenStatus(target.Length == 0 ? $"正在看：— · {frames}" : $"正在看：{target} · {frames}",
                 "Success", "下面就是「它此刻看到了什么」；会不会驱动设备看最下面那块「⚙ 跟着画面里的动作走」。");
+        }
+
+        // 预览区：把服务最近一帧抓到的画面直接摆给用户看（没开 / 还没抓到就清空）。
+        if (ScreenPreviewImage is not null || ScreenPreviewLabel is not null)
+        {
+            var preview = running ? (manual.Bound ? ScreenWatch.ManualPreview?.Image : ScreenWatch.PreviewImage) : null;
+            bool hasPreview = preview is not null;
+            if (ScreenPreviewOverlay is not null)
+                ScreenPreviewOverlay.Visibility = hasPreview ? Visibility.Visible : Visibility.Collapsed;
+            if (ScreenPreviewImage is not null) ScreenPreviewImage.Source = preview;
+            if (ScreenPreviewLabel is not null)
+            {
+                if (!running) ScreenPreviewLabel.Text = "还没开始抓画面";
+                else if (preview is null) ScreenPreviewLabel.Text = "还没抓到第一帧…";
+                else
+                {
+                    string target = ScreenWatch.PreviewTarget;
+                    string targetName = target.Length > 0 ? target : "整个屏幕";
+                    string rect = ScreenWatch.PreviewRect;
+                    if (manual.Bound)
+                        ScreenPreviewLabel.Text = $"看的是：{targetName} · {manual.Status} · L0={ScreenWatch.FollowMainAxis:0}%";
+                    else if (ScreenWatch.FollowActive)
+                    {
+                        double approach = ScreenWatch.FollowApproach;
+                        string dir = approach > 0.15 ? "往上" : approach < -0.15 ? "往下" : "没动";
+                        ScreenPreviewLabel.Text =
+                            $"看的是：{targetName} · 方向 {dir} · 深度 {ScreenWatch.FollowDepth * 100:0}% · 每秒 {ScreenWatch.FollowHz:0.0} 下 · L0={ScreenWatch.FollowMainAxis:0}%";
+                    }
+                    else
+                    {
+                        ScreenPreviewLabel.Text = $"看的是：{targetName}{(rect.Length > 0 ? $" · {rect}" : "")} · 还没开始跟画面";
+                    }
+                }
+            }
+
+            // ROI 矩形 + 主轴横条：跟预览同频更新（预览每 4 帧由服务刷新一次，这里 150ms 一次不会更频繁）。
+            if (preview is { } p)
+            {
+                if (ScreenPreviewRoi is not null)
+                {
+                    var roi = manual.Bound ? null : ScreenWatch.PreviewRoi;
+                    if (roi is { } r && p.PixelWidth > 0 && p.PixelHeight > 0)
+                    {
+                        double sx = 320.0 / p.PixelWidth;
+                        double sy = 180.0 / p.PixelHeight;
+                        ScreenPreviewRoi.Width = Math.Max(2, r.Width * sx);
+                        ScreenPreviewRoi.Height = Math.Max(2, r.Height * sy);
+                        ScreenPreviewRoi.Margin = new Thickness(r.X * sx, r.Y * sy, 0, 0);
+                        ScreenPreviewRoi.Visibility = Visibility.Visible;
+                    }
+                    else ScreenPreviewRoi.Visibility = Visibility.Collapsed;
+                }
+                if (ScreenPreviewBarGrid is not null && ScreenPreviewMainFill is not null)
+                {
+                    bool following = ScreenWatch.FollowActive;
+                    ScreenPreviewBarGrid.Visibility = following ? Visibility.Visible : Visibility.Collapsed;
+                    if (following)
+                        ScreenPreviewMainFill.Width = Math.Clamp(ScreenWatch.FollowMainAxis, 0, 100) / 100.0 * ScreenPreviewBarGrid.Width;
+                }
+            }
+            else
+            {
+                if (ScreenPreviewRoi is not null) ScreenPreviewRoi.Visibility = Visibility.Collapsed;
+                if (ScreenPreviewBarGrid is not null) ScreenPreviewBarGrid.Visibility = Visibility.Collapsed;
+            }
         }
 
         // 运动主体（姿态定位）与姿态模型：定位到了就只在主体那一块算运动量
@@ -1407,6 +2316,135 @@ public partial class TestLabPage : Page
 
         RefreshFollowRow();
         RefreshModelRow();
+    }
+
+    private Point _previewDragFrom;
+    private bool _previewDragging;
+
+    private void ScreenPreview_Down(object sender, MouseButtonEventArgs e)
+    {
+        if (ScreenWatch.ManualBinding.Bound) return;
+        if (ScreenPreviewOverlay is null || ScreenManualRoiRect is null) return;
+        _previewDragFrom = e.GetPosition(ScreenPreviewOverlay);
+        _previewDragging = true;
+        DrawManualRect(_previewDragFrom, _previewDragFrom);
+        ScreenManualRoiRect.Visibility = Visibility.Visible;
+        ScreenPreviewOverlay.CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void ScreenPreview_Move(object sender, MouseEventArgs e)
+    {
+        if (!_previewDragging || ScreenPreviewOverlay is null) return;
+        DrawManualRect(_previewDragFrom, e.GetPosition(ScreenPreviewOverlay));
+    }
+
+    private void ScreenPreview_Up(object sender, MouseButtonEventArgs e)
+    {
+        if (!_previewDragging || ScreenPreviewOverlay is null) return;
+        _previewDragging = false;
+        ScreenPreviewOverlay.ReleaseMouseCapture();
+
+        Point to = e.GetPosition(ScreenPreviewOverlay);
+        double w = ScreenPreviewOverlay.ActualWidth > 1 ? ScreenPreviewOverlay.ActualWidth : 320;
+        double h = ScreenPreviewOverlay.ActualHeight > 1 ? ScreenPreviewOverlay.ActualHeight : 180;
+        double x0 = Math.Clamp(Math.Min(_previewDragFrom.X, to.X) / w, 0, 1);
+        double y0 = Math.Clamp(Math.Min(_previewDragFrom.Y, to.Y) / h, 0, 1);
+        double rw = Math.Clamp(Math.Abs(to.X - _previewDragFrom.X) / w, 0, 1 - x0);
+        double rh = Math.Clamp(Math.Abs(to.Y - _previewDragFrom.Y) / h, 0, 1 - y0);
+        if (rw < 0.05 || rh < 0.05)
+        {
+            // 只是点了一下（没拖开）：当没框过，别把分析区缩成一条缝。
+            UpdateManualRoiUi();
+            return;
+        }
+        App.Settings.ScreenManualRoi = FormattableString.Invariant($"{x0:0.000},{y0:0.000},{rw:0.000},{rh:0.000}");
+        App.Settings.ScreenUseManualRoi = true;
+        ScheduleSave();
+        UpdateManualRoiUi();
+    }
+
+    private void ScreenManualBind_Click(object sender, RoutedEventArgs e)
+    {
+        var service = ScreenWatch;
+        service.BeginManualBinding();
+        try
+        {
+            var dialog = new ManualBindingWindow(service);
+            var owner = Window.GetWindow(this);
+            if (owner is not null) dialog.Owner = owner;
+            dialog.ShowDialog();
+        }
+        finally { service.EndManualBinding(); RefreshScreenWatch(); }
+    }
+
+    private void ScreenManualAuto_Click(object sender, RoutedEventArgs e)
+    {
+        ScreenWatch.ClearManualBinding();
+        RefreshScreenWatch();
+    }
+
+    private void ScreenManualRoiClear_Click(object sender, RoutedEventArgs e)
+    {
+        App.Settings.ScreenManualRoi = "";
+        App.Settings.ScreenUseManualRoi = false;
+        ScheduleSave();
+        UpdateManualRoiUi();
+    }
+
+    /// <summary>把两个屏幕坐标画成预览上的框（左上 + 宽高，单位是预览格子的像素）。</summary>
+    private void DrawManualRect(Point a, Point b)
+    {
+        if (ScreenManualRoiRect is null || ScreenPreviewOverlay is null) return;
+        double w = ScreenPreviewOverlay.ActualWidth > 1 ? ScreenPreviewOverlay.ActualWidth : 320;
+        double h = ScreenPreviewOverlay.ActualHeight > 1 ? ScreenPreviewOverlay.ActualHeight : 180;
+        double left = Math.Clamp(Math.Min(a.X, b.X), 0, w);
+        double top = Math.Clamp(Math.Min(a.Y, b.Y), 0, h);
+        ScreenManualRoiRect.Margin = new Thickness(left, top, 0, 0);
+        ScreenManualRoiRect.Width = Math.Clamp(Math.Abs(b.X - a.X), 0, w - left);
+        ScreenManualRoiRect.Height = Math.Clamp(Math.Abs(b.Y - a.Y), 0, h - top);
+    }
+
+    /// <summary>手动框的界面：没框过 → 提示怎么框；框过 → 画出框 + 给「清除手动框」。</summary>
+    private void UpdateManualRoiUi()
+    {
+        if (ScreenManualRoiRect is null || ScreenManualRoiHint is null || ScreenManualRoiClearBtn is null) return;
+        bool parsed = TryParseRoiText(App.Settings.ScreenManualRoi,
+            out double x, out double y, out double w, out double h);
+        bool on = App.Settings.ScreenUseManualRoi && parsed;
+        ScreenManualRoiClearBtn.Visibility = on ? Visibility.Visible : Visibility.Collapsed;
+        ScreenManualRoiHint.Text = on
+            ? "手动框选：只跟框里这块（按住预览拖个新框可以换，拖框会覆盖自动识别）"
+            : "按住预览拖一个框 = 只跟这块（优先于自动框）";
+        if (!on)
+        {
+            ScreenManualRoiRect.Visibility = Visibility.Collapsed;
+            return;
+        }
+        double cw = ScreenPreviewOverlay.ActualWidth > 1 ? ScreenPreviewOverlay.ActualWidth : 320;
+        double ch = ScreenPreviewOverlay.ActualHeight > 1 ? ScreenPreviewOverlay.ActualHeight : 180;
+        ScreenManualRoiRect.Margin = new Thickness(x * cw, y * ch, 0, 0);
+        ScreenManualRoiRect.Width = Math.Max(2, w * cw);
+        ScreenManualRoiRect.Height = Math.Max(2, h * ch);
+        ScreenManualRoiRect.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>解析设置里存的 "x,y,w,h"（0–1 归一化）；坏了就返回 false。</summary>
+    private static bool TryParseRoiText(string? text, out double x, out double y, out double w, out double h)
+    {
+        x = y = w = h = 0;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        string[] parts = text.Split(',');
+        if (parts.Length != 4) return false;
+        var v = new double[4];
+        for (int i = 0; i < 4; i++)
+        {
+            if (!double.TryParse(parts[i].Trim(), System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out v[i]))
+                return false;
+        }
+        x = v[0]; y = v[1]; w = v[2]; h = v[3];
+        return w > 0 && h > 0;
     }
 
     /// <summary>
@@ -1485,14 +2523,27 @@ public partial class TestLabPage : Page
     /// 「明明开着却不动」最常见的原因就是窗口没挑对、或绑定程序跟窗口对不上，这一步专门把它消掉。
     /// 关掉时只停这个模式，其它开关保持原样（不偷偷改用户的设置）。
     /// </summary>
+    private void ScreenFollowForeground_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_loadingUi) return;
+        ApplyScreenFollowForeground(ScreenFollowForegroundCheck.IsChecked == true);
+    }
+
+    private void ApplyScreenFollowForeground(bool on)
+    {
+        App.Settings.ScreenFollowOnlyWhenForeground = on;
+        try { App.Settings.Save(); } catch (Exception ex) { AppLogger.Warn($"画面同步：记下「只在前台时动」失败 —— {ex.Message}"); }
+    }
+
     private void ApplyAutoFollowScreen(bool on)
     {
         App.Settings.AutoFollowScreen = on;
         if (on)
         {
+            // 这里只负责「跟着前台窗口挑目标」，不动「游戏伴随」：
+            // 以前顺手把 RuleEngineEnabled 打开，用户只是想跟窗口，结果伴随被一起点开了。
             App.Settings.ScreenWatchEnabled = true;
-            App.Settings.RuleEngineEnabled = true;
-            App.Settings.CompanionSource = "screen";
+            App.Settings.CompanionSource = "auto";   // 画面这条不再独占来源（它自己有开关），声音照样能用
             if (Hexa.Services.PoseTracker.IsInstalled) App.Settings.PoseVisionEnabled = true;
         }
         App.Settings.Save();
@@ -1503,6 +2554,9 @@ public partial class TestLabPage : Page
         }
         LoadScreenWatchUi();
         RefreshGameProfileText();
+        if (on && !App.Settings.RuleEngineEnabled && ScreenOneKeyHint is not null)
+            ScreenOneKeyHint.Text = "已经跟着当前窗口换目标了。不过「游戏伴随」还关着，设备不会自己动——"
+                + "要让画面真的带动设备，先点上面那个一键，或者在「游戏伴随」那里打开。";
     }
 
     private void UpdatePoseRow()
@@ -1806,7 +2860,7 @@ public partial class TestLabPage : Page
         string brush1;
         if (target.Length == 0)
         {
-            line1 = "还没绑定游戏 —— 先填进程名（或点「3 秒后抓取」），不绑的话设备永远不动";
+            line1 = "还没绑定游戏 —— 先在「目标游戏」下拉里选一个窗口，不选的话设备永远不动";
             brush1 = "Warning";
         }
         else if (!anyOn)
@@ -1890,7 +2944,7 @@ public partial class TestLabPage : Page
         // 混在一句话里，用户没法照着修）；② 动的时候要说清「现在在响应什么」—— 这是用户最想知道的一件事：
         // 伴随到底在跟着什么动，是那一下冲击、还是我自己的操作、还是它只是在放底色。
         string line3;
-        if (target.Length == 0) line3 = "现在不动：还没绑定游戏（先填进程名，或点「3 秒后抓取」）";
+        if (target.Length == 0) line3 = "现在不动：还没绑定游戏（先在「目标游戏」下拉里选一个窗口）";
         else if (!anyOn) line3 = "现在不动：伴随没开";
         else if (App.Engine.EmergencyStopped) line3 = "现在不动：急停锁着（点左下角「全部归中」解锁）";
         else if (!App.Engine.CanRun) line3 = "现在不动：设备没连上";
@@ -1914,10 +2968,21 @@ public partial class TestLabPage : Page
         // 「正在响应」那套词只在伴随开着时才有意义：关着的时候解释它等于多一段没人看的字。
         Visibility hintVisibility = anyOn ? Visibility.Visible : Visibility.Collapsed;
         if (CompanionResponseHint.Visibility != hintVisibility) CompanionResponseHint.Visibility = hintVisibility;
+        RefreshCompanionRoute();
     }
 
     private void UpdateAudioToggle()
     {
+        if (CompanionSoundCheck is not null && !_loadingUi)
+        {
+            bool wantSound = App.Settings.AudioReactiveEnabled;
+            if (CompanionSoundCheck.IsChecked != wantSound)
+            {
+                _loadingUi = true;
+                CompanionSoundCheck.IsChecked = wantSound;
+                _loadingUi = false;
+            }
+        }
         bool enabled = App.Settings.AudioReactiveEnabled;
         if (enabled == _lastAudioToggleState) return;
         _lastAudioToggleState = enabled;
@@ -1978,7 +3043,6 @@ public partial class TestLabPage : Page
         _loadingUi = true;
         try
         {
-            ActionLinkCheck.IsChecked = false;
             AutoPresetCheck.IsChecked = false;   // 同上：它也会让设备在进游戏时自己动起来
         }
         finally
@@ -1986,10 +3050,7 @@ public partial class TestLabPage : Page
             _loadingUi = false;
         }
         App.Settings.CompanionAuto = false;   // 伴随关着时的自动套预设也停
-        App.Settings.AmbientOverlay = false;   // 氛围叠加也停（不然"全部停止"之后设备还像在自己动）
-        _loadingUi = true;
-        try { AmbientOverlayCheck.IsChecked = false; SyncAmbientUi(); }
-        finally { _loadingUi = false; }
+        App.Settings.AmbientOverlay = false;   // 氛围叠加是全局的，全停也一起关（开关搬到了「游玩」页）
         SaveAutoFollow();
 
         App.Settings.RuleEngineEnabled = false;
@@ -2012,9 +3073,10 @@ public partial class TestLabPage : Page
         _autoFollowStoppedByEmergency = true;
         RefreshCompanionBoard();
 
-        StopHintText.Text = "已关闭游戏伴随，切回游戏不会再自动启动。解锁后如需继续，请重新点「开启游戏伴随」。";
-        StopHintText.Visibility = Visibility.Visible;
+        if (ScreenOneKeyHint is not null)
+            ScreenOneKeyHint.Text = "已全部停止：伴随、画面同步、跟随前台窗口、声音响应、游戏桥、氛围微动都关了，切回游戏也不会自己启动。解锁后要继续，重新点「开启游戏伴随」。";
     }
+
 
     private void ScheduleSave()
     {

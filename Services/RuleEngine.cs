@@ -44,7 +44,10 @@ public sealed class RuleEngine : IDisposable
     private bool _yieldedForManualPlayback;
 
     /// <summary>画面同步正在驱动设备、伴随让位期间为真（见 <see cref="ScreenWatchService.FollowWantsDevice"/>）。</summary>
+    // 伴随动作池签名（Joined Ids）：池子没变就不重复装进序列器
+    private string _poolSignature = "";
     private bool _yieldedForScreen;
+    private bool _yieldedForAudio;
 
     /// <summary>伴随反应：事件要多新才算「刚发生」（秒）。比它旧的只可能落在保持窗口里。</summary>
     private const double CompanionEventFreshSeconds = 0.4;
@@ -96,7 +99,10 @@ public sealed class RuleEngine : IDisposable
     private bool ScreenOnlySource() => string.Equals(SourceId, "screen", StringComparison.Ordinal);
 
     /// <summary>画面同步能不能参与驱动（「画面内容」明确指定，或「自动」里作为遥测之后、声音之前的那一层）。</summary>
-    private bool ScreenSourceAllowed() => SourceId is "screen" or "auto";
+    // 画面同步现在是伴随里的独立一条通道（用户原话「他俩是分离开伴随的」）：
+    // 只看设置里那个开关，不再看「动作来源」选了谁 —— 否则来源留成 sound/telemetry 时
+    // 画面明明开着却永远不让位、也不会被自动拉起，等于开关是假的。
+    private bool ScreenSourceAllowed() => _cfg.ScreenWatchEnabled;
 
     /// <summary>画面同步此刻是不是要接管设备（只看信号自己，见 ScreenWatchService.FollowWantsDevice）。</summary>
     private bool ScreenWantsDevice()
@@ -105,6 +111,20 @@ public sealed class RuleEngine : IDisposable
         ScreenWatchService? watch = ScreenWatchIfNeeded();
         return watch is { IsRunning: true, FollowWantsDevice: true };
     }
+
+    // 用户手动「开始自动」= 明确的用户意图，必须压过「交给画面同步」这条自动过渡。
+    // 只活在内存里（不加持久化设置）：手动开始置位，手动停止 / 急停 / 切页复位。
+    // 为什么需要一个独立标志而不是直接看引擎状态：screen 模式下伴随的 100ms 评估一拍
+    // 会同时从两条路（YieldToScreenLocked / Evaluate 的 screenOnly 分支）把手动自动停掉，
+    // 必须用这个标志让伴随在「用户手动那一路」整段彻底不插手。
+    private volatile bool _manualAutoPriority;
+
+    /// <summary>
+    /// 手动「开始自动」时置 true，手动停止 / 急停 / 切页时置 false。
+    /// 置 true 期间，<see cref="EvaluateTickLocked"/> 会让伴随连"让位给画面同步"都不做，
+    /// 设备归用户手动那一路；画面同步那条自动路径（开机进游戏的默认）不受影响。
+    /// </summary>
+    public void SetManualAutoPriority(bool on) => _manualAutoPriority = on;
 
     /// <summary>
     /// 画面同步的服务实例。正常情况下就是「测试台 · 画面同步」那一页懒建并跨页面共享的那个；
@@ -119,7 +139,7 @@ public sealed class RuleEngine : IDisposable
     /// </summary>
     private ScreenWatchService? ScreenWatchIfNeeded()
     {
-        if (!ScreenSourceAllowed() || !_cfg.ScreenWatchEnabled || !_cfg.RuleEngineEnabled) return null;
+        if (!_cfg.ScreenWatchEnabled) return null;
 
         ScreenWatchService? service = ScreenWatchService.Current;
         if (service is { IsRunning: true }) return service;
@@ -259,6 +279,7 @@ public sealed class RuleEngine : IDisposable
         // 第一帧离得远就用 300ms 长插值滑过去（TakeBlendInSeconds），随后在 SoftStartSeconds
         // （0.45–2.2s）内 ramp 到规则动作。所以这里刻意不做 StopAll，也不做 BlendTo 预混合 ——
         // 任何 Start* 都会 InterruptEase，预混合会被这次接管打断，等于白停一次再硬起。
+        SyncCompanionPool();
         if (!_engine.StartRuleAuto(_targetMode))
         {
             _active = false;
@@ -280,6 +301,26 @@ public sealed class RuleEngine : IDisposable
         lock (_sync) StopLocked();
     }
 
+    /// <summary>
+    /// 把伴随动作池装进序列器。池子（<see cref="AppSettings.CompanionPool"/>）改了要重新装，
+    /// 所以每拍比一次签名、只在变化时动手；池子空就把覆盖清掉（回到「参与随机的动作」那套老逻辑）。
+    /// </summary>
+    private void SyncCompanionPool()
+    {
+        // 只有「轮流」模式才把池子装进序列器；固定模式下即使留着旧池子也不参与换招。
+        CompanionBaseChoice choice = CompanionPlayPolicy.Resolve(_cfg, _cfg.CompanionProcess);
+        string[]? ids = choice.PlayMode == CompanionPlayPolicy.Pool && choice.Pool is { Count: > 0 } pool
+            ? pool.Select(id => AutoBehaviorSequencer.CustomStrokePrefix + id).ToArray()
+            : null;
+        string signature = ids is null ? "" : string.Join(",", ids);
+        if (string.Equals(signature, _poolSignature, StringComparison.Ordinal)) return;
+        _poolSignature = signature;
+        AutoBehaviorSequencer.SetPoolOverride(ids, rotation: true);
+        AppLogger.Info(ids is null
+            ? "伴随动作池：已清空（回到单条底色动作）"
+            : $"伴随动作池：{ids.Length} 个动作按勾选顺序轮流（首尾循环，不加权）");
+    }
+
     private void StopLocked()
     {
         bool wasActive = _active;
@@ -292,6 +333,14 @@ public sealed class RuleEngine : IDisposable
         _activeReaction = null;
         _telemetryActive = false;
         _yieldedForScreen = false;   // 伴随停了：让位标记一起清（否则状态板会一直写着「画面内容」）
+        _yieldedForAudio  = false;   // 声音那一路同理
+        _manualAutoPriority = false; // 伴随停（急停/断连/关规则）时，手动自动优先一起复位
+        // 池子只在伴随这条路上生效：停下就撤掉覆盖，免得动作页/游玩页的手动自动也跟着被限进池子
+        if (_poolSignature.Length > 0)
+        {
+            _poolSignature = "";
+            AutoBehaviorSequencer.SetPoolOverride(null);
+        }
         SyncQuality = "基础";
         if (!wasActive) return;
         // 「画面内容」这条来源下本类从来没起过自动动作，设备归画面同步管 ——
@@ -387,6 +436,13 @@ public sealed class RuleEngine : IDisposable
     private bool CompanionBound() => (_cfg.CompanionProcess ?? "").Trim().Length > 0;
 
     // ── Ticks ─────────────────────────────────────────────────────────
+    // 用户拖「活动范围」把手时，伴随先停手把设备让给预览那一路（否则底色动作一跑就盖掉预览位置）。
+    private long _previewPauseUntil;
+
+    /// <summary>范围预览期间让伴随这一路先停手 ms 毫秒（到时自己接回来）。</summary>
+    public void PauseForRangePreview(int ms = 1000) =>
+        Interlocked.Exchange(ref _previewPauseUntil, Environment.TickCount64 + Math.Clamp(ms, 200, 5000));
+
     private void EvaluateTick()
     {
         lock (_sync) EvaluateTickLocked();
@@ -397,22 +453,52 @@ public sealed class RuleEngine : IDisposable
         try
         {
             if (!_active) return;
+            if (Environment.TickCount64 < Interlocked.Read(ref _previewPauseUntil)) return;   // 正在调活动范围：让位
             if (!_engine.CanRun)
             {
                 Stop();
                 return;
             }
 
+            // 用户手动「开始自动」优先：他按了开始就该一直动，伴随连"让位给画面同步"和
+            // "缓降停掉"都不做。什么时候复位：手动停止 / 急停 / 断连会让 AutoRunning 变假，
+            // 下一拍这里自动清标志；切页由 PlaygroundPage 显式调 SetManualAutoPriority(false)。
+            // 只拦"用户手动"这一路：CompanionOwnsDevice（伴随自己的规则自动）不会进这个分支。
+            SyncCompanionPool();
+
+            if (_manualAutoPriority)
+            {
+                if (_engine.AutoRunning && !_engine.CompanionOwnsDevice) return;   // 手动自动还在跑：伴随这一拍不插手
+                _manualAutoPriority = false;                                      // 手动自动已经不在了：复位回默认让位逻辑
+            }
+
             // 画面同步要接管设备（用户把来源选成「画面内容」，或「自动」里遥测没有、画面又过了线）：
             // 伴随把自动动作缓降停掉、让出设备，由 ScreenWatchService 独占驱动。
-            if (ScreenSourceAllowed() && ScreenWantsDevice())
+            if (ScreenWantsDevice())
             {
                 YieldToScreenLocked();
                 return;
             }
             ResumeFromScreenLocked();
 
+            // 声音响应要接管设备时，伴随的底色动作先让位 —— 和画面那一条同样的道理：
+            // 自动动作在跑（AutoRunning）时「直接下发」拿不到控制权，不让位声音就永远接不上。
+            // 次序：画面 > 声音 > 伴随底色（画面最"具体"，声音次之，伴随只兜底）。
+            if (_audio.WantsDevice)
+            {
+                YieldToAudioLocked();
+                return;
+            }
+            if (_yieldedForAudio)
+            {
+                _yieldedForAudio = false;
+                NoteTransition("声音响应结束：伴随重新接管", log: true);
+            }
+
             var (mode, intensity) = Evaluate();
+            // 用户刚用「上一招 / 下一招」手动换过招：这段时间内以他选的为准，
+            // 别让下一拍规则目标立刻把它盖回去（hold 到期后自然回到规则目标）。
+            if (_engine.SelectionHoldActive) mode = _engine.AutoPattern;
             _targetMode      = mode;
             _targetIntensity = Math.Clamp(intensity, 0.1, 2.0);
 
@@ -509,7 +595,8 @@ public sealed class RuleEngine : IDisposable
             if (!_active || !_engine.CanRun || _telemetryActive || !_engine.AutoRunning) return;
 
             // 规则切换就落在这里：只写模式 + ramp 强度，不重启模式（判定见 EnsureTargetAppliedLocked）。
-            _engine.AutoPattern = _targetMode;
+            // 手动换招的 hold 期内不写模式，否则热键刚选的招 100ms 就被盖回去了。
+            if (!_engine.SelectionHoldActive) _engine.AutoPattern = _targetMode;
             double cur  = _engine.IntensityScale;
             double next = cur + (_targetIntensity - cur) * 0.08;   // 平滑 ramp
             _engine.IntensityScale = Math.Clamp(next, 0.1, 2.0);
@@ -545,12 +632,15 @@ public sealed class RuleEngine : IDisposable
         {
             string appliedMode = _engine.AutoPattern;
             double appliedIntensity = _engine.IntensityScale;
-            _engine.AutoPattern = _targetMode;
+            if (!_engine.SelectionHoldActive) _engine.AutoPattern = _targetMode;
             NoteTransition(GameCompanionRules.CanAdjustSmoothly(appliedMode, appliedIntensity, _targetMode, _targetIntensity)
                 ? "规则切换：原地平滑调整"
                 : "规则切换：换动作族，交给引擎交叉淡入");
             return;
         }
+
+        // 用户主动停过（暂停 / 停止 / 急停，或刚归中）：来信号也不替他唤醒，等他按开始。
+        if (_engine.UserStopLatched) return;
 
         bool interruptedEase = _engine.IsEasing;      // 正在缓降/混合时接管 → 这次接管打断了过渡
         if (_engine.StartRuleAuto(_targetMode))
@@ -570,6 +660,22 @@ public sealed class RuleEngine : IDisposable
     /// · 调用时确实还有模式在跑、调用后却仍在跑 → 说明缓降没有接管（引擎行为若有变化），
     ///   补一次立即停，否则会出现「规则已经停了、设备还在动」的悬挂状态。
     /// </summary>
+    /// <summary>声音响应要设备：把伴随这一路腾干净（和 YieldToScreenLocked 同一套缓降，不是急停）。</summary>
+    private void YieldToAudioLocked()
+    {
+        _telemetryActive = false;
+        _targetActive = false;
+        ActiveRule = null;
+        _activeReaction = null;
+        if (!_yieldedForAudio)
+        {
+            _yieldedForAudio = true;
+            AppLogger.Info("伴随让位：声音响应开始接管设备（规则这一路不再下发自动动作）");
+        }
+        if (_engine.AutoRunning) EaseDownOrStopLocked("声音响应接管");
+        else NoteTransition("声音响应接管：伴随不再下发自动动作");
+    }
+
     private void EaseDownOrStopLocked(string reason)
     {
         if (!_engine.CanRun)
