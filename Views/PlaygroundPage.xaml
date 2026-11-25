@@ -21,354 +21,378 @@
                            Foreground="{StaticResource Warning}" TextWrapping="Wrap"/>
             </Border>
 
-            <Border Style="{StaticResource Card}" Margin="0,0,0,8">
-                <StackPanel>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="舒适档" FontSize="13" FontWeight="SemiBold"
-                                   VerticalAlignment="Center" Margin="0,0,12,0"/>
-                        <WrapPanel x:Name="ComfortPanel" Grid.Column="1" VerticalAlignment="Center"
-                                   Margin="0,-8,0,0"/>
-                        <!-- 说明靠右贴住卡片边缘（而不是紧跟在按钮后面留一截说不清的空白）：
-                             「左边选档位、右边看这一档什么脾气」，一眼就能读完这一行。 -->
-                        <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="14,0,0,0"
-                                    HorizontalAlignment="Right" MaxWidth="420">
-                            <TextBlock x:Name="ComfortDescription" FontSize="10"
-                                       Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                                       TextAlignment="Right"/>
-                            <TextBlock x:Name="ComfortHint" Text="" FontSize="10"
-                                       Foreground="{StaticResource Warning}" TextWrapping="Wrap"
-                                       TextAlignment="Right" Margin="0,2,0,0" Visibility="Collapsed"/>
-                        </StackPanel>
-                    </Grid>
-            
-                    <Border Height="1" Background="{StaticResource Border}" Margin="0,12,0,10"/>
-            
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="快速预设" FontSize="13" FontWeight="SemiBold"
-                                   VerticalAlignment="Top" Margin="0,4,12,0"/>
-                        <StackPanel Grid.Column="1" Margin="0,-2,0,0">
-                            <WrapPanel x:Name="PresetPanel" HorizontalAlignment="Left"/>
-                            <TextBlock Text="点一下立刻开始；高亮的就是正在用的那一套。"
-                                       FontSize="10" Foreground="{StaticResource Muted}"
-                                       TextWrapping="Wrap"/>
-                        </StackPanel>
-                    </Grid>
-                </StackPanel>
-            </Border>
-
-            <!-- ══ 氛围微动：全页生效的附加层。它不属于某个玩法，而是「不管你在手动、脚本、
-                 游戏桥还是伴随，都往上叠一层很轻的呼吸感」，所以放在游玩页顶部、和舒适档并列 ══ -->
-            <Border Style="{StaticResource Card}" Margin="0,0,0,8">
-                <StackPanel>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <StackPanel Margin="0,0,12,0">
-                            <TextBlock Text="🌬 氛围微动（叠在所有玩法之上）" FontSize="13" FontWeight="SemiBold"/>
-                            <TextBlock Text="勾上以后，不管设备是被手动、脚本、游戏桥还是伴随带着动，都会多一层很轻的「呼吸感」：只让次要轴轻轻摆，主轴一动不动。声音停了就停，幅度上限很小。"
-                                       Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
-                        </StackPanel>
-                        <CheckBox x:Name="AmbientOverlayCheck" Grid.Column="1" FontSize="12" VerticalAlignment="Center"
-                                  Checked="AmbientOverlay_Changed" Unchecked="AmbientOverlay_Changed"
-                                  ToolTip="开着时：正在做的动作照旧，额外让次要轴（R0/R1/R2/L1/L2）跟着声音轻轻摆；主轴 L0 一个字节都不动。声音停了就停，而且照样过限速器">
-                            <TextBlock Text="开启" FontSize="12"/>
-                        </CheckBox>
-                    </Grid>
-                    <Grid Margin="0,8,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="72"/>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Text="摆动幅度" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                        <Slider x:Name="AmbientOverlaySlider" Grid.Column="1" Minimum="5" Maximum="30"
-                                SmallChange="1" TickFrequency="1" IsSnapToTickEnabled="True"
-                                VerticalAlignment="Center" Margin="6,0,6,0"
-                                ValueChanged="AmbientOverlaySlider_Changed"/>
-                        <TextBlock x:Name="AmbientOverlayLabel" Grid.Column="2" Text="±12%" Width="52" FontSize="11"
-                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center" TextAlignment="Right"/>
-                    </Grid>
-                </StackPanel>
-            </Border>
-
             <Grid x:Name="MainGrid">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*" MinWidth="440"/>
+                    <ColumnDefinition Width="14"/>
+                    <ColumnDefinition Width="392"/>
                 </Grid.ColumnDefinitions>
-            
-                <!-- 自动模式 + 游戏手柄（3D 模型已经统一放在主窗口左栏，本页不再画一份） -->
-                <StackPanel x:Name="LeftStack" Grid.Row="0" Grid.Column="0" VerticalAlignment="Top"
-                            MaxWidth="420" HorizontalAlignment="Left">
-                    <Border Style="{StaticResource Card}">
+
+                <!-- ══ 左列：舒适档 → 自动动作 → 自由游玩参数（原来一列 420 宽，右边空一大块）══ -->
+                <StackPanel Grid.Row="0" Grid.Column="0" VerticalAlignment="Top">
+                    <Border Style="{StaticResource Card}" Margin="0,0,0,8">
                         <StackPanel>
-                            <TextBlock Text="自动动作" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,7"/>
-            
-                            <Grid Margin="0,0,0,8">
+                            <Grid>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="波形" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                                <ComboBox x:Name="PatternCombo" Grid.Column="1" Height="28" FontSize="12"
-                                          ToolTip="自动时做哪个动作；选「自由巡游 · 自动换动作」就让它自己换。带「自建 · 」的是你在动作页里自己做的动作"/>
+                                <TextBlock Text="舒适档" FontSize="13" FontWeight="SemiBold"
+                                           VerticalAlignment="Center" Margin="0,0,12,0"/>
+                                <WrapPanel x:Name="ComfortPanel" Grid.Column="1" VerticalAlignment="Center"
+                                           Margin="0,-8,0,0"/>
+                                <!-- 说明靠右贴住卡片边缘（而不是紧跟在按钮后面留一截说不清的空白）：
+                                     「左边选档位、右边看这一档什么脾气」，一眼就能读完这一行。 -->
+                                <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="14,0,0,0"
+                                            HorizontalAlignment="Right" MaxWidth="420">
+                                    <TextBlock x:Name="ComfortDescription" FontSize="10"
+                                               Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                               TextAlignment="Right"/>
+                                    <TextBlock x:Name="ComfortHint" Text="" FontSize="10"
+                                               Foreground="{StaticResource Warning}" TextWrapping="Wrap"
+                                               TextAlignment="Right" Margin="0,2,0,0" Visibility="Collapsed"/>
+                                </StackPanel>
                             </Grid>
             
-                            <TextBlock x:Name="CustomPoolHint" FontSize="10" Foreground="{StaticResource Warning}"
-                                       TextWrapping="Wrap" Margin="0,0,0,8" Visibility="Collapsed"/>
+                            <Border Height="1" Background="{StaticResource Border}" Margin="0,12,0,10"/>
             
-            
-                            <Grid Margin="0,0,0,8">
+                            <Grid>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="44"/>
                                 </Grid.ColumnDefinitions>
-                                <TextBlock Text="强度" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                                <Slider x:Name="IntensitySlider" Grid.Column="1" Minimum="0.1" Maximum="2.0" Value="1.0"
-                                        SmallChange="0.05" ToolTip="动作幅度；当前舒适档会给它一个上限"/>
-                                <TextBlock x:Name="IntensityLabel" Grid.Column="2" Text="100%" FontSize="11"
-                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                           HorizontalAlignment="Right"/>
+                                <TextBlock Text="快速预设" FontSize="13" FontWeight="SemiBold"
+                                           VerticalAlignment="Top" Margin="0,4,12,0"/>
+                                <StackPanel Grid.Column="1" Margin="0,-2,0,0">
+                                    <WrapPanel x:Name="PresetPanel" HorizontalAlignment="Left"/>
+                                    <TextBlock Text="点一下立刻开始；高亮的就是正在用的那一套。"
+                                               FontSize="10" Foreground="{StaticResource Muted}"
+                                               TextWrapping="Wrap"/>
+                                </StackPanel>
                             </Grid>
+                        </StackPanel>
+                    </Border>
+
+                        <StackPanel x:Name="LeftStack" Grid.Row="0" Grid.Column="0" VerticalAlignment="Top"
+                                    HorizontalAlignment="Stretch">
+                            <Border Style="{StaticResource Card}" MaxWidth="620" HorizontalAlignment="Stretch">
+                                <StackPanel>
+                                    <TextBlock Text="自动动作" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,7"/>
             
-                            <Grid Margin="0,0,0,8">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="40"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="44"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="速度" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                                <Slider x:Name="SpeedSlider" Grid.Column="1" Minimum="0.1" Maximum="3.0" Value="1.0"
-                                        SmallChange="0.1" ToolTip="整体快慢（和上面显示的实时节奏是同一件事）"/>
-                                <TextBlock x:Name="SpeedLabel" Grid.Column="2" Text="1.0x" FontSize="11"
-                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                           HorizontalAlignment="Right"/>
-                            </Grid>
-                            <Border Background="{StaticResource Surface}" CornerRadius="6" Padding="8,6" Margin="0,0,0,7">
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="40"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="波形" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                        <ComboBox x:Name="PatternCombo" Grid.Column="1" Height="28" FontSize="12"
+                                                  ToolTip="自动时做哪个动作；选「自由巡游 · 自动换动作」就让它自己换。带「自建 · 」的是你在动作页里自己做的动作"/>
+                                    </Grid>
+            
+                                    <TextBlock x:Name="CustomPoolHint" FontSize="10" Foreground="{StaticResource Warning}"
+                                               TextWrapping="Wrap" Margin="0,0,0,8" Visibility="Collapsed"/>
+            
+            
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="40"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="44"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="强度" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                        <Slider x:Name="IntensitySlider" Grid.Column="1" Minimum="0.1" Maximum="2.0" Value="1.0"
+                                                SmallChange="0.05" ToolTip="动作幅度；当前舒适档会给它一个上限"/>
+                                        <TextBlock x:Name="IntensityLabel" Grid.Column="2" Text="100%" FontSize="11"
+                                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                                   HorizontalAlignment="Right"/>
+                                    </Grid>
+            
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="40"/>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="44"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="速度" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                        <Slider x:Name="SpeedSlider" Grid.Column="1" Minimum="0.1" Maximum="3.0" Value="1.0"
+                                                SmallChange="0.1" ToolTip="整体快慢（和上面显示的实时节奏是同一件事）"/>
+                                        <TextBlock x:Name="SpeedLabel" Grid.Column="2" Text="1.0x" FontSize="11"
+                                                   Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                                   HorizontalAlignment="Right"/>
+                                    </Grid>
+                                    <Border Background="{StaticResource Surface}" CornerRadius="6" Padding="8,6" Margin="0,0,0,7">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto"/>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Ellipse x:Name="AutoStateDot" Width="7" Height="7" Fill="{StaticResource Muted}"
+                                                     VerticalAlignment="Center" Margin="0,0,7,0"/>
+                                            <TextBlock x:Name="AutoBehaviorLabel" Grid.Column="1" Text="还没开始" FontSize="11"
+                                                       VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
+                                            <TextBlock x:Name="AutoBpmLiveLabel" Grid.Column="2" Text="" FontSize="11"
+                                                       Foreground="{StaticResource Accent}" VerticalAlignment="Center"
+                                                       Margin="8,0,0,0"/>
+                                        </Grid>
+                                    </Border>
+            
+                                    <Button x:Name="AutoBtn" Content="▶ 开始自动"
+                                            Style="{StaticResource BtnPrimary}"
+                                            HorizontalAlignment="Stretch" Height="36" Margin="0,0,0,12"
+                                            ToolTip="按当前动作 / 强度 / 速度开始（再点一次停止）"
+                                            Click="AutoBtn_Click"/>
+            
+                                                       <WrapPanel Margin="0,0,0,3">
+                                                           <Button x:Name="NextBehaviorBtn" Content="↻ 换个动作" Height="26" FontSize="11"
+                                                                   Padding="9,0" Margin="0,0,6,5"
+                                                                   Style="{StaticResource BtnSecondary}" Click="NextBehavior_Click"
+                                                                   ToolTipService.ShowOnDisabled="True"
+                                                                   ToolTip="立刻换成另一个动作（要先点「开始自动」）"/>
+                                                           <Button x:Name="HoldBehaviorBtn" Content="⏸ 锁住动作" Height="26" FontSize="11"
+                                                                   Padding="9,0" Margin="0,0,6,5"
+                                                                   Style="{StaticResource BtnSecondary}" Click="ToggleHold_Click"
+                                                                   ToolTipService.ShowOnDisabled="True"
+                                                                   ToolTip="锁住现在的动作不让它自己换，再点一次解锁（要先点「开始自动」）"/>
+                                                           <!-- 按钮名从「慢慢收尾」改成「换温和动作」：它真的只是换成温和波浪、强度降一点，
+                                    20 秒后回到随机动作，并不会停（以前 ToolTip 写「然后慢慢停下来」是在骗人）。
+                                    真想停请点右边的「⏹ 停止自动」或侧栏急停。 -->
+                                                           <Button x:Name="EaseBehaviorBtn" Content="⤓ 换温和动作 20 秒" Height="26" FontSize="11"
+                                                                   Padding="9,0" Margin="0,0,6,5"
+                                                                   Style="{StaticResource BtnSecondary}" Click="EaseBehavior_Click"
+                                                                   ToolTipService.ShowOnDisabled="True"
+                                                                   ToolTip="换成温和波浪、强度降一点，20 秒后回到随机动作（它不会让设备停下；要停点「⏹ 停止自动」或侧栏急停）"/>
+                                                       </WrapPanel>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="16,12">
+                        <StackPanel>
+                            <!-- 收起时右侧给一行当前值摘要：一眼看出现在是什么设置，不用展开 -->
+                            <Button x:Name="AutoParamsToggleBtn" Style="{StaticResource BtnGhost}"
+                                    HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
+                                    Padding="0" Height="30" Click="AutoParamsToggle_Click"
+                                    ToolTip="自动模式内部参数：节奏、动作时长、随机池">
                                 <Grid>
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="Auto"/>
                                         <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="AutoParamsToggleText" Text="▸ 自由游玩参数"
+                                               FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+                                    <TextBlock x:Name="AutoParamsSummary" Grid.Column="1" Text=""
+                                               FontSize="10" Foreground="{StaticResource Muted}"
+                                               VerticalAlignment="Center" Margin="12,0,0,0"
+                                               TextTrimming="CharacterEllipsis"/>
+                                </Grid>
+                            </Button>
+            
+                            <StackPanel x:Name="AutoParamsBody" Visibility="Collapsed" Margin="0,10,0,0"
+                                        Grid.IsSharedSizeScope="True">
+                                <Grid Margin="0,2,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="40"/>
+                                        <ColumnDefinition Width="*"/>
                                         <ColumnDefinition Width="Auto"/>
                                     </Grid.ColumnDefinitions>
-                                    <Ellipse x:Name="AutoStateDot" Width="7" Height="7" Fill="{StaticResource Muted}"
-                                             VerticalAlignment="Center" Margin="0,0,7,0"/>
-                                    <TextBlock x:Name="AutoBehaviorLabel" Grid.Column="1" Text="还没开始" FontSize="11"
-                                               VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
-                                    <TextBlock x:Name="AutoBpmLiveLabel" Grid.Column="2" Text="" FontSize="11"
-                                               Foreground="{StaticResource Accent}" VerticalAlignment="Center"
-                                               Margin="8,0,0,0"/>
+                                    <TextBlock Text="BPM" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                    <Button x:Name="TapBtn" Grid.Column="1"
+                                            Content="👆 跟着点" Height="28" FontSize="11"
+                                            HorizontalAlignment="Left" Padding="12,0"
+                                            Style="{StaticResource BtnSecondary}"
+                                            ToolTip="跟着音乐点 4 下以上，Hexa 就按你点的快慢来"
+                                            Click="TapBtn_Click"/>
+                                    <TextBlock x:Name="BpmLabel" Grid.Column="2"
+                                               Text="" FontSize="11"
+                                               Foreground="{StaticResource Accent}"
+                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
                                 </Grid>
-                            </Border>
+                                <TextBlock Text="跟着音乐点 4 下以上，Hexa 就把「速度」调成你的节拍（BPM = 每分钟节拍数）。"
+                                           FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
+                                           Margin="40,4,0,12"/>
+                                <TextBlock Text="改完立即生效并自动保存。BPM 按「速度 1.0x」算，拖上面的速度滑块会让它整体变快变慢。"
+                                           FontSize="10" Foreground="{StaticResource Muted}"
+                                           TextWrapping="Wrap" Margin="0,0,0,8"/>
             
-                            <Button x:Name="AutoBtn" Content="▶ 开始自动"
-                                    Style="{StaticResource BtnPrimary}"
-                                    HorizontalAlignment="Stretch" Height="36" Margin="0,0,0,12"
-                                    ToolTip="按当前动作 / 强度 / 速度开始（再点一次停止）"
-                                    Click="AutoBtn_Click"/>
+                                <!-- ── 节奏 ─────────────────────────────────────── -->
+                                <TextBlock Text="节奏（BPM）" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="{StaticResource Muted}" Margin="0,0,0,8"/>
             
-                                               <WrapPanel Margin="0,0,0,3">
-                                                   <Button x:Name="NextBehaviorBtn" Content="↻ 换个动作" Height="26" FontSize="11"
-                                                           Padding="9,0" Margin="0,0,6,5"
-                                                           Style="{StaticResource BtnSecondary}" Click="NextBehavior_Click"
-                                                           ToolTipService.ShowOnDisabled="True"
-                                                           ToolTip="立刻换成另一个动作（要先点「开始自动」）"/>
-                                                   <Button x:Name="HoldBehaviorBtn" Content="⏸ 锁住动作" Height="26" FontSize="11"
-                                                           Padding="9,0" Margin="0,0,6,5"
-                                                           Style="{StaticResource BtnSecondary}" Click="ToggleHold_Click"
-                                                           ToolTipService.ShowOnDisabled="True"
-                                                           ToolTip="锁住现在的动作不让它自己换，再点一次解锁（要先点「开始自动」）"/>
-                                                   <!-- 按钮名从「慢慢收尾」改成「换温和动作」：它真的只是换成温和波浪、强度降一点，
-                            20 秒后回到随机动作，并不会停（以前 ToolTip 写「然后慢慢停下来」是在骗人）。
-                            真想停请点右边的「⏹ 停止自动」或侧栏急停。 -->
-                                                   <Button x:Name="EaseBehaviorBtn" Content="⤓ 换温和动作 20 秒" Height="26" FontSize="11"
-                                                           Padding="9,0" Margin="0,0,6,5"
-                                                           Style="{StaticResource BtnSecondary}" Click="EaseBehavior_Click"
-                                                           ToolTipService.ShowOnDisabled="True"
-                                                           ToolTip="换成温和波浪、强度降一点，20 秒后回到随机动作（它不会让设备停下；要停点「⏹ 停止自动」或侧栏急停）"/>
-                                               </WrapPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto" MinWidth="86" SharedSizeGroup="ParamValue"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="快慢范围" FontSize="11" Foreground="{StaticResource Muted}"
+                                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                    <controls:RangeSlider x:Name="BpmRangeSlider" Grid.Column="1" SmallChange="1"
+                                                          IsWheelAdjustEnabled="True"
+                                                          ToolTip="拖动左右两个圆点，分别设最慢 / 最快的节奏（滚轮可微调）"/>
+                                    <TextBlock x:Name="BpmRangeLabel" Grid.Column="2" Text="45 – 110 BPM" FontSize="11"
+                                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" Margin="8,0,0,0"
+                                               FontFamily="Consolas,Cascadia Mono,monospace"/>
+                                </Grid>
+            
+                                <!-- 勾选与上面两项同一列起排，一眼看出它是这一组的开关 -->
+                                <Grid Margin="0,2,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+                                    <CheckBox x:Name="ContinuousBpmCheck" Grid.Column="1"
+                                              Content="让节奏一直小幅变化（关掉 = 只在换动作时才变）"
+                                              FontSize="12" VerticalAlignment="Center"/>
+                                </Grid>
+            
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto" MinWidth="86" SharedSizeGroup="ParamValue"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="变速快慢" FontSize="11" Foreground="{StaticResource Muted}"
+                                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                    <Slider x:Name="AccelerationSlider" Grid.Column="1" SmallChange="1"
+                                            ToolTip="开启上面那项后，节奏每秒变多少（越大越跳）；关掉那项时这项不起作用"/>
+                                    <TextBlock x:Name="AccelerationLabel" Grid.Column="2" Text="8 拍/秒" FontSize="11"
+                                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" Margin="8,0,0,0"/>
+                                </Grid>
+            
+                                <!-- ── 动作切换 ──────────────────────────────────── -->
+                                <TextBlock Text="动作切换" FontSize="11" FontWeight="SemiBold"
+                                           Foreground="{StaticResource Muted}" Margin="0,0,0,8"/>
+            
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto" MinWidth="86" SharedSizeGroup="ParamValue"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="动作时长" FontSize="11" Foreground="{StaticResource Muted}"
+                                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                    <controls:RangeSlider x:Name="DurationRangeSlider" Grid.Column="1" SmallChange="1"
+                                                          IsWheelAdjustEnabled="True"
+                                                          ToolTip="一个动作最短 / 最长做多久（滚轮可微调）"/>
+                                    <TextBlock x:Name="DurationRangeLabel" Grid.Column="2" Text="8 – 24 秒" FontSize="11"
+                                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" Margin="8,0,0,0"
+                                               FontFamily="Consolas,Cascadia Mono,monospace"/>
+                                </Grid>
+            
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto" MinWidth="86" SharedSizeGroup="ParamValue"/>
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="衔接时长" FontSize="11" Foreground="{StaticResource Muted}"
+                                               VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                    <Slider x:Name="TransitionSlider" Grid.Column="1" SmallChange="0.1"
+                                            ToolTip="换动作时平滑接上的时间，越长越柔和"/>
+                                    <TextBlock x:Name="TransitionLabel" Grid.Column="2" Text="0.9 秒" FontSize="11"
+                                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
+                                               HorizontalAlignment="Right" Margin="8,0,0,0"/>
+                                </Grid>
+            
+                                <!-- 参与随机的动作（照 ayva：勾选哪些动作进入自动模式随机池） -->
+                                <Border Background="{StaticResource Surface}" CornerRadius="6"
+                                        Padding="10,9" Margin="0,2,0,0">
+                                    <StackPanel>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="Auto"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBlock Text="参与随机的动作" FontSize="12" FontWeight="SemiBold"
+                                                       VerticalAlignment="Center"/>
+                                            <TextBlock x:Name="PatternSelectionHint" Grid.Column="1"
+                                                       Text="全部参与" FontSize="10"
+                                                       Foreground="{StaticResource Muted}"
+                                                       VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                        </Grid>
+                                        <TextBlock Text="勾上的动作才会被随机抽到；这里的选项和上面的「波形」是同一份列表。带「自建 · 」的是你在动作页自己做的动作（要勾上才会进随机池），⭐ 是你收藏的动作（排在前面、也更容易被抽到）。「轻柔」档不会抽到最猛的几个动作。"
+                                                   FontSize="10" Foreground="{StaticResource Muted}"
+                                                   TextWrapping="Wrap" Margin="0,5,0,7"/>
+                                        <CheckBox x:Name="PatternSelectAllCheck"
+                                                  Content="全选 / 全不选" FontSize="12"
+                                                  IsThreeState="True"
+                                                  Click="PatternSelectAll_Click"/>
+                                        <UniformGrid x:Name="PatternCheckPanel" Columns="2" Margin="0,7,0,0"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </StackPanel>
+                    </Border>
+
+
+                </StackPanel>
+
+                <!-- ══ 右列：氛围微动 + 其它入口提示 ══ -->
+                <StackPanel Grid.Row="0" Grid.Column="2" VerticalAlignment="Top">
+                    <!-- ══ 氛围微动：全页生效的附加层。它不属于某个玩法，而是「不管你在手动、脚本、
+                         游戏桥还是伴随，都往上叠一层很轻的呼吸感」，所以放在游玩页顶部、和舒适档并列 ══ -->
+                    <Border Style="{StaticResource Card}" Margin="0,0,0,8">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,12,0">
+                                    <TextBlock Text="🌬 氛围微动（叠在所有玩法之上）" FontSize="13" FontWeight="SemiBold"/>
+                                    <TextBlock Text="勾上以后，不管设备是被手动、脚本、游戏桥还是伴随带着动，都会多一层很轻的「呼吸感」：只让次要轴轻轻摆，主轴一动不动。声音停了就停，幅度上限很小。"
+                                               Foreground="{StaticResource Muted}" FontSize="11" TextWrapping="Wrap" Margin="0,2,0,0"/>
+                                </StackPanel>
+                                <CheckBox x:Name="AmbientOverlayCheck" Grid.Column="1" FontSize="12" VerticalAlignment="Center"
+                                          Checked="AmbientOverlay_Changed" Unchecked="AmbientOverlay_Changed"
+                                          ToolTip="开着时：正在做的动作照旧，额外让次要轴（R0/R1/R2/L1/L2）跟着声音轻轻摆；主轴 L0 一个字节都不动。声音停了就停，而且照样过限速器">
+                                    <TextBlock Text="开启" FontSize="12"/>
+                                </CheckBox>
+                            </Grid>
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="72"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="Auto"/>
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="摆动幅度" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
+                                <Slider x:Name="AmbientOverlaySlider" Grid.Column="1" Minimum="5" Maximum="30"
+                                        SmallChange="1" TickFrequency="1" IsSnapToTickEnabled="True"
+                                        VerticalAlignment="Center" Margin="6,0,6,0"
+                                        ValueChanged="AmbientOverlaySlider_Changed"/>
+                                <TextBlock x:Name="AmbientOverlayLabel" Grid.Column="2" Text="±12%" Width="52" FontSize="11"
+                                           Foreground="{StaticResource Muted}" VerticalAlignment="Center" TextAlignment="Right"/>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource Card}" Margin="0,14,0,0">
+                        <StackPanel>
+                            <TextBlock Text="🧭 想玩别的" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <TextBlock Text="其它入口都在左边侧栏，不用在这一页来回找："
+                                       FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,7"/>
+                            <TextBlock Text="🎯 动作 —— 内置动作和导入的脚本摆在同一面墙：点一下＝选中并在左栏模型里预演，双击＝设备真的动；☑ 多选可以排着播、也能一起删。"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="💞 伴随 —— Lovense 设备、游戏桥、手柄三块，一次看一块。"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="🧪 测试台 —— 声音响应、画面同步、跟随前台窗口。"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="🕹 手动动轴 —— 想只手拖六根轴的时候用。"
+                                       FontSize="11" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                            <TextBlock Text="左下角那台 3D 模型每一页都跟着真实下发值动，不用切页。"
+                                       FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,4,0,0"/>
                         </StackPanel>
                     </Border>
                 </StackPanel>
-            
             </Grid>
-
-            <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="16,12">
-                <StackPanel>
-                    <!-- 收起时右侧给一行当前值摘要：一眼看出现在是什么设置，不用展开 -->
-                    <Button x:Name="AutoParamsToggleBtn" Style="{StaticResource BtnGhost}"
-                            HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch"
-                            Padding="0" Height="30" Click="AutoParamsToggle_Click"
-                            ToolTip="自动模式内部参数：节奏、动作时长、随机池">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock x:Name="AutoParamsToggleText" Text="▸ 自由游玩参数"
-                                       FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
-                            <TextBlock x:Name="AutoParamsSummary" Grid.Column="1" Text=""
-                                       FontSize="10" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="12,0,0,0"
-                                       TextTrimming="CharacterEllipsis"/>
-                        </Grid>
-                    </Button>
-            
-                    <StackPanel x:Name="AutoParamsBody" Visibility="Collapsed" Margin="0,10,0,0"
-                                Grid.IsSharedSizeScope="True">
-                        <Grid Margin="0,2,0,0">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="40"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="BPM" FontSize="11" Foreground="{StaticResource Muted}" VerticalAlignment="Center"/>
-                            <Button x:Name="TapBtn" Grid.Column="1"
-                                    Content="👆 跟着点" Height="28" FontSize="11"
-                                    HorizontalAlignment="Left" Padding="12,0"
-                                    Style="{StaticResource BtnSecondary}"
-                                    ToolTip="跟着音乐点 4 下以上，Hexa 就按你点的快慢来"
-                                    Click="TapBtn_Click"/>
-                            <TextBlock x:Name="BpmLabel" Grid.Column="2"
-                                       Text="" FontSize="11"
-                                       Foreground="{StaticResource Accent}"
-                                       VerticalAlignment="Center" Margin="8,0,0,0"/>
-                        </Grid>
-                        <TextBlock Text="跟着音乐点 4 下以上，Hexa 就把「速度」调成你的节拍（BPM = 每分钟节拍数）。"
-                                   FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                                   Margin="40,4,0,12"/>
-                        <TextBlock Text="改完立即生效并自动保存。BPM 按「速度 1.0x」算，拖上面的速度滑块会让它整体变快变慢。"
-                                   FontSize="10" Foreground="{StaticResource Muted}"
-                                   TextWrapping="Wrap" Margin="0,0,0,8"/>
-            
-                        <!-- ── 节奏 ─────────────────────────────────────── -->
-                        <TextBlock Text="节奏（BPM）" FontSize="11" FontWeight="SemiBold"
-                                   Foreground="{StaticResource Muted}" Margin="0,0,0,8"/>
-            
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto" MinWidth="86" SharedSizeGroup="ParamValue"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="快慢范围" FontSize="11" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <controls:RangeSlider x:Name="BpmRangeSlider" Grid.Column="1" SmallChange="1"
-                                                  IsWheelAdjustEnabled="True"
-                                                  ToolTip="拖动左右两个圆点，分别设最慢 / 最快的节奏（滚轮可微调）"/>
-                            <TextBlock x:Name="BpmRangeLabel" Grid.Column="2" Text="45 – 110 BPM" FontSize="11"
-                                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                       HorizontalAlignment="Right" Margin="8,0,0,0"
-                                       FontFamily="Consolas,Cascadia Mono,monospace"/>
-                        </Grid>
-            
-                        <!-- 勾选与上面两项同一列起排，一眼看出它是这一组的开关 -->
-                        <Grid Margin="0,2,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
-                                <ColumnDefinition Width="*"/>
-                            </Grid.ColumnDefinitions>
-                            <CheckBox x:Name="ContinuousBpmCheck" Grid.Column="1"
-                                      Content="让节奏一直小幅变化（关掉 = 只在换动作时才变）"
-                                      FontSize="12" VerticalAlignment="Center"/>
-                        </Grid>
-            
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto" MinWidth="86" SharedSizeGroup="ParamValue"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="变速快慢" FontSize="11" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <Slider x:Name="AccelerationSlider" Grid.Column="1" SmallChange="1"
-                                    ToolTip="开启上面那项后，节奏每秒变多少（越大越跳）；关掉那项时这项不起作用"/>
-                            <TextBlock x:Name="AccelerationLabel" Grid.Column="2" Text="8 拍/秒" FontSize="11"
-                                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                       HorizontalAlignment="Right" Margin="8,0,0,0"/>
-                        </Grid>
-            
-                        <!-- ── 动作切换 ──────────────────────────────────── -->
-                        <TextBlock Text="动作切换" FontSize="11" FontWeight="SemiBold"
-                                   Foreground="{StaticResource Muted}" Margin="0,0,0,8"/>
-            
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto" MinWidth="86" SharedSizeGroup="ParamValue"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="动作时长" FontSize="11" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <controls:RangeSlider x:Name="DurationRangeSlider" Grid.Column="1" SmallChange="1"
-                                                  IsWheelAdjustEnabled="True"
-                                                  ToolTip="一个动作最短 / 最长做多久（滚轮可微调）"/>
-                            <TextBlock x:Name="DurationRangeLabel" Grid.Column="2" Text="8 – 24 秒" FontSize="11"
-                                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                       HorizontalAlignment="Right" Margin="8,0,0,0"
-                                       FontFamily="Consolas,Cascadia Mono,monospace"/>
-                        </Grid>
-            
-                        <Grid Margin="0,0,0,8">
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" MinWidth="76" SharedSizeGroup="ParamLabel"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="Auto" MinWidth="86" SharedSizeGroup="ParamValue"/>
-                            </Grid.ColumnDefinitions>
-                            <TextBlock Text="衔接时长" FontSize="11" Foreground="{StaticResource Muted}"
-                                       VerticalAlignment="Center" Margin="0,0,10,0"/>
-                            <Slider x:Name="TransitionSlider" Grid.Column="1" SmallChange="0.1"
-                                    ToolTip="换动作时平滑接上的时间，越长越柔和"/>
-                            <TextBlock x:Name="TransitionLabel" Grid.Column="2" Text="0.9 秒" FontSize="11"
-                                       Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                                       HorizontalAlignment="Right" Margin="8,0,0,0"/>
-                        </Grid>
-            
-                        <!-- 参与随机的动作（照 ayva：勾选哪些动作进入自动模式随机池） -->
-                        <Border Background="{StaticResource Surface}" CornerRadius="6"
-                                Padding="10,9" Margin="0,2,0,0">
-                            <StackPanel>
-                                <Grid>
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="*"/>
-                                        <ColumnDefinition Width="Auto"/>
-                                    </Grid.ColumnDefinitions>
-                                    <TextBlock Text="参与随机的动作" FontSize="12" FontWeight="SemiBold"
-                                               VerticalAlignment="Center"/>
-                                    <TextBlock x:Name="PatternSelectionHint" Grid.Column="1"
-                                               Text="全部参与" FontSize="10"
-                                               Foreground="{StaticResource Muted}"
-                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
-                                </Grid>
-                                <TextBlock Text="勾上的动作才会被随机抽到；这里的选项和上面的「波形」是同一份列表。带「自建 · 」的是你在动作页自己做的动作（要勾上才会进随机池），⭐ 是你收藏的动作（排在前面、也更容易被抽到）。「轻柔」档不会抽到最猛的几个动作。"
-                                           FontSize="10" Foreground="{StaticResource Muted}"
-                                           TextWrapping="Wrap" Margin="0,5,0,7"/>
-                                <CheckBox x:Name="PatternSelectAllCheck"
-                                          Content="全选 / 全不选" FontSize="12"
-                                          IsThreeState="True"
-                                          Click="PatternSelectAll_Click"/>
-                                <UniformGrid x:Name="PatternCheckPanel" Columns="2" Margin="0,7,0,0"/>
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-                </StackPanel>
-            </Border>
-
 
         </StackPanel>
     </ScrollViewer>

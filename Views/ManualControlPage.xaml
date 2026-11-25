@@ -21,11 +21,13 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="*" MinWidth="420"/>
+                    <ColumnDefinition Width="14"/>
+                    <ColumnDefinition Width="392"/>
                 </Grid.ColumnDefinitions>
 
                 <StackPanel x:Name="LeftStack" Grid.Row="0" Grid.Column="0" VerticalAlignment="Top"
-                            MaxWidth="460" HorizontalAlignment="Left">
+                            HorizontalAlignment="Stretch">
 
                     <!-- ══ 安全卡：先开开关，设备才会听你的 ══ -->
                     <Border Style="{StaticResource Card}">
@@ -93,12 +95,14 @@
                         </StackPanel>
                     </Border>
 
+                </StackPanel>
+
+                <StackPanel x:Name="RightStack" Grid.Row="0" Grid.Column="2" VerticalAlignment="Top"
+                            HorizontalAlignment="Stretch">
                     <!-- ══ 〰 正弦发生器：让设备自己一直摆，不用手一直拖 ══
-                         MaxWidth 420 + 内容 400：滑杆不会被拉成横条（窄窗下也守着这条红线）。
-                         六根轴的幅度默认收起：平铺要多占约 180px，默认窗口下会把「开始摆动」推到屏幕外。 -->
-                    <Border Style="{StaticResource Card}" Margin="0,14,0,0" MaxWidth="420"
-                            HorizontalAlignment="Left">
-                        <StackPanel MaxWidth="400" HorizontalAlignment="Left">
+                         六根轴的幅度默认收起：平铺要多占约 180px，右边这一列会变得很长。 -->
+                    <Border Style="{StaticResource Card}" Margin="0">
+                        <StackPanel>
                             <TextBlock Text="〰 让它自己摆（正弦）" FontSize="13" FontWeight="SemiBold"
                                        Margin="0,0,0,3"/>
                             <TextBlock Text="勾上「允许手动动轴」再点「开始摆动」，设备就按你设的幅度一直来回摆 —— 不用手一直拖着。"
@@ -164,7 +168,7 @@
                                        Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
                         </StackPanel>
                     </Border>
-                </StackPanel>
+                    </StackPanel>
 
             </Grid>
         </StackPanel>

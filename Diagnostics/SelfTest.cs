@@ -614,8 +614,9 @@ internal static class SelfTest
                     double speed = Width("SpeedSlider");
                     double autoBtn = Width("AutoBtn");
 
-                    Check($"游玩页控件不再被拉满整行（强度 {intensity:0} / 速度 {speed:0} / 开始自动 {autoBtn:0} px，均 < 400）",
-                        intensity is > 0 and < 400 && speed is > 0 and < 400 && autoBtn is > 0 and < 400);
+                    // 2026-11-25 起「自动动作」卡限宽 620（原来整行拉满到 800+），阈值跟着上限走
+                    Check($"游玩页控件不再被拉满整行（强度 {intensity:0} / 速度 {speed:0} / 开始自动 {autoBtn:0} px，均 < 600）",
+                        intensity is > 0 and < 600 && speed is > 0 and < 600 && autoBtn is > 0 and < 600);
                     // 2026-11-25 用户要求把游玩页 / 手动动轴页的 3D 块去掉，全应用只剩左栏那一个模型
                     var host = System.Windows.Application.Current?.MainWindow as Hexa.MainWindow;
                     Check("游玩页不再自己画 3D 模型（全应用只有左栏那一个）",
