@@ -57,6 +57,10 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
+        // 左栏的六轴模型是全应用共用的一份：动作页选中脚本时直接往这个实例里喂轴值
+        App.SharedPreview = SharedPreview3D;
+        App.SharedPreviewCaption = SharedPreviewCaption;
+
         App.Serial.ConnectionChanged += _ => App.Dispatch(UpdateDeviceState);
         App.Engine.StateChanged += () => App.Dispatch(UpdateDeviceState);
         UpdateDeviceState();

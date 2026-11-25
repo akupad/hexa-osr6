@@ -2,6 +2,41 @@
       xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
       xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
       Background="{StaticResource Bg}" Title="脚本库">
+    <Page.Resources>
+        <!-- 脚本卡片容器：去掉 ListViewItem 自带的灰色选中块，改成「选中＝描边+浅底」，
+             和「🎯 动作」页的卡片墙保持一致。 -->
+        <Style x:Key="ScriptCardItem" TargetType="ListViewItem">
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Margin" Value="0,0,8,8"/>
+            <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+            <Setter Property="VerticalContentAlignment" Value="Stretch"/>
+            <Setter Property="ToolTip" Value="{Binding Tip}"/>
+            <Setter Property="ToolTipService.ShowDuration" Value="30000"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListViewItem">
+                        <Border x:Name="Shell" CornerRadius="8" BorderThickness="1"
+                                Background="{StaticResource CardBg}" BorderBrush="{StaticResource Border}"
+                                Padding="10,8">
+                            <ContentPresenter/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Shell" Property="BorderBrush" Value="{StaticResource BorderStrong}"/>
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Shell" Property="Background" Value="{StaticResource PrimarySoft}"/>
+                                <Setter TargetName="Shell" Property="BorderBrush" Value="{StaticResource Primary}"/>
+                                <Setter TargetName="Shell" Property="BorderThickness" Value="1.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Page.Resources>
+
+
     <!-- 纵向滚动只在窗口真的不够高时才出现（MinHeight 绑视口高度：够高时列表照样撑满）；
          横向一律关掉 —— 不允许出现「要横向滚才能看到另一半」的局面。
          上下的留白放在 ScrollViewer.Padding 上，这样 MinHeight 和视口一样高，内容装得下时不会白冒一条滚动条。
@@ -357,77 +392,67 @@
                 </Grid>
 
                 <Grid Grid.Row="1">
-                    <ListView x:Name="ScriptList" Background="{StaticResource Surface}"
-                              BorderBrush="{StaticResource Border}" BorderThickness="1" FontSize="12"
-                              SelectionChanged="ScriptList_SelectionChanged">
-                        <ListView.ItemContainerStyle>
-                            <!-- 行级悬停提示：写明时长/轨道/大小/来源；无效脚本写明解析失败原因 -->
-                            <Style TargetType="ListViewItem" BasedOn="{StaticResource {x:Type ListViewItem}}">
-                                <Setter Property="Padding" Value="10,5"/>
-                                <Setter Property="ToolTip" Value="{Binding Tip}"/>
-                                <Setter Property="ToolTipService.ShowDuration" Value="30000"/>
-                            </Style>
-                        </ListView.ItemContainerStyle>
-                        <ListView.View>
-                            <GridView>
-                                <!-- 名称列宽度由 code-behind 按剩余宽度设置（最大化时吃掉右侧空白），过长名称用省略号 -->
-                                <GridViewColumn x:Name="NameColumn" Header="名称" Width="230">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <!-- 解析不了的行用警示色写出来，比只看「时长 —」清楚 -->
-                                            <!-- 不给单元格单独设 ToolTip：整行的悬停提示里有完整名称和明细 -->
-                                            <!-- 名称 + 章节/书签标记：标记列是 Auto 宽，名称仍然按剩余宽度省略号收尾，
-                                                 所以窄窗口下标记不会被挤出去，名称也不会把列撑宽 -->
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*"/>
-                                                    <ColumnDefinition Width="Auto"/>
-                                                </Grid.ColumnDefinitions>
-                                                <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis"
-                                                           VerticalAlignment="Center">
-                                                    <TextBlock.Style>
-                                                        <Style TargetType="TextBlock"
-                                                               BasedOn="{StaticResource {x:Type TextBlock}}">
-                                                            <Style.Triggers>
-                                                                <DataTrigger Binding="{Binding Valid}" Value="False">
-                                                                    <Setter Property="Foreground" Value="{StaticResource Warning}"/>
-                                                                </DataTrigger>
-                                                            </Style.Triggers>
-                                                        </Style>
-                                                    </TextBlock.Style>
-                                                </TextBlock>
-                                                <TextBlock Grid.Column="1" Text="{Binding Marker}" FontSize="10"
-                                                           Foreground="{StaticResource Accent}"
-                                                           VerticalAlignment="Center" Margin="6,0,0,0"
-                                                           ToolTip="{Binding MarkerTip}"/>
-                                            </Grid>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                                <GridViewColumn Header="时长" Width="56" DisplayMemberBinding="{Binding Duration}"/>
-                                <GridViewColumn Header="轨道" Width="66" DisplayMemberBinding="{Binding Axes}"/>
-                                <GridViewColumn Header="大小" Width="56" DisplayMemberBinding="{Binding Size}"/>
-                                <GridViewColumn Header="来源" Width="62" DisplayMemberBinding="{Binding Source}"/>
-                                <GridViewColumn Header="操作" Width="80">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Button Content="▶" Width="24" Height="22" Padding="0" FontSize="10"
-                                                        Style="{StaticResource BtnSecondary}" Click="RowPlay_Click"
-                                                        IsEnabled="{Binding Valid}"
-                                                        ToolTip="载入这个脚本并从头播放（解析不了的行不能播）"/>
-                                                <Button Content="✏" Width="24" Height="22" Padding="0" FontSize="10"
-                                                        Style="{StaticResource BtnSecondary}" Margin="4,0,0,0"
-                                                        Click="RowRename_Click" ToolTip="给这个脚本改名（只改库内副本）"/>
-                                                <Button Content="🗑" Width="24" Height="22" Padding="0" FontSize="10"
-                                                        Style="{StaticResource BtnDanger}" Margin="4,0,0,0"
-                                                        Click="RowDelete_Click" ToolTip="从脚本库里删掉它（会先问一次；不动源文件）"/>
-                                            </StackPanel>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                            </GridView>
-                        </ListView.View>
+                    <!-- 卡片墙（2026-11-25 用户要求：「脚本库动作也能像动作页那样展示」）。
+                         原来是表格（名称/时长/轨道/大小/来源/操作 六列固定宽），窄窗口下名称被省略号截断，
+                         看着就是「看不全」。现在换成和「🎯 动作」页一样的卡片墙：每块卡片自己换行排布，
+                         名称完整折行显示，任何窗口宽度都不会被裁。 -->
+                    <ListView x:Name="ScriptList" Background="Transparent" BorderThickness="0" FontSize="12"
+                              SelectionChanged="ScriptList_SelectionChanged"
+                              ItemContainerStyle="{StaticResource ScriptCardItem}"
+                              ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                              ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                        <ListView.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <WrapPanel Orientation="Horizontal"/>
+                            </ItemsPanelTemplate>
+                        </ListView.ItemsPanel>
+                        <ListView.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Width="222">
+                                    <!-- 第一行：名称完整折行（解析不了用警示色）+ 章节/书签标记 -->
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding Name}" FontSize="12" FontWeight="SemiBold"
+                                                   TextWrapping="Wrap" VerticalAlignment="Top">
+                                            <TextBlock.Style>
+                                                <Style TargetType="TextBlock"
+                                                       BasedOn="{StaticResource {x:Type TextBlock}}">
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding Valid}" Value="False">
+                                                            <Setter Property="Foreground" Value="{StaticResource Warning}"/>
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </TextBlock.Style>
+                                        </TextBlock>
+                                        <TextBlock Grid.Column="1" Text="{Binding Marker}" FontSize="10"
+                                                   Foreground="{StaticResource Accent}" VerticalAlignment="Top"
+                                                   Margin="6,1,0,0" ToolTip="{Binding MarkerTip}"/>
+                                    </Grid>
+
+                                    <!-- 第二行：时长 · 轨道 · 大小 · 来源，一行写不下自己换行，不省略 -->
+                                    <TextBlock FontSize="10" Foreground="{StaticResource Muted}"
+                                               Margin="0,5,0,0" TextWrapping="Wrap"><Run Text="{Binding Duration, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding Axes, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding Size, Mode=OneWay}"/><Run Text=" · "/><Run Text="{Binding Source, Mode=OneWay}"/></TextBlock>
+
+                                    <!-- 第三行：播放 / 改名 / 删除 -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
+                                        <Button Content="▶ 播放" Height="24" Padding="8,0" FontSize="11"
+                                                Style="{StaticResource BtnSecondary}" Click="RowPlay_Click"
+                                                IsEnabled="{Binding Valid}"
+                                                ToolTip="载入这个脚本并从头播放（解析不了的不能播）"/>
+                                        <Button Content="✏ 改名" Height="24" Padding="8,0" FontSize="11"
+                                                Style="{StaticResource BtnSecondary}" Margin="6,0,0,0"
+                                                Click="RowRename_Click" ToolTip="给这个脚本改名（只改库内副本）"/>
+                                        <Button Content="🗑" Width="26" Height="24" Padding="0" FontSize="11"
+                                                Style="{StaticResource BtnDanger}" Margin="6,0,0,0"
+                                                Click="RowDelete_Click" ToolTip="从脚本库里删掉它（会先问一次；不动源文件）"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
                     </ListView>
 
                     <!-- 空状态：库里一个脚本都没有时，直接告诉用户去哪儿拿 -->

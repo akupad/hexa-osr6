@@ -39,6 +39,24 @@ public partial class App : System.Windows.Application
     public static WebApiService    WebApi   { get; private set; } = null!;
     public static NotifyIcon?      TrayIcon { get; private set; }
 
+    /// <summary>主窗口左栏那个六轴 3D 模型（全应用一份；MainWindow 构造时登记）。</summary>
+    public static Views.AxisPreview3D SharedPreview { get; internal set; } = null!;
+
+    /// <summary>左栏模型下面那行说明（同上）。</summary>
+    public static TextBlock? SharedPreviewCaption { get; internal set; }
+
+    /// <summary>左栏模型下面那块「选中动作 / 脚本详情」（同上，MainWindow 构造时登记）。动作页往这里画内容。</summary>
+
+    /// <summary>改左栏模型下面的说明文字；accent=true 用强调色（正在演某个动作/脚本时）。</summary>
+    public static void SetPreviewCaption(string text, bool accent = false)
+    {
+        TextBlock? block = SharedPreviewCaption;
+        if (block is null) return;
+        block.Text = text;
+        block.ToolTip = text;
+        block.Foreground = (Brush)block.FindResource(accent ? "Accent" : "Muted");
+    }
+
     // ── 诊断自动留档（DiagnosticReport.Create 的挂钩）────────────────
     // 同一标签 5 分钟内只打一次包，避免断开重连风暴时反复压 zip。
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _autoArchiveLast = new();

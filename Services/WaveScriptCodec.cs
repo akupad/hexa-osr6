@@ -13,7 +13,14 @@ public static class WaveScriptCodec
 
     /// <summary>真正的硬上限：超过它就抽稀（不再像以前那样直接抛异常拒绝整份脚本）。</summary>
     public const int MaxActionsHardLimit = 20000;
-    public const long MaxDurationMs = 3_600_000;
+
+    /// <summary>
+    /// 单条脚本的时长硬上限。原来是 60 分钟，结果整片的 Cock Hero 类脚本（常见 60–95 分钟）
+    /// 一律被判「动作时间超出范围」、卡片上显示「无法解析」——2026-11-25 用户就撞上了
+    /// 「Cock Hero - Optikon Alpha」（92 分钟）。放宽到 6 小时，足够放任何一片；
+    /// 再长的那种整夜脚本本来也不会有人从头播到尾。
+    /// </summary>
+    public const long MaxDurationMs = 6 * 3_600_000L;
 
     public sealed record ActionPoint(long At, int Pos);
 
@@ -211,7 +218,8 @@ public static class WaveScriptCodec
                 throw new FormatException("每个动作必须包含数字 at 和 pos。");
             // 很多导出工具会把整数写成 123.0 / 50.0，所以先按 double 读再四舍五入成整数。
             // 范围先在 double 上校验（防止 (long) 转换溢出），再取整。
-            if (rawAt < 0 || rawAt > MaxDurationMs) throw new FormatException($"动作时间超出范围：{rawAt} ms。");
+            if (rawAt < 0 || rawAt > MaxDurationMs)
+                throw new FormatException($"动作时间超出范围：{rawAt} ms（单条脚本上限 {MaxDurationMs / 3_600_000.0:0.#} 小时）。");
             if (rawPos is < 0 or > 100) throw new FormatException($"动作位置超出范围：{rawPos}。");
             long at = (long)Math.Round(rawAt);
             int pos = (int)Math.Round(rawPos);
@@ -238,6 +246,31 @@ public static class WaveScriptCodec
     {
         value = 0;
         return node.ValueKind == JsonValueKind.Number && node.TryGetDouble(out value);
+    }
+
+    /// <summary>
+    /// 取某条轴在 <paramref name="ms"/> 时刻的位置（0–100，线性插值；没有动作点返回 50）。
+    /// 3D 预览、波形读数都按这一个口径，避免界面和设备算出两条不一样的曲线。
+    /// </summary>
+    public static double SamplePos(IReadOnlyList<ActionPoint> actions, double ms)
+    {
+        if (actions.Count == 0) return 50;
+        if (ms <= actions[0].At) return Math.Clamp(actions[0].Pos, 0, 100);
+        int last = actions.Count - 1;
+        if (ms >= actions[last].At) return Math.Clamp(actions[last].Pos, 0, 100);
+
+        int lo = 0, hi = last;
+        while (hi - lo > 1)
+        {
+            int mid = (lo + hi) / 2;
+            if (actions[mid].At <= ms) lo = mid; else hi = mid;
+        }
+        ActionPoint a = actions[lo];
+        ActionPoint b = actions[hi];
+        long span = b.At - a.At;
+        if (span <= 0) return Math.Clamp(b.Pos, 0, 100);
+        double t = (ms - a.At) / span;
+        return Math.Clamp(a.Pos + (b.Pos - a.Pos) * t, 0, 100);
     }
 
     public static List<(double X, double Y)> ToCanvasPoints(

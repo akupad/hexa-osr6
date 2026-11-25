@@ -495,17 +495,10 @@
                                         Padding="10,0" Click="Suggestion_Click"
                                         Style="{StaticResource BtnSecondary}"
                                         BorderBrush="{StaticResource Border}" BorderThickness="1"/>
-                                <!-- 「停一下」必须**真的停**：以前它和别的起手话一样只把文字填进输入框，
-                                     而同页顶部还写着"要停按急停或直接说停" —— 用户按了"停一下"以为停了，
-                                     设备其实还在动。停设备这件事不该需要"再点一次发送"。 -->
-                                <Button Content="⏹ 停一下（立刻停设备）" Height="26" FontSize="11" Margin="0,0,6,6"
-                                        Padding="10,0" Click="StopMotion_Click"
-                                        Style="{StaticResource BtnDanger}"
-                                        ToolTip="立刻停住设备（不是发消息）"/>
                             </WrapPanel>
                             <TextBlock FontSize="10" Foreground="{StaticResource Faint}" TextWrapping="Wrap"
                                        TextAlignment="Center" Margin="0,2,0,0"
-                                       Text="点一下会把这句话填进下面的输入框，确认后按「发送」；「⏹ 停一下」是直接停住设备，不用再点发送。"/>
+                                       Text="点一下会把这句话填进下面的输入框，确认后按「发送」。要停设备按侧栏的「⛔ 锁定急停」。"/>
                         </StackPanel>
                     </StackPanel>
 

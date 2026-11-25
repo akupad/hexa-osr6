@@ -517,6 +517,8 @@ public class AppSettings
     // ══ 动作库：收藏 / 最近 / 落盘 ═════════════════════════════════════════
     /// <summary>收藏的动作 id（游玩页与动作页共用）。</summary>
     public List<string> FavoriteStrokes { get; set; } = [];
+    /// <summary>收藏的脚本（存文件名，忽略大小写；脚本和动作一样能点星标，只是不能删）。</summary>
+    public List<string> FavoriteScripts { get; set; } = [];
     /// <summary>最近用过的动作 id（越靠前越新，最多留 12 个）。</summary>
     public List<string> RecentStrokes   { get; set; } = [];
     /// <summary>上次的快速预设 id（重启后高亮回到它）。</summary>
@@ -1021,6 +1023,8 @@ public class AppSettings
         FavoriteStrokes ??= [];
         RecentStrokes ??= [];
         FavoriteStrokes = FavoriteStrokes.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().Take(200).ToList();
+        FavoriteScripts ??= [];
+        FavoriteScripts = FavoriteScripts.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().Take(200).ToList();
         RecentStrokes = RecentStrokes.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().Take(12).ToList();
         LastQuickPreset = (LastQuickPreset ?? "").Trim();
         LastAutoPattern = (LastAutoPattern ?? "").Trim();

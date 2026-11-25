@@ -108,9 +108,6 @@ public partial class ManualControlPage : Page
     private bool _ready;
 
     // ── 窄窗口重排（照抄游玩页：宽 ≥900 并排、620~900 等分、<620 上下堆叠）──
-    private const double SideBySideWidth = 900;
-    private const double StackWidth = 620;
-    private int _layoutMode = -1;
 
     public ManualControlPage()
     {
@@ -124,9 +121,6 @@ public partial class ManualControlPage : Page
 
         _statusTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(StatusIntervalMs) };
         _statusTimer.Tick += (_, _) => PollSafety();
-
-        // 拉窗口时也要跟着换排法（MeasureOverride 之外再兜一层）
-        SizeChanged += (_, _) => ApplyResponsiveLayout(ActualWidth);
 
         Loaded += (_, _) =>
         {
@@ -151,7 +145,6 @@ public partial class ManualControlPage : Page
         _ready = true;
         RefreshReadouts();
         RefreshSineUi();
-        ApplyResponsiveLayout(ActualWidth);
         RefreshStatus();
     }
 
@@ -168,64 +161,6 @@ public partial class ManualControlPage : Page
     /// <summary>
     /// 主体排法在测量阶段就定下来（自检等场合会自己走 Measure/Arrange，不一定触发 SizeChanged）。
     /// </summary>
-    protected override Size MeasureOverride(Size constraint)
-    {
-        if (_ready && !double.IsInfinity(constraint.Width)) ApplyResponsiveLayout(constraint.Width);
-        return base.MeasureOverride(constraint);
-    }
-
-    /// <summary>
-    /// 宽窗口 = 左 380px + 右 3D 占满余下；中等窗口 = 两列等分（硬撑 380 会把 3D 压没）；
-    /// 窄窗口（约 660px 及以下）= 上下堆叠，两列都占满整行，不会被窗口边缘切掉、
-    /// 也不会把滑杆拉成横条。
-    /// </summary>
-    private void ApplyResponsiveLayout(double width)
-    {
-        if (width <= 0) return;
-        int mode = width >= SideBySideWidth ? 0 : width >= StackWidth ? 1 : 2;
-        if (mode == _layoutMode) return;
-        _layoutMode = mode;
-
-        switch (mode)
-        {
-            case 0:
-                // 左栏按 2:3 比例随窗口放宽，但夹在 380–460 之间：既不再锁死，也不会把六根滑杆拉成横条
-                double content = Math.Max(width - 48, 0);
-                double left = Math.Max(380, Math.Min((content - 14) * 2.0 / 5.0, 460));
-                LeftCol.Width = new GridLength(left);
-                LeftCol.MinWidth = 380;
-                LeftCol.MaxWidth = 460;
-                GapCol.Width = new GridLength(14);
-                RightCol.Width = new GridLength(1, GridUnitType.Star);
-                RightCol.MinWidth = 260;
-                PlaceRightCard(row: 0, column: 2, new Thickness(0));
-                break;
-
-            case 1:
-                LeftCol.Width = new GridLength(1, GridUnitType.Star);
-                GapCol.Width = new GridLength(12);
-                RightCol.Width = new GridLength(1, GridUnitType.Star);
-                RightCol.MinWidth = 200;
-                PlaceRightCard(row: 0, column: 2, new Thickness(0));
-                break;
-
-            default:
-                LeftCol.Width = new GridLength(1, GridUnitType.Star);
-                GapCol.Width = new GridLength(0);
-                RightCol.Width = new GridLength(0);
-                RightCol.MinWidth = 0;
-                PlaceRightCard(row: 1, column: 0, new Thickness(0, 14, 0, 0));
-                break;
-        }
-    }
-
-    private void PlaceRightCard(int row, int column, Thickness margin)
-    {
-        Grid.SetRow(RightCard, row);
-        Grid.SetColumn(RightCard, column);
-        RightCard.Margin = margin;
-    }
-
     // ══════════════════════════════════════════════════════════════
     //  六根滑杆
     // ══════════════════════════════════════════════════════════════
@@ -378,14 +313,12 @@ public partial class ManualControlPage : Page
 
         _stopNote = null;
         // 本页按帧喂数据，关掉控件自己的 120ms 自动刷新，免得两路数据互相盖造成闪动
-        ManualPreview.AutoRefreshEnabled = false;
-        ManualPreview.SetStatusText("手动预览");
         _sendTimer.Start();
         RefreshStatus();
     }
 
     /// <summary>
-    /// 停手：停定时器 → 交还控制权 → 取消勾选 → 3D 回到「跟着设备真实输出刷新」。
+    /// 停手：停定时器 → 交还控制权 → 取消勾选（主窗口左栏那台模型自己会接回实时输出）。
     /// <b>不</b>把轴移回原位。
     ///
     /// 本页<b>除了「■ 停止」以外</b>的所有停手路径（取消勾选 / 离开页面 / Unloaded / 急停 /
@@ -402,8 +335,6 @@ public partial class ManualControlPage : Page
         App.Engine.ReleaseDirectInput(InputOwner);   // 只释放自己持有的
         SetAllowChecked(false);
         _stopNote = note;
-        ManualPreview.AutoRefreshEnabled = true;
-        ManualPreview.SetStatusText("实时输出");
         RefreshStatus();
     }
 
@@ -460,7 +391,6 @@ public partial class ManualControlPage : Page
 
         // 6 个值一次性发出去；实际速度由引擎的安全限速器决定
         App.Engine.TrySendDirectAxes(_sendBuffer, InterpolationSeconds);
-        ManualPreview.UpdateAxes(_sendBuffer);
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -481,7 +411,6 @@ public partial class ManualControlPage : Page
 
         App.Engine.TrySendDirectAxes(_sineValues, SineInterpolationSeconds);
         _sineFrameSent = true;      // 「■ 停止」要用这一帧把滑杆对到设备所在的位置
-        ManualPreview.UpdateAxes(_sineValues);
     }
 
     private double SpeedHz => Math.Clamp(SpeedSlider?.Value ?? SineDefaultHz, SineMinHz, SineMaxHz);
@@ -965,12 +894,5 @@ public partial class ManualControlPage : Page
               + "没勾「允许手动动轴」的话只动滑杆、设备不会动。\n\n要继续吗？";
         return System.Windows.MessageBox.Show(text, LocalizationService.T("全部归中"),
             MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
-    }
-
-    /// <summary>本页自带的急停：任何时候都点得到（主窗口侧栏那个离得远，这一页在动设备）。</summary>
-    private void EStopBtn_Click(object sender, RoutedEventArgs e)
-    {
-        App.Engine.EmergencyStop();
-        StopManual("已停手 —— 你按了急停，设备已锁死。要再动它，点这一页（或侧栏）的「全部归中」解锁（会先问你一次）。");
     }
 }

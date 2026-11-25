@@ -191,23 +191,6 @@ public partial class AiAssistantPage : Page
         ResizeInputBox();
     }
 
-    /// <summary>
-    /// 「⏹ 停一下」：立刻停住设备。
-    /// 不走 AI、不填输入框 —— 停设备是安全动作，不该依赖"再点一次发送"或模型是否听话。
-    /// </summary>
-    private void StopMotion_Click(object sender, RoutedEventArgs e)
-    {
-        // 归中会解除急停并重新使能输出：急停锁定时必须先问一句（与主窗口/校准窗/设置页/悬浮窗口径一致），
-        // 否则用户按"停一下"会把急停悄悄解掉、设备重新带电。
-        if (App.Engine.EmergencyStopped && System.Windows.MessageBox.Show(
-                "设备处于急停锁定，归中会解除急停并重新使能输出，是否继续？",
-                "解除急停", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return;
-        App.FunscriptPlayer?.Stop();
-        App.RuleEngine?.Stop();
-        App.Engine.Home();
-        Hexa.Services.AppLogger.Info("AI 助手页：「停一下」已停住设备（脚本 / 游戏伴随已停，输出回中位）");
-    }
-
     /// <summary>跳到「设置」页填 API Key（设置页里就有 AI 助手那一节）。</summary>
     private void GoSettings_Click(object sender, RoutedEventArgs e)
     {

@@ -2978,11 +2978,8 @@ public partial class EditorPage : Page
         _composePlaying = true;
         ComposePlayBtn.Content = _composePreviewOnly ? "▶ 预览中（未驱动设备）" : "▶ 播放中";
         ComposePlayBtn.Style = (Style)FindResource("BtnPrimary");
-        ComposeStopBtn.IsEnabled = true;   // 没在播放时「停止」不可点，省得用户点了没反应
         UpdatePlayhead(from);
     }
-
-    private void ComposeStop_Click(object sender, RoutedEventArgs e) => ComposeStopPlayback();
 
     private void ComposeStopPlayback()
     {
@@ -2990,7 +2987,6 @@ public partial class EditorPage : Page
         _playheadOffset = 0;
         _playAnchorSegment = null;
         _composeEditHintTicks = 0;
-        if (ComposeStopBtn is not null) ComposeStopBtn.IsEnabled = false;
 
         if (!_composePlaying)
         {

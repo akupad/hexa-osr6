@@ -155,10 +155,6 @@
                                 ToolTip="按时间轴顺序采样各段，导出标准多轴 funscript（一个文件含 L0..R2）"/>
                         <Button x:Name="ComposePlayBtn" Content="▶ 预览播放" MinWidth="106" Height="28" FontSize="12"
                                 Margin="0,0,6,6" Style="{StaticResource BtnSecondary}" Click="ComposePlay_Click"/>
-                        <Button x:Name="ComposeStopBtn" Content="⏹ 停止" Width="84" Height="28" FontSize="12"
-                                Margin="0,0,12,6" Style="{StaticResource BtnDanger}" Click="ComposeStop_Click"
-                                IsEnabled="False"
-                                ToolTip="停止编排试听（没在播放时不可点）。停止后就本页不再向设备发指令。"/>
                         </WrapPanel>
                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                         <TextBlock x:Name="ComposeNameLabel" Text="合成：未命名" FontSize="12"

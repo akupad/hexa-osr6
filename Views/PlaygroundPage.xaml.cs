@@ -48,13 +48,6 @@ public partial class PlaygroundPage : Page
     private string? _bannerKey;         // 当前显示的原因：内容没变就不重复写 UI
     private int _bannerPulseTicks;
 
-    // ── 窄窗口重排 ──
-    // 宽：左列固定 344 + 右列余下（原来认可的版式）。
-    // 中：两列等分（344 放不下、又还没窄到必须上下堆）。
-    // 窄：上下堆叠，两列都占满整行（否则右列会被窗口边缘切掉）。
-    private const double SideBySideWidth = 900;   // 低于此宽度，344 + 3D 会互相挤
-    private const double StackWidth = 620;        // 低于此宽度，并排已经排不下
-    private int _layoutMode = -1;
     private bool _ready;                          // 控件字段已就绪（XAML 解析完成）
     private bool _ambientLoading;                 // 回填氛围微动 UI 时抑制事件，避免把默认值写回设置
 
@@ -226,53 +219,9 @@ public partial class PlaygroundPage : Page
     /// </summary>
     private void ApplyResponsiveLayout(double width)
     {
-        if (width <= 0) return;
-        int mode = width >= SideBySideWidth ? 0 : width >= StackWidth ? 1 : 2;
-        if (mode == _layoutMode) return;
-        _layoutMode = mode;
-
-        switch (mode)
-        {
-            case 0:
-                // 左栏按 2:3 比例随窗口放宽，但夹在 344–420 之间：既不再锁死，也不会把滑杆拉成长条
-                double content = Math.Max(width - 48, 0);
-                double left = Math.Max(344, Math.Min((content - 14) * 2.0 / 5.0, 420));
-                LeftCol.Width  = new GridLength(left);
-                LeftCol.MinWidth = 344;
-                LeftCol.MaxWidth = 420;
-                GapCol.Width   = new GridLength(14);
-                RightCol.Width = new GridLength(1, GridUnitType.Star);
-                RightCol.MinWidth = 260;
-                Grid.SetRow(RightCard, 0);
-                Grid.SetColumn(RightCard, 2);
-                RightCard.Margin = new Thickness(0);
-                break;
-
-            case 1:
-                LeftCol.Width  = new GridLength(1, GridUnitType.Star);
-                LeftCol.MinWidth = 0;
-                LeftCol.MaxWidth = double.PositiveInfinity;
-                GapCol.Width   = new GridLength(12);
-                RightCol.Width = new GridLength(1, GridUnitType.Star);
-                RightCol.MinWidth = 200;
-                Grid.SetRow(RightCard, 0);
-                Grid.SetColumn(RightCard, 2);
-                RightCard.Margin = new Thickness(0);
-                break;
-
-            default:
-                LeftCol.Width  = new GridLength(1, GridUnitType.Star);
-                LeftCol.MinWidth = 0;
-                LeftCol.MaxWidth = double.PositiveInfinity;
-                GapCol.Width   = new GridLength(0);
-                RightCol.Width = new GridLength(0);
-                RightCol.MinWidth = 0;
-                Grid.SetRow(RightCard, 1);
-                Grid.SetColumn(RightCard, 0);
-                RightCard.Margin = new Thickness(0, 14, 0, 0);
-                break;
-        }
-
+        // 3D 模型搬到主窗口左栏之后，本页只剩一列（窄窗也不用换排法）；
+        // 保留这个方法是因为 SizeChanged 还挂着它，留着空壳比到处删订阅安全。
+        _ = width;
     }
 
     private void BuildComfortProfiles()
@@ -871,18 +820,7 @@ public partial class PlaygroundPage : Page
             AutoStateDot.Fill = (Brush)FindResource("Muted");
             AutoBehaviorLabel.Text = "还没开始";
             AutoBpmLiveLabel.Text = "";
-            // 右侧只留"现在能不能动"一句话，原因和解决办法由顶部原因条负责，不重复。
-            string state;
-            string color;
-            if (!App.Serial.IsOpen)                { state = "不可动 · 未连接"; color = "Warning"; }
-            else if (App.Engine.EmergencyStopped)  { state = "不可动 · 急停";   color = "Danger"; }
-            else if (App.Engine.IsHoming)          { state = "不可动 · 归中中"; color = "Warning"; }
-            else if (App.Engine.RuleEngineActive)  { state = "被游戏伴随接管";  color = "Warning"; }
-            else if (App.Engine.DriverLabel is string driver && driver != "待机")
-                                                   { state = $"正在动 · {driver}"; color = "Warning"; }
-            else                                   { state = "待机 · 可动";     color = "Muted"; }
-            LiveStateLabel.Text = state;
-            LiveStateLabel.Foreground = (Brush)FindResource(color);
+            // 「现在能不能动」的原因由顶部原因条负责，本页不再重复一行状态文案。
         }
         else
         {
@@ -891,8 +829,6 @@ public partial class PlaygroundPage : Page
             AutoStateDot.Fill = (Brush)FindResource("Accent");
             AutoBehaviorLabel.Text = $"正在跑：{App.Engine.CurrentAutoPatternLabel}";
             AutoBpmLiveLabel.Text = $"当前 {App.Engine.CurrentAutoBpm:0} BPM";
-            LiveStateLabel.Text = App.Engine.AutoBehaviorHeld ? "运行中 · 已锁住" : "运行中";
-            LiveStateLabel.Foreground = (Brush)FindResource("Accent");
         }
         UpdateDeviceBanner();
         UpdateAutoActionButtons();

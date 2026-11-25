@@ -613,10 +613,14 @@ internal static class SelfTest
                     double intensity = Width("IntensitySlider");
                     double speed = Width("SpeedSlider");
                     double autoBtn = Width("AutoBtn");
-                    double preview = Width("PlaygroundPreview");
+
                     Check($"游玩页控件不再被拉满整行（强度 {intensity:0} / 速度 {speed:0} / 开始自动 {autoBtn:0} px，均 < 400）",
                         intensity is > 0 and < 400 && speed is > 0 and < 400 && autoBtn is > 0 and < 400);
-                    Check($"游玩页有 3D 实时状态（{preview:0}px 宽，> 400）", preview > 400);
+                    // 2026-11-25 用户要求把游玩页 / 手动动轴页的 3D 块去掉，全应用只剩左栏那一个模型
+                    var host = System.Windows.Application.Current?.MainWindow as Hexa.MainWindow;
+                    Check("游玩页不再自己画 3D 模型（全应用只有左栏那一个）",
+                        page.FindName("PlaygroundPreview") is null
+                        && host is not null && FindByName(host, "SharedPreview3D") is Hexa.Views.AxisPreview3D);
                 }
                 catch (Exception ex) { Check("游玩页排版", false); Lines.Add("      原因：" + ex.Message); }
             });
@@ -685,23 +689,241 @@ internal static class SelfTest
                         pane?.Visibility == System.Windows.Visibility.Visible
                         && host?.Visibility != System.Windows.Visibility.Visible
                         && !page.IsLibraryShown);
-                    // 导入的脚本要出现在动作栏里（用户 2026-11-24：「导入的脚本也会出现在动作栏里」）：
-                    // 脚本架排在工具条下面一行，条数必须和脚本库目录里的脚本数一致；
-                    // 每一块的 Tag 是脚本全路径 —— 单击切栏选中、双击直接播都靠它找文件。
+                    // 脚本直接摆进动作卡片墙（用户 2026-11-25 m11673：「直接在动作栏里显示吧，就不用改来改去了」）：
+                    // 不再有单独的脚本架；脚本卡和动作卡在同一面墙里，卡片 Uid="script" 用来区分。
                     var shelf = FindByName(page, "ScriptShelf") as System.Windows.FrameworkElement;
-                    var shelfTitle = FindByName(page, "ShelfTitle") as System.Windows.Controls.TextBlock;
-                    var shelfPanel = FindByName(page, "ShelfPanel") as System.Windows.Controls.WrapPanel;
-                    var shelfScroll = FindByName(page, "ShelfScroll") as System.Windows.Controls.ScrollViewer;
+                    var cardWall = FindByName(page, "CardPanel") as System.Windows.Controls.WrapPanel;
+                    var importScriptBtn = FindByName(page, "ImportScriptBtn") as System.Windows.Controls.Button;
+                    // 卡片是在 Loaded 里填的，离屏页面不会触发 Loaded —— 先手动读一次再数。
+                    Invoke(page, "LoadScriptShelf");
+                    page.UpdateLayout();
                     int libCount = Hexa.Models.ScriptLibrary.List().Count;
-                    Check($"动作栏里有「脚本库脚本」脚本架，条数与脚本库一致（{shelfPanel?.Children.Count ?? -1} / {libCount}）",
-                        shelf is not null
-                        && System.Windows.Controls.Grid.GetRow(shelf) == 2
-                        && shelfTitle?.Text.Contains("脚本库脚本（") == true
-                        && (shelfPanel?.Children.Count ?? -1) == libCount);
-                    bool chipsCarryPath = shelfPanel is not null && shelfPanel.Children.OfType<System.Windows.Controls.Border>()
-                        .All(chip => chip.Tag is string path && path.Length > 0 && chip.Cursor == System.Windows.Input.Cursors.Hand);
-                    Check("脚本架默认展开、每一块都带脚本路径（单击切栏选中 / 双击直接播）",
-                        shelfScroll?.Visibility == System.Windows.Visibility.Visible && chipsCarryPath);
+                    var scriptCards = cardWall is null
+                        ? new List<System.Windows.Controls.Border>()
+                        : cardWall.Children.OfType<System.Windows.Controls.Border>().Where(c => c.Uid == "script").ToList();
+                    Check($"脚本和动作摆在同一面卡片墙里（脚本卡 {scriptCards.Count} / 脚本库 {libCount}、没有单独的脚本架）",
+                        shelf is null && importScriptBtn is not null && scriptCards.Count == libCount);
+                    Check("每一张脚本卡都带脚本路径（单击选中 / 双击直接播）",
+                        scriptCards.Count > 0 && scriptCards.All(c => c.Tag is string path && path.Length > 0
+                            && c.Cursor == System.Windows.Input.Cursors.Hand));
+                    // 2026-11-25 m11795：脚本卡和内置动作卡同构 —— 有星标能收藏，只区别于不能删
+                    List<System.Windows.Controls.Border> ScriptCardsNow() =>
+                        (FindByName(page, "CardPanel") as System.Windows.Controls.WrapPanel)?.Children
+                            .OfType<System.Windows.Controls.Border>().Where(c => c.Uid == "script").ToList()
+                        ?? new List<System.Windows.Controls.Border>();
+                    string favPath = (scriptCards.FirstOrDefault()?.Tag as string) ?? "";
+                    var favBackup = new List<string>(App.Settings.FavoriteScripts);
+                    bool favHad = page.Vm.IsScriptFavorite(favPath);
+                    page.Vm.ToggleScriptFavorite(favPath);
+                    Invoke(page, "LoadScriptShelf");
+                    page.UpdateLayout();
+                    var favCard = ScriptCardsNow().FirstOrDefault(c => (c.Tag as string) == favPath);
+                    string? starOn = FindStarButton(favCard ?? new System.Windows.Controls.Border())?.Content as string;
+                    page.Vm.ToggleScriptFavorite(favPath);
+                    bool favOff = !page.Vm.IsScriptFavorite(favPath);
+                    App.Settings.FavoriteScripts = favBackup;
+                    Invoke(page, "LoadScriptShelf");
+                    page.UpdateLayout();
+                    Check($"脚本卡上有星标按钮，点一下就收藏（★={starOn}、取消={favOff}、点之前={favHad}）",
+                        favCard is not null && starOn == "★" && favOff);
+                    Check("脚本卡没有删除入口（脚本不能在这里删，只区别于内置动作不可删）",
+                        !scriptCards.Any(c => c.ContextMenu is not null));
+                    var shelfPlay = FindByName(page, "ShelfPlayBtn") as System.Windows.Controls.Button;
+                    var multiBtn = FindByName(page, "MultiSelectBtn") as System.Windows.Controls.Button;
+                    Check("不再有「▶ 播放选中」，工具条上有「☑ 多选」",
+                        shelfPlay is null && multiBtn is not null);
+
+                    // 2026-11-25 用户报「多选按钮不好用」：这里真的派发一次 Click，验证按钮接线与状态条
+                    if (multiBtn is not null)
+                    {
+                        App.Dispatch(() => multiBtn.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)));
+                        page.UpdateLayout();
+                        var hintBar = FindByName(page, "MultiHintBar") as System.Windows.Controls.Border;
+                        string multiText = multiBtn.Content?.ToString() ?? "";
+                        Check($"点「☑ 多选」真的会进多选并弹出状态条（按钮={multiText}）",
+                            page.MultiSelectMode && multiText.Contains("多选中")
+                            && hintBar?.Visibility == System.Windows.Visibility.Visible);
+                        App.Dispatch(() => multiBtn.RaiseEvent(new System.Windows.RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent)));
+                        page.UpdateLayout();
+                        Check("再点一下退回单选、状态条收起",
+                            !page.MultiSelectMode && hintBar?.Visibility != System.Windows.Visibility.Visible);
+                    }
+                    string? shelfPick = Hexa.Models.ScriptLibrary.List().FirstOrDefault()?.FilePath;
+                    if (shelfPick is { Length: > 0 } && cardWall is not null)
+                    {
+                        page.SelectShelfScript(shelfPick);
+                        page.UpdateLayout();
+                        var chips = cardWall.Children.OfType<System.Windows.Controls.Border>().Where(c => c.Uid == "script").ToList();
+                        bool anyPicked = chips.Any(chip => chip.BorderThickness.Left >= 1.4 && chip.Tag as string == shelfPick);
+                        Check("点脚本＝就地选中（高亮那一块、仍留在动作页）",
+                            anyPicked && !page.IsLibraryShown);
+                        // 2026-11-25 用户要求：选中后右边 3D 模型直接演这条脚本（之前只高亮不演）
+                        var mainWin = System.Windows.Application.Current?.MainWindow as Hexa.MainWindow;
+                        var preview = mainWin is null ? null : FindByName(mainWin, "SharedPreview3D") as Hexa.Views.AxisPreview3D;
+                        bool started = false;
+                        var waitPreview = System.Diagnostics.Stopwatch.StartNew();
+                        while (waitPreview.ElapsedMilliseconds < 4000 && !started)
+                        {
+                            App.Dispatch(() => page.UpdateLayout());
+                            PumpDispatcher();
+                            started = page.ScriptPreviewActive;
+                            if (!started) System.Threading.Thread.Sleep(60);
+                        }
+                        Check($"选中脚本后左栏 3D 模型开始演它（{waitPreview.ElapsedMilliseconds}ms）",
+                            preview is not null && started);
+
+                        // 2026-11-25 用户报「鼠标指上去预览不会动」：真正的原因是预览定时器只 new 了没挂 Tick，
+                        // 模型永远停在第 0 帧。这一项必须在**真的显示出来**的动作页上量（离屏 new 的页面
+                        // IsVisible=false，喂帧会被主动跳过，量不出东西）。
+                        bool moved = false;
+                        var animWatch = System.Diagnostics.Stopwatch.StartNew();
+                        try
+                        {
+                            var mwLive = System.Windows.Application.Current?.MainWindow as Hexa.MainWindow;
+                            Hexa.Views.StrokesPage? livePage = null;
+                            if (mwLive is not null)
+                            {
+                                App.Dispatch(() => mwLive.NavigateTo("strokes"));
+                                PumpDispatcher();
+                                var navWait = System.Diagnostics.Stopwatch.StartNew();
+                                while (navWait.ElapsedMilliseconds < 4000 && livePage is null)
+                                {
+                                    System.Threading.Thread.Sleep(80);
+                                    PumpDispatcher();
+                                    App.Dispatch(() =>
+                                        livePage = (FindByName(mwLive, "ContentFrame") as System.Windows.Controls.Frame)?.Content
+                                                   as Hexa.Views.StrokesPage);
+                                }
+                                if (livePage is not null)
+                                {
+                                    App.Dispatch(() => livePage.SelectShelfScript(shelfPick));
+                                    PumpDispatcher();
+                                    double[]? firstFrame = null;
+                                    while (animWatch.ElapsedMilliseconds < 2500 && !moved)
+                                    {
+                                        System.Threading.Thread.Sleep(110);
+                                        PumpDispatcher();
+                                        double[] snap = Array.Empty<double>();
+                                        App.Dispatch(() => snap = App.SharedPreview?.AxisValues ?? Array.Empty<double>());
+                                        if (firstFrame is null) firstFrame = snap;
+                                        else moved = snap.Length == firstFrame.Length && snap.Length > 0
+                                            && snap.Where((v, i) => Math.Abs(v - firstFrame[i]) > 0.5).Any();
+                                    }
+                                }
+                            }
+                        }
+                        catch (Exception exAnim) { Lines.Add("      动画测量失败：" + exAnim.Message); }
+                        Check($"左栏模型的轴值真的在一帧一帧变化（{animWatch.ElapsedMilliseconds}ms 内{(moved ? "有" : "没有")}变化）", moved);
+
+                        // 左栏详情卡：脚本也要像动作那样列出六根轴各自怎么动（2026-11-25 m10854）
+                        // 详情是脚本异步读完才画的，所以这里轮询等它画完，不能只看预览标志就走了。
+                        var mainWinDetail = System.Windows.Application.Current?.MainWindow as Hexa.MainWindow;
+                        // 详情卡就在动作页左边（2026-11-25 用户纠正：不是主窗口左栏）
+                        var detail = FindByName(page, "DetailPanel") as System.Windows.Controls.StackPanel;
+                        string pickName = System.IO.Path.GetFileNameWithoutExtension(shelfPick);
+                        var axisSet = new[] { "L0", "L1", "L2", "R0", "R1", "R2" };
+                        var detailWait = System.Diagnostics.Stopwatch.StartNew();
+                        int axisRows = 0;
+                        bool hasName = false;
+                        while (detailWait.ElapsedMilliseconds < 4000)
+                        {
+                            App.Dispatch(() => page.UpdateLayout());
+                            PumpDispatcher();
+                            axisRows = 0;
+                            hasName = false;
+                            if (detail is not null)
+                            {
+                                var queue = new System.Collections.Generic.Queue<System.Windows.DependencyObject>();
+                                queue.Enqueue(detail);
+                                while (queue.Count > 0)
+                                {
+                                    var node = queue.Dequeue();
+                                    if (node is System.Windows.Controls.TextBlock tb && !string.IsNullOrEmpty(tb.Text))
+                                    {
+                                        if (axisSet.Contains(tb.Text)) axisRows++;
+                                        if (tb.Text.Contains(pickName)) hasName = true;
+                                    }
+                                    int n = System.Windows.Media.VisualTreeHelper.GetChildrenCount(node);
+                                    for (int c = 0; c < n; c++) queue.Enqueue(System.Windows.Media.VisualTreeHelper.GetChild(node, c));
+                                }
+                            }
+                            if (axisRows >= 6 && hasName) break;
+                            System.Threading.Thread.Sleep(60);
+                        }
+                        string titleText = (detail?.Children.Count > 0 && detail.Children[0] is System.Windows.Controls.TextBlock t0) ? t0.Text : "(无)";
+                        Check($"选中脚本后左栏详情列出六根轴（{axisRows} 行，标题含脚本名 {hasName}，{detailWait.ElapsedMilliseconds}ms）",
+                            detail is not null && axisRows >= 6 && hasName);
+                        if (!hasName) Lines.Add($"      选中={pickName} / 详情标题={titleText} / kids={(detail?.Children.Count ?? -1)}");
+
+                        // ── 多选（2026-11-25 m11293）：勾两张卡片 → 右上角标序号、按钮显示数量 ──
+                        var twoPicks = Hexa.ViewModels.StrokesViewModel.AllPresets.Take(2).ToArray();
+                        App.Dispatch(() =>
+                        {
+                            page.SetMultiSelectMode(true);
+                            foreach (var sp2 in twoPicks) page.ToggleMultiPick(sp2);
+                            page.UpdateLayout();
+                        });
+                        PumpDispatcher();
+                        var cardPanel = FindByName(page, "CardPanel") as System.Windows.Controls.WrapPanel;
+                        var orderNums = new List<string>();
+                        if (cardPanel is not null)
+                        {
+                            var q2 = new Queue<System.Windows.DependencyObject>();
+                            q2.Enqueue(cardPanel);
+                            while (q2.Count > 0)
+                            {
+                                var node2 = q2.Dequeue();
+                                if (node2 is System.Windows.Controls.TextBlock tb2 && tb2.Text is "1" or "2") orderNums.Add(tb2.Text);
+                                int n2 = System.Windows.Media.VisualTreeHelper.GetChildrenCount(node2);
+                                for (int c2 = 0; c2 < n2; c2++) q2.Enqueue(System.Windows.Media.VisualTreeHelper.GetChild(node2, c2));
+                            }
+                        }
+                        string multiCaption = multiBtn?.Content?.ToString() ?? "";
+                        Check($"多选：勾两张卡片就标出播放序号（{string.Join('/', orderNums)}）、按钮显示数量（{multiCaption}）",
+                            page.MultiSelectMode && page.MultiPickedCount == 2
+                            && orderNums.Contains("1") && orderNums.Contains("2")
+                            && multiCaption.Contains("2"));
+
+                        // 互斥：选脚本就自动退出多选、并撤掉动作的选中（两边不会同时高亮）
+                        App.Dispatch(() => page.SelectShelfScript(shelfPick));
+                        PumpDispatcher();
+                        Check("选脚本＝自动退出多选并撤掉动作选中（动作/脚本不会各选一个）",
+                            !page.MultiSelectMode && page.MultiPickedCount == 0
+                            && App.StrokesVm.SelectedStroke is null);
+
+                        page.SelectShelfScript(shelfPick);   // 再点一下＝取消选中
+
+                        // 2026-11-25 用户明确（m11606）：「内置动作不可删」——自建动作随便删，内置的连按钮都不该亮。
+                        // 这里插一个临时内置探针动作，验两件事：按钮是灰的、DeletePreset 拒绝删除；验完把 presets.json 原样还原。
+                        try
+                        {
+                            string presetsPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "presets.json");
+                            byte[]? presetsBackup = System.IO.File.Exists(presetsPath)
+                                ? System.IO.File.ReadAllBytes(presetsPath) : null;
+                            var probe = new Hexa.Models.StrokePreset
+                            {
+                                Id = "__selftest_builtin_probe", Label = "自检临时内置动作", Cat = "推",
+                                L0 = [0, 1, 0, 0.5], L1 = [0.5, 0.5, 0, 0], L2 = [0.5, 0.5, 0, 0],
+                                R0 = [0.5, 0.5, 0, 0], R1 = [0.5, 0.5, 0, 0], R2 = [0.5, 0.5, 0, 0],
+                                IsCustom = false,
+                            };
+                            bool probeAdded = page.Vm.AddOrReplacePreset(probe);
+                            App.Dispatch(() => { page.Vm.SelectedStroke = probe; page.UpdateLayout(); });
+                            PumpDispatcher();
+                            var delBtn = FindByName(page, "DeleteStrokeBtn") as System.Windows.Controls.Button;
+                            bool delGrey = delBtn?.IsEnabled == false;
+                            bool refused = !page.Vm.DeletePreset("__selftest_builtin_probe");
+                            bool stillThere = Hexa.ViewModels.StrokesViewModel.AllPresets
+                                .Any(p => p.Id == "__selftest_builtin_probe");
+                            if (presetsBackup is not null) System.IO.File.WriteAllBytes(presetsPath, presetsBackup);
+                            page.Vm.RefreshPresets();
+                            App.Dispatch(() => page.Vm.SelectedStroke = null);
+                            Check($"内置动作不可删：选中它「🗑 删除选中」是灰的、DeletePreset 也拒绝（加={probeAdded} 灰={delGrey} 拒绝={refused} 还在={stillThere}）",
+                                probeAdded && delGrey && refused && stillThere);
+                        }
+                        catch (Exception exDel) { Lines.Add("      内置动作删除探针失败：" + exDel.Message); }
+                    }
+                    else Check("点脚本＝就地选中（高亮那一块、仍留在动作页）", false);
                     page.ShowScriptLibrary();
                     page.UpdateLayout();
                     Check("点「脚本库」按钮后整页换成脚本库（动作栏收起）",
@@ -730,6 +952,7 @@ internal static class SelfTest
                     while (host?.Content is not Hexa.Views.ScriptLibraryPage && waited.ElapsedMilliseconds < 3000)
                     {
                         App.Dispatch(() => strokesProbe.UpdateLayout());
+                        PumpDispatcher();
                         System.Threading.Thread.Sleep(60);
                     }
                     Check($"脚本库面板里装的是脚本库页本身（{(host?.Content as System.Windows.FrameworkElement)?.GetType().Name ?? "空"}，等了 {waited.ElapsedMilliseconds}ms）",
@@ -1227,11 +1450,17 @@ internal static class SelfTest
     private static void PageSmoke(string name, Func<object> factory)
     {
         string? error = null;
+        // 冒烟会在自检里临时 new 一个「主窗口」——它一构造就会把 App.SharedPreview
+        // 登记成自己的控件。用完必须还回原来的，否则预览会画到一个没人看的窗口上（自检因此假失败）。
+        Hexa.Views.AxisPreview3D? keptPreview = App.SharedPreview;
+        System.Windows.Controls.TextBlock? keptCaption = App.SharedPreviewCaption;
         App.Dispatch(() =>
         {
             try { _ = factory(); }
             catch (Exception ex) { error = ex.GetBaseException().Message; }
         });
+        App.SharedPreview = keptPreview!;
+        App.SharedPreviewCaption = keptCaption;
         Thread.Sleep(120);
         Check($"打开「{name}」不报错", error == null);
         if (error != null) Lines.Add("      原因：" + error);
@@ -1493,6 +1722,37 @@ internal static class SelfTest
     /// 早先这些测量都是「投递 + Thread.Sleep(400)」，UI 线程上只要有一件超过 400ms 的活
     /// （比如脚本库页第一次扫目录），回调还没跑就取结果，量出来的就是 -1，报一堆假的回归。
     /// </summary>
+    /// <summary>
+    /// 把 Dispatcher 队列里排着的活跑掉：Frame.Navigate 这类「排队到下一拍」的操作靠它推进。
+    /// 必须在 UI 线程上调（自检里都在 App.Dispatch 回调里）。
+    /// </summary>
+    /// <summary>在元素树里找第一颗星标按钮（卡片右下角的 ☆ / ★）。</summary>
+    private static System.Windows.Controls.Button? FindStarButton(System.Windows.DependencyObject root)
+    {
+        var queue = new Queue<System.Windows.DependencyObject>();
+        queue.Enqueue(root);
+        while (queue.Count > 0)
+        {
+            var node = queue.Dequeue();
+            if (node is System.Windows.Controls.Button { Content: string glyph } && glyph is "☆" or "★") return (System.Windows.Controls.Button)node;
+            int count = System.Windows.Media.VisualTreeHelper.GetChildrenCount(node);
+            for (int i = 0; i < count; i++) queue.Enqueue(System.Windows.Media.VisualTreeHelper.GetChild(node, i));
+        }
+        return null;
+    }
+
+    private static void PumpDispatcher(int rounds = 8)
+    {
+        var dispatcher = System.Windows.Application.Current?.Dispatcher;
+        if (dispatcher is null || !dispatcher.CheckAccess()) return;
+        for (int i = 0; i < rounds; i++)
+        {
+            var frame = new System.Windows.Threading.DispatcherFrame();
+            dispatcher.BeginInvoke(System.Windows.Threading.DispatcherPriority.Background,
+                new Action(() => frame.Continue = false));
+            System.Windows.Threading.Dispatcher.PushFrame(frame);
+        }
+    }
     private static bool DispatchWait(Action a, int timeoutMs = 6000)
     {
         using var done = new System.Threading.ManualResetEventSlim(false);

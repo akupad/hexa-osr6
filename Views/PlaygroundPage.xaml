@@ -108,13 +108,12 @@
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition x:Name="LeftCol" Width="2*" MinWidth="344" MaxWidth="420"/>
-                    <ColumnDefinition x:Name="GapCol" Width="14"/>
-                    <ColumnDefinition x:Name="RightCol" Width="3*" MinWidth="260"/>
+                    <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
             
-                <!-- 左列：自动模式 + 游戏手柄 -->
-                <StackPanel x:Name="LeftStack" Grid.Row="0" Grid.Column="0" VerticalAlignment="Top">
+                <!-- 自动模式 + 游戏手柄（3D 模型已经统一放在主窗口左栏，本页不再画一份） -->
+                <StackPanel x:Name="LeftStack" Grid.Row="0" Grid.Column="0" VerticalAlignment="Top"
+                            MaxWidth="420" HorizontalAlignment="Left">
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <TextBlock Text="自动动作" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,7"/>
@@ -207,34 +206,6 @@
                     </Border>
                 </StackPanel>
             
-                <!-- 右列：设备实时状态（3D 会撑满这一列的高度） -->
-                <Border x:Name="RightCard" Grid.Row="0" Grid.Column="2" Style="{StaticResource Card}">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
-                        <StackPanel Margin="0,0,0,8">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBlock Text="设备实时状态" FontSize="13" FontWeight="SemiBold"
-                                           VerticalAlignment="Center"/>
-                                <TextBlock x:Name="LiveStateLabel" Grid.Column="1" Text="待机"
-                                           FontSize="11" Foreground="{StaticResource Muted}"
-                                           VerticalAlignment="Center"/>
-                            </Grid>
-                            <!-- 模型就是设备真实姿态：六轴实时驱动，和动作页 / 编排页用的是同一台 SR6 逆运动学模型 -->
-                            <!-- 3D 控件自己右下角已经写了鼠标操作提示，这里不再重复一行 -->
-                            <TextBlock Text="下面就是设备的真实姿态，动作时会跟着动。"
-                                       FontSize="10" Foreground="{StaticResource Muted}"
-                                       TextWrapping="Wrap" Margin="0,3,0,0"/>
-                        </StackPanel>
-                        <views:AxisPreview3D x:Name="PlaygroundPreview" Grid.Row="1" MinHeight="260"/>
-                    </Grid>
-                </Border>
             </Grid>
 
             <Border Style="{StaticResource Card}" Margin="0,14,0,0" Padding="16,12">

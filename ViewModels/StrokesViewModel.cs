@@ -223,6 +223,36 @@ public partial class StrokesViewModel : ObservableObject
     /// <summary>收藏的动作 id（只读快照：动作页用来显示数量、给卡片画星标）。</summary>
     public IReadOnlyList<string> FavoriteIds => _cfg.FavoriteStrokes ?? [];
 
+    /// <summary>这个脚本收藏了没有（脚本卡的星标读它；键是文件名，忽略大小写）。</summary>
+    public bool IsScriptFavorite(string? filePath)
+    {
+        string key = ScriptKey(filePath);
+        return key.Length > 0
+            && (_cfg.FavoriteScripts ?? []).Any(item => string.Equals(item, key, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>收藏的脚本（只读快照：动作页显示数量用）。</summary>
+    public IReadOnlyList<string> FavoriteScriptIds => _cfg.FavoriteScripts ?? [];
+
+    /// <summary>
+    /// 收藏 / 取消收藏一个脚本。和动作一样写 AppSettings（节流落盘），只是脚本没有「可删 / 不可删」那一层 ——
+    /// 脚本永远不能从动作页删掉，删文件要去脚本库页。
+    /// </summary>
+    public void ToggleScriptFavorite(string? filePath)
+    {
+        string key = ScriptKey(filePath);
+        if (key.Length == 0) return;
+        var list = new List<string>(_cfg.FavoriteScripts ?? []);
+        int index = list.FindIndex(item => string.Equals(item, key, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0) list.RemoveAt(index);
+        else list.Add(key);
+        _cfg.FavoriteScripts = list;
+        QueueUsageSave();
+    }
+
+    private static string ScriptKey(string? filePath) =>
+        string.IsNullOrWhiteSpace(filePath) ? "" : System.IO.Path.GetFileName(filePath.Trim());
+
     /// <summary>「最近用过」的记录条数。</summary>
     public int RecentCount => (_cfg.RecentStrokes ?? []).Count;
 
@@ -391,7 +421,7 @@ public partial class StrokesViewModel : ObservableObject
     }
 
     /// <summary>
-    /// 删除一个自定义动作（内置动作拒绝删除，IsCustom == false 直接返回 false）：
+    /// 删除一个自定义动作（内置动作不可删：IsCustom == false 直接返回 false，用户确认过这条规则要保留）：
     /// 先落盘，再 copy-on-write 替换 _allPresets 并刷新列表；写盘失败则整体不生效。
     /// </summary>
     /// <returns>false = 不是自建动作 / id 不存在 / 写盘失败。</returns>

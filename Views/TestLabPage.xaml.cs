@@ -875,8 +875,6 @@ public partial class TestLabPage : Page
     }
 
     /// <summary>声音响应卡片旁的「■ 停止」：复用底部一键停止（含急停与关闭自动跟随）。</summary>
-    private void AudioStopBtn_Click(object sender, RoutedEventArgs e) => StopBtn_Click(sender, e);
-
     /// <summary>播放方式 / 节奏档 / 起伏档：只写这几个字段，再让规则引擎重算底色。</summary>
     private void CompanionBasePolicy_Changed(object sender, SelectionChangedEventArgs e)
     {

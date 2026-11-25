@@ -4,9 +4,9 @@
       xmlns:views="clr-namespace:Hexa.Views"
       Background="{StaticResource Bg}" Title="动作">
     <!-- 版面说明（660px 正文宽也不许切内容）：
-         页头 / 工具条 / 设备提示都是 Auto 行，卡片墙和右栏吃剩下的高度。
+         页头 / 工具条 / 设备提示都是 Auto 行，卡片墙吃剩下的高度（3D 模型和选中详情都在主窗口左栏）。
          工具条里的分类、搜索、速度、播放全部用 WrapPanel 排 —— 宽度不够时换行，不会被裁掉。
-         右栏宽度和卡片宽度由 code-behind 按窗口实算（SideColumn / _cardWidth），不写死像素。 -->
+         卡片宽度由 code-behind 按窗口实算（_cardWidth），不写死像素。 -->
     <!-- 动作 / 脚本库 合一（2026-11-24：「脚本库」不再是左侧独立入口，改成这一页顶上的按钮） -->
     <Grid>
         <Grid.RowDefinitions>
@@ -28,9 +28,8 @@
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>  <!-- 0 页头 -->
             <RowDefinition Height="Auto"/>  <!-- 1 工具条：分类 / 搜索 / 速度 / 播放 -->
-            <RowDefinition Height="Auto"/>  <!-- 2 脚本架：脚本库里的脚本（导入的也列在这儿） -->
-            <RowDefinition Height="Auto"/>  <!-- 3 设备状态提示（没连上 / 急停时才出现） -->
-            <RowDefinition Height="*"/>     <!-- 4 主体：动作卡片墙 + 预览 / 详情 -->
+            <RowDefinition Height="Auto"/>  <!-- 2 设备状态提示（没连上 / 急停时才出现） -->
+            <RowDefinition Height="*"/>     <!-- 3 主体：动作 + 脚本同一面卡片墙，左边是选中详情 -->
         </Grid.RowDefinitions>
 
         <!-- ══ 0 页头 ══════════════════════════════════════════════════
@@ -45,7 +44,7 @@
             </Grid.RowDefinitions>
             <StackPanel Grid.Row="0" VerticalAlignment="Center">
                 <TextBlock Text="🎯 动作" FontSize="21" FontWeight="SemiBold"/>
-                <TextBlock Text="点卡片＝选中，再点「▶ 播放」让设备做这个动作；鼠标停在卡片上可以在右边先看效果，不会让设备动。"
+                <TextBlock Text="点卡片＝选中，再点「▶ 播放」让设备做这个动作；「☑ 多选」可以一次挑好几个动作或脚本（顺序播 / 一起删）；带「📚 脚本」标记的是脚本库里的脚本，鼠标停在任意一张上都能在左边模型里先看效果，不会让设备动。"
                            FontSize="12" Foreground="{StaticResource Muted}"
                            TextWrapping="Wrap" Margin="0,3,0,0"/>
             </StackPanel>
@@ -59,8 +58,12 @@
                         ToolTip="改选中的那个动作；内置动作改完会存成一份新的自建动作，原动作不动"/>
                 <Button x:Name="DeleteStrokeBtn" Content="🗑 删除选中" Style="{StaticResource BtnDanger}"
                         Height="32" Padding="12,0" Margin="8,0,0,0" IsEnabled="False"
-                        ToolTip="只能删除自己新建的动作；内置动作删不掉（删了下次启动还会回来）"
+                        ToolTip="删除选中的那个动作（从 presets.json 里移除，删了不能恢复）"
                         Click="DeleteStroke_Click"/>
+                <!-- 多选（2026-11-25 m11293）：勾好几张卡片 → 一起删 / 按序号顺序播 -->
+                <Button x:Name="MultiSelectBtn" Content="☑ 多选" Style="{StaticResource BtnSecondary}"
+                        Height="32" Padding="12,0" Margin="8,0,0,0" Click="MultiSelect_Click"
+                        ToolTip="一次挑好几个动作：勾完可以「🗑 删除选中」一起删，也可以「▶ 顺序播放」按勾选顺序轮流播"/>
                 <!-- 导入 / 导出以前只挂在脚本库页，用户找不到；这里补上同一条通道（同一套服务实现） -->
                 <Button x:Name="ImportPresetsBtn" Content="⬇ 导入动作" Style="{StaticResource BtnSecondary}"
                         Height="32" Padding="12,0" Margin="8,0,0,0" Click="ImportPresets_Click"
@@ -68,12 +71,21 @@
                 <Button x:Name="ExportPresetsBtn" Content="⬆ 导出动作" Style="{StaticResource BtnSecondary}"
                         Height="32" Padding="12,0" Margin="8,0,0,0" Click="ExportPresets_Click"
                         ToolTip="把动作库里的全部动作存成一个 JSON 文件，可以备份或分享给别人"/>
+                <!-- 脚本直接从电脑导进来，导完就出现在下面这面墙里（2026-11-25 m11673：不再单独开一排脚本栏） -->
+                <Button x:Name="ImportScriptBtn" Content="📥 导入脚本" Style="{StaticResource BtnSecondary}"
+                        Height="32" Padding="12,0" Margin="8,0,0,0" Click="ShelfImport_Click"
+                        ToolTip="把电脑里的 .funscript 复制进脚本库（可多选）；导完会作为卡片出现在这面墙里，双击就能播"/>
             </WrapPanel>
         </Grid>
 
         <!-- ══ 1 工具条 ═══════════════════════════════════════════════ -->
         <Border Grid.Row="1" Style="{StaticResource Card}" Padding="12,10" Margin="0,0,0,10">
             <StackPanel>
+                <!-- 多选状态条（2026-11-25）：只在多选模式出现，说清「已经勾了几个、接下来能干什么」 -->
+                <Border x:Name="MultiHintBar" Visibility="Collapsed" Margin="0,0,0,8"
+                        Background="{StaticResource PrimarySoft}" CornerRadius="6" Padding="10,7">
+                    <TextBlock x:Name="MultiHint" FontSize="11" Foreground="{StaticResource Text}" TextWrapping="Wrap"/>
+                </Border>
                 <!-- 分类筛选（含「只看自建 / ⭐ 只看收藏 / 🕘 最近用过 / 幅度排序」四个开关，由 code-behind 生成） -->
                 <WrapPanel x:Name="CategoryTabs" Orientation="Horizontal" Margin="0,0,0,8"/>
 
@@ -110,7 +122,7 @@
                                    VerticalAlignment="Center" Margin="0,0,8,0"/>
                         <Slider x:Name="SpeedSlider" Width="104" Minimum="0.1" Maximum="3.0" Value="1.0"
                                 SmallChange="0.1" VerticalAlignment="Center"
-                                ToolTip="动作快慢（0.1x–3.0x）：播放设备时按这个倍率跑；右侧试看固定每秒 1 圈，只作演示"/>
+                                ToolTip="动作快慢（0.1x–3.0x）：播放设备时按这个倍率跑；左下角模型里的试看固定每秒 1 圈，只作演示"/>
                         <TextBlock x:Name="SpeedLabel" Text="1.0x" FontSize="11"
                                    Foreground="{StaticResource Muted}" Width="34"
                                    VerticalAlignment="Center" Margin="6,0,10,0"/>
@@ -121,101 +133,39 @@
                 </Grid>
             </StackPanel>
         </Border>
-        <!-- ══ 2 脚本架：脚本库里的脚本（导入的也列在这一排），点一下切到「📚 脚本库」选中它 ═════ -->
-        <Border x:Name="ScriptShelf" Grid.Row="2" Style="{StaticResource Card}" Padding="12,8" Margin="0,0,0,10">
-            <StackPanel>
-                <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="ShelfTitle" Text="▾  📚 脚本库脚本（0）" FontSize="12" FontWeight="SemiBold"
-                               VerticalAlignment="Center" Cursor="Hand" MouseLeftButtonUp="ShelfHeader_MouseUp"
-                               ToolTip="点这一行收起 / 展开；这一排就是脚本库里的脚本，导入的也在这儿"/>
-                    <TextBlock x:Name="ShelfHint" Grid.Column="1" Margin="10,0,10,0" FontSize="10"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                               TextWrapping="Wrap" Text=""/>
-                    <WrapPanel Grid.Column="2" Orientation="Horizontal">
-                        <Button x:Name="ShelfRefreshBtn" Content="↻ 刷新" Style="{StaticResource BtnSecondary}"
-                                Height="26" Padding="8,0" FontSize="11" Click="ShelfRefresh_Click"
-                                ToolTip="重新读一遍脚本库目录"/>
-                        <Button x:Name="ShelfImportBtn" Content="📥 导入脚本…" Style="{StaticResource BtnSecondary}"
-                                Height="26" Padding="8,0" FontSize="11" Margin="6,0,0,0" Click="ShelfImport_Click"
-                                ToolTip="把电脑里的 .funscript 复制进脚本库（可多选）；导入完这一排马上就有"/>
-                    </WrapPanel>
-                </Grid>
-                <ScrollViewer x:Name="ShelfScroll" MaxHeight="88" VerticalScrollBarVisibility="Auto" Margin="0,8,0,0">
-                    <WrapPanel x:Name="ShelfPanel"/>
-                </ScrollViewer>
-            </StackPanel>
-        </Border>
-
-
-        <!-- ══ 3 设备状态提示：只有「不能播放」的时候才出现，平时不占地方 ══ -->
-        <Border x:Name="DeviceHintBar" Grid.Row="3" Background="{StaticResource WarningSoft}"
+        <!-- ══ 2 设备状态提示：只有「不能播放」的时候才出现，平时不占地方 ══ -->
+        <Border x:Name="DeviceHintBar" Grid.Row="2" Background="{StaticResource WarningSoft}"
                 CornerRadius="6" Padding="10,7" Margin="0,0,0,10" Visibility="Collapsed">
             <TextBlock x:Name="DeviceHintText" FontSize="11" Foreground="{StaticResource Warning}"
                        TextWrapping="Wrap" Text=""/>
         </Border>
 
-        <!-- ══ 4 主体：左＝动作卡片墙，右＝3D 预览 + 选中动作详情 ═════════ -->
-        <Grid Grid.Row="4">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="Auto"/>
-            </Grid.RowDefinitions>
+        <!-- ══ 3 主体：左边是选中详情（这个动作/脚本六根轴各自怎么动），右边是动作 + 脚本一起的卡片墙 ══ -->
+        <Grid Grid.Row="3">
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" MinWidth="120"/>
-                <ColumnDefinition x:Name="BodyGapCol" Width="12"/>
-                <ColumnDefinition x:Name="SideColumn" Width="264"/>
+                <ColumnDefinition Width="270"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <ScrollViewer x:Name="CardScroll" Grid.Row="0" Grid.Column="0" VerticalScrollBarVisibility="Auto"
+            <Border Grid.Column="0" Style="{StaticResource Card}" Padding="12,10">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel x:Name="DetailPanel">
+                        <TextBlock Text="还没选动作" FontSize="13" FontWeight="SemiBold"/>
+                        <TextBlock Text="在右边点一个动作或脚本，这里会显示它六个轴各自怎么动。"
+                                   FontSize="10.5" Foreground="{StaticResource Muted}"
+                                   TextWrapping="Wrap" Margin="0,4,0,0"/>
+                    </StackPanel>
+                </ScrollViewer>
+            </Border>
+
+            <ScrollViewer x:Name="CardScroll" Grid.Column="2" VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled">
                 <!-- 右边留 6px：竖向滚动条出现时不至于贴着卡片（滚动条本身 8px 由 code-behind 预留） -->
                 <WrapPanel x:Name="CardPanel" Margin="0,0,6,8"/>
             </ScrollViewer>
-
-            <Grid x:Name="SidePanel" Grid.Row="0" Grid.Column="2">
-                <Grid.RowDefinitions>
-                    <!-- 预览与详情按比例分配高度；上下限都放低，窗口压到最小时也不会把详情挤出屏幕 -->
-                    <RowDefinition Height="2*" MinHeight="120"/>
-                    <RowDefinition Height="Auto"/>   <!-- 试看状态 + 试看按钮 -->
-                    <RowDefinition Height="2*" MinHeight="110"/>
-                </Grid.RowDefinitions>
-
-                <views:AxisPreview3D x:Name="Preview3D" Grid.Row="0"/>
-
-                <!-- 试看状态行：悬停试看 / 点按钮试看 / 实时输出，用户随时知道右边看的是什么 -->
-                <Grid Grid.Row="1" Margin="0,6,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-                    <TextBlock x:Name="PreviewCaption" Text="实时输出（跟设备同步）" FontSize="10"
-                               Foreground="{StaticResource Muted}" VerticalAlignment="Center"
-                               TextTrimming="CharacterEllipsis"/>
-                    <Button x:Name="PreviewToggleBtn" Grid.Column="1" Content="👁 试看选中"
-                            Style="{StaticResource BtnSecondary}" Height="26" Padding="8,0" FontSize="11"
-                            Margin="6,0,0,0" IsEnabled="False" Click="PreviewToggle_Click"
-                            ToolTip="不用一直悬停：点一下就在这里循环演示选中的动作（只动预览，不会让设备动）"/>
-                </Grid>
-
-                <!-- 选中动作详情（内容由 code-behind 生成） -->
-                <Border Grid.Row="2" Style="{StaticResource Card}" Padding="12">
-                    <ScrollViewer VerticalScrollBarVisibility="Auto">
-                        <StackPanel x:Name="DetailPanel">
-                            <TextBlock Text="还没选动作" FontSize="13" FontWeight="SemiBold"/>
-                            <TextBlock Text="在左边的卡片上点一下，这里会显示它六个轴各自怎么动。"
-                                       FontSize="11" Foreground="{StaticResource Muted}"
-                                       TextWrapping="Wrap" Margin="0,4,0,0"/>
-                        </StackPanel>
-                    </ScrollViewer>
-                </Border>
-            </Grid>
         </Grid>
-    </Grid>
+        </Grid>
 
         <!-- 脚本库面板：ScriptLibraryPage 仍是 Page（自检里按 Page 类型断言），这里用 Frame 承载 -->
         <Frame x:Name="LibraryHost" Grid.Row="1" Visibility="Collapsed" NavigationUIVisibility="Hidden"

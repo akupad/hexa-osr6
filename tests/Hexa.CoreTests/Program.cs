@@ -220,7 +220,15 @@ void Check(string name, bool condition)
 
 try
 {
-    var parsed = WaveScriptCodec.ParseFunscript("{\"actions\":[{\"at\":1000,\"pos\":30},{\"at\":0,\"pos\":10},{\"at\":1000,\"pos\":60}]}");
+    // 3D 预览逐帧采样轴位置（选中脚本 → 模型演动作）：口径必须与播放器一致（线性插值 + 首尾夹住）。
+var sampleTrack = new List<WaveScriptCodec.ActionPoint> { new(0, 0), new(1000, 100) };
+Check("轴采样：两个点之间按线性插值", Math.Abs(WaveScriptCodec.SamplePos(sampleTrack, 500) - 50) < 0.01);
+Check("轴采样：首尾之外夹住、不越 0–100",
+    WaveScriptCodec.SamplePos(sampleTrack, -500) == 0 && WaveScriptCodec.SamplePos(sampleTrack, 9000) == 100);
+Check("轴采样：空轨道摆中位 50", WaveScriptCodec.SamplePos([], 1234) == 50);
+Check("轴采样：位置字段脏值也被夹住",
+    WaveScriptCodec.SamplePos([new WaveScriptCodec.ActionPoint(0, -20), new WaveScriptCodec.ActionPoint(1000, 300)], 500) == 100);
+var parsed = WaveScriptCodec.ParseFunscript("{\"actions\":[{\"at\":1000,\"pos\":30},{\"at\":0,\"pos\":10},{\"at\":1000,\"pos\":60}]}");
     Check("funscript sort and duplicate policy", parsed.Count == 2 && parsed[0].At == 0 && parsed[1].Pos == 60);
     Check("canvas normalization", WaveScriptCodec.ToCanvasPoints(parsed)[^1].X == WaveScriptCodec.CanvasWidth);
     var shortTrackCanvas = WaveScriptCodec.ToCanvasPoints(parsed, timelineDurationMs: 2000);
@@ -232,6 +240,17 @@ try
     try { WaveScriptCodec.ParseFunscript("{\"actions\":[{\"at\":0,\"pos\":101},{\"at\":1,\"pos\":0}]}"); }
     catch (FormatException) { rejected = true; }
     Check("funscript invalid position rejected", rejected);
+
+    // 2026-11-25：整片的 Cock Hero 类脚本常见 60–95 分钟，原来的 60 分钟上限把它们全判成「无法解析」
+    long longMs = 5_538_000;   // Cock Hero - Optikon Alpha 的真实长度（92 分钟）
+    var longScript = WaveScriptCodec.ParseFunscript(
+        $"{{\"actions\":[{{\"at\":0,\"pos\":0}},{{\"at\":{longMs},\"pos\":100}}]}}");
+    Check($"92 分钟的整片脚本能读进来（旧上限 60 分钟，实测 {longScript[^1].At} ms）",
+        longScript.Count == 2 && longScript[^1].At == longMs);
+    bool tooLongRejected = false;
+    try { WaveScriptCodec.ParseFunscript("{\"actions\":[{\"at\":0,\"pos\":0},{\"at\":21600001,\"pos\":1}]}"); }
+    catch (FormatException) { tooLongRejected = true; }
+    Check("超过 6 小时的脚本仍然拒绝（上限还在，只是放宽）", tooLongRejected);
 
     var defaults = new AppSettings();
     defaults.Normalize();

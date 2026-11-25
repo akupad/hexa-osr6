@@ -10,23 +10,22 @@
 
             <!-- 标题 -->
             <TextBlock Text="🕹 手动动轴" FontSize="21" FontWeight="SemiBold" Margin="0,0,0,3"/>
-            <TextBlock Text="拖左边的滑杆，六根轴就跟着你的手走，右边那台 3D 模型同时动。只在这个页面有效：一离开页面、或者取消「允许手动动轴」，设备立刻停手、停在原地。"
+            <TextBlock Text="拖左边的滑杆，六根轴就跟着你的手走，左下角那台 3D 模型同时动。只在这个页面有效：一离开页面、或者取消「允许手动动轴」，设备立刻停手、停在原地。"
                        Foreground="{StaticResource Muted}" FontSize="12" Margin="0,0,0,8"
                        TextWrapping="Wrap"/>
 
-            <!-- ══ 主体：左 = 安全开关 + 六根滑杆，右 = 实时 3D（窄窗自动换排法，见 code-behind）══ -->
+            <!-- ══ 主体：安全开关 + 六根滑杆（3D 模型已经统一放在主窗口左栏，本页不再画一份）══ -->
             <Grid x:Name="MainGrid">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
                 <Grid.ColumnDefinitions>
-                    <ColumnDefinition x:Name="LeftCol" Width="2*" MinWidth="380" MaxWidth="460"/>
-                    <ColumnDefinition x:Name="GapCol" Width="14"/>
-                    <ColumnDefinition x:Name="RightCol" Width="3*" MinWidth="260"/>
+                    <ColumnDefinition Width="*"/>
                 </Grid.ColumnDefinitions>
 
-                <StackPanel x:Name="LeftStack" Grid.Row="0" Grid.Column="0" VerticalAlignment="Top">
+                <StackPanel x:Name="LeftStack" Grid.Row="0" Grid.Column="0" VerticalAlignment="Top"
+                            MaxWidth="460" HorizontalAlignment="Left">
 
                     <!-- ══ 安全卡：先开开关，设备才会听你的 ══ -->
                     <Border Style="{StaticResource Card}">
@@ -64,10 +63,6 @@
                                            Foreground="{StaticResource Warning}" TextWrapping="Wrap"/>
                             </Border>
 
-                            <Button x:Name="EStopBtn" Content="⛔ 立刻急停" Height="32" Margin="0,10,0,0"
-                                    Style="{StaticResource BtnDanger}" HorizontalAlignment="Stretch"
-                                    ToolTip="一键停住并锁死设备。要再动它，点这一页（或侧栏）的「⟲ 全部归中」解锁（会先问你一次）"
-                                    Click="EStopBtn_Click"/>
                         </StackPanel>
                     </Border>
 
@@ -159,28 +154,18 @@
                                        Margin="0,4,0,0"/>
                         </StackPanel>
                     </Border>
+
+                    <!-- 六轴当前值：原来在右侧 3D 模型下面，模型搬去左栏后单独成一张卡 -->
+                    <Border Style="{StaticResource Card}" Margin="0,10,0,0">
+                        <StackPanel>
+                            <TextBlock Text="六轴当前值" FontSize="13" FontWeight="SemiBold" Margin="0,0,0,6"/>
+                            <TextBlock x:Name="RawValues" Text="" FontSize="10.5"
+                                       FontFamily="Consolas,Cascadia Mono,monospace"
+                                       Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+                        </StackPanel>
+                    </Border>
                 </StackPanel>
 
-                <!-- ══ 右栏：实时 3D 模型 ══ -->
-                <Border x:Name="RightCard" Grid.Row="0" Grid.Column="2" Style="{StaticResource Card}">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                            <RowDefinition Height="Auto"/>
-                        </Grid.RowDefinitions>
-                        <StackPanel Margin="0,0,0,8">
-                            <TextBlock Text="🧊 实时 3D 模型" FontSize="13" FontWeight="SemiBold"/>
-                            <TextBlock Text="下面就是设备真实的姿态，拖滑杆它跟着动。鼠标左键拖动可以换角度看。"
-                                       FontSize="10" Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                                       Margin="0,3,0,0"/>
-                        </StackPanel>
-                        <views:AxisPreview3D x:Name="ManualPreview" Grid.Row="1" MinHeight="300"/>
-                        <TextBlock x:Name="RawValues" Grid.Row="2" Text="" FontSize="11"
-                                   Foreground="{StaticResource Muted}" TextWrapping="Wrap"
-                                   FontFamily="Consolas,Cascadia Mono,monospace" Margin="0,8,0,0"/>
-                    </Grid>
-                </Border>
             </Grid>
         </StackPanel>
     </ScrollViewer>

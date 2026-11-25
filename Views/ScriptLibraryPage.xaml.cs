@@ -46,16 +46,6 @@ public partial class ScriptLibraryPage : Page
         public bool IsChapter { get; init; }
     }
 
-    // 固定列宽与 XAML 一致（时长 56 / 轨道 66 / 大小 56 / 来源 62 / 操作 80）；
-    // 名称列 = 视口宽 − 固定列 − 边框/内边距/滚动条。560px 窗口下也要能整行显示，不能把「操作」列挤出可视区。
-    private const double DurationColumnWidth = 56;
-    private const double AxesColumnWidth     = 66;
-    private const double SizeColumnWidth     = 56;
-    private const double SourceColumnWidth   = 62;
-    private const double ActionsColumnWidth  = 80;
-    private const double NameColumnMinWidth  = 130;
-    /// <summary>App.xaml 里 ScrollBar 样式的宽度（不是 SystemParameters 的 17）。</summary>
-    private const double ScrollBarWidth      = 8;
     /// <summary>A-B 循环的检查节拍（毫秒）。进度刷新的 150ms 太粗，冲过 B 点会明显「多走一截」。</summary>
     private const int AbLoopTickMs           = 40;
     /// <summary>
@@ -149,9 +139,6 @@ public partial class ScriptLibraryPage : Page
             // 一离开页面就悄悄失效才是真的坑。
             if (_abLoopB is null && _mediaSync?.IsRunning != true) _progressTimer.Stop();
         };
-
-        // 名称列吃掉剩余宽度：最大化时右侧不再空出上千像素，窄窗口也不会把时长/轨道列挤出可视区。
-        ScriptList.SizeChanged += (_, _) => ResizeNameColumn();
     }
 
     /// <summary>
@@ -336,7 +323,6 @@ public partial class ScriptLibraryPage : Page
             // （ItemsSource 换了之后 SelectionChanged 不一定再触发，所以这里显式来一次）
             LoadChaptersFor(Selected?.FilePath);
             // 没选中就灰掉：点了才弹"请先选择"属于"按钮看起来能用但没用"
-            ResizeNameColumn();
             UpdateEmptyState();
             UpdateFolderHint();
             RefreshStatus();
@@ -978,18 +964,6 @@ public partial class ScriptLibraryPage : Page
     /// <summary>秒 → mm:ss（章节/书签的提示文字用；<see cref="FormatClock"/> 的秒版本）。</summary>
     private static string FormatClockStatic(double seconds) =>
         FormatClock((long)Math.Round(Math.Max(0, seconds) * 1000.0));
-
-    /// <summary>
-    /// 名称列吃掉剩余宽度：最大化时不再空出上千像素，窗口变窄也不会把时长/轨道列挤出可视区。
-    /// 减掉的固定项 = 五列固定宽（56+66+56+62+80）+ ListView 边框 2 + 行内边距 20（ListViewItem Padding="10,5"）
-    /// + 竖直滚动条 8 + 6px 余量（ListView 样式禁用了横向滚动条，列宽超一点就会被裁）。
-    /// </summary>
-    private void ResizeNameColumn()
-    {
-        double reserved = DurationColumnWidth + AxesColumnWidth + SizeColumnWidth + SourceColumnWidth
-            + ActionsColumnWidth + 2 + 20 + ScrollBarWidth + 6;
-        NameColumn.Width = Math.Max(NameColumnMinWidth, ScriptList.ActualWidth - reserved);
-    }
 
     /// <summary>毫秒 → mm:ss（页脚与列表共用，超过一小时就继续累加分钟）。</summary>
     private static string FormatClock(long ms)

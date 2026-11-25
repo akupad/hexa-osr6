@@ -124,10 +124,6 @@
                             <Button x:Name="AudioToggleBtn"
                                     Content="开启声音响应" Style="{StaticResource BtnSecondary}"
                                     Width="130" Height="32" Click="AudioToggle_Click"/>
-                            <Button x:Name="AudioStopBtn" Content="■ 停止" Width="68" Height="32"
-                                    Margin="8,0,0,0" Style="{StaticResource BtnDanger}"
-                                    ToolTip="立刻停住设备，并关掉声音响应 / 游戏伴随 / 画面同步 / 游戏桥 / 氛围微动（和页面底部那个红色按钮完全一样）"
-                                    Click="AudioStopBtn_Click"/>
                         </StackPanel>
                     </Grid>
 
