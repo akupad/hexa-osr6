@@ -9,9 +9,12 @@
 
 ## 它能做什么
 
-- **3D 实时预览**：六轴姿态跟着真实下发值同步（不是估算）。
-- **游戏桥**：本机起一个 Buttplug v3 WebSocket 服务（默认 `ws://127.0.0.1:12345`），游戏侧填这个地址即可；支持单桥（L0+R0）/ 双桥 / **单桥·六轴直驱**（游戏能按轴点名 L0/L1/L2/R0/R1/R2）。
-- **脚本播放**：funscript 载入/播放/暂停/定位、A-B 循环、章节跳转、倍率、媒体同步（mpv / MPC-HC / VLC 时间码跟随）。
+- **3D 实时预览（全应用共用一台）**：钉在左侧栏，六轴姿态跟着真实下发值同步（不是估算）。在「动作」页点一个动作或脚本，左栏模型就地循环演它——只是给你看，不发指令。
+- **动作页就是一面卡片墙**：内置动作和你导入的脚本并排放、长得一样——单击＝选中（左栏显示六轴详情＋模型预演）、双击＝真的播、⭐收藏、☑多选（按勾选顺序轮流播 / 一起删）。唯一区别：内置动作删不掉。
+- **游戏桥**：本机起一个 Buttplug v3 WebSocket 服务（默认 `ws://127.0.0.1:12345`），游戏侧填这个地址即可；支持单桥（L0+R0）/ 双桥 / **单桥·六轴直驱**（游戏能按轴点名 L0/L1/L2/R0/R1/R2）。已去掉舒适档限速（只守轴限位与急停），入口移到了「伴随」页。
+- **氛围微动**：一层全局叠加——不管当前是谁在驱动（手动/脚本/桥/伴随），都会在次要轴上补一点极轻的呼吸感，主轴 L0 永不动。
+- **脚本播放**：funscript 载入/播放/暂停/定位、A-B 循环、章节跳转、倍率、媒体同步（mpv / MPC-HC / VLC 时间码跟随）。单轴与多轴都吃（同一文件的 `axes` 数组，或 `.stroke/.surge/.sway/.twist/.roll/.pitch` 伴生文件）；单条脚本最长 6 小时。
+- **掉线留证**：设备断开、复位、命中看门狗时，把发送轨迹、接收轨迹、设备自己报的 panic 行与黑匣子一起写进诊断包（zip 旁边那份 `.serial.txt` 不用解压就能看）。
 - **脚本制作**：编排（拖动作段到时间轴）＋ 微调波形（逐轴关键帧、波形生成、撤销栈）。
 - **声音响应**：按音量/律动驱动，带节拍检测与事件化动作。
 - **画面同步**：屏幕内容识别（可选本机 ONNX 模型），把画面同步映射成动作强度。
@@ -25,19 +28,22 @@
 - .NET 10 SDK（自行编译）或直接用发布好的自包含包
 - 一台 TCode v0.3 设备（本机开发用的是 ESP32-C3 原生 USB CDC，115200）
 
-## 快速开始（自行编译）
+## 快速开始
+
+### 用发布包
+
+去 [Releases](https://github.com/akupad/hexa-osr6/releases) 下 `Hexa-win-x64.zip`，解压后双击 `Hexa.exe`。自包含，不用装 .NET。数据在 `%LOCALAPPDATA%\Hexa`。
+
+### 自己编译
 
 ```powershell
-dotnet build Hexa.csproj -c Debug          # 编译（应 0 错误）
-dotnet run --project tests/Hexa.CoreTests  # 单元测试（257+ 项）
-./tools/release.ps1                        # 发布：构建 → 单测 → 自检 → 打包到 dist_hexa/
+dotnet build Hexa.csproj -c Release        # 编译（应 0 警告 0 错误）
+dotnet run --project tests/Hexa.CoreTests  # 单元测试
+dotnet publish Hexa.csproj -c Release -r win-x64 --self-contained true -o dist_hexa
+./tools/release.ps1                        # 本地发布：构建 → 单测 → 自检 → 打包
 ```
 
-自检（会在界面里跑一遍功能并写报告）：
-
-```powershell
-$env:HEXA_SELFTEST="$env:TEMP\hexa-selftest.txt"; dotnet run --project Hexa.csproj -c Debug
-```
+推一个 tag（`v1.0.1` 之类）会触发 GitHub Actions，自动编译 win-x64 包并挂到 Release 上（见 `.github/workflows/release.yml`）。
 
 ## 开发热更与预览
 
@@ -47,9 +53,11 @@ $env:HEXA_SELFTEST="$env:TEMP\hexa-selftest.txt"; dotnet run --project Hexa.cspr
 
 ## 上手三步
 
-1. 打开 Hexa → **设置** 页选串口 → 点「立即连接」（连接不上先点「刷新设备」看串口有没有被别的程序占用）。
-2. 想玩游戏：**游玩 → 🌉 游戏桥** 打开桥，把游戏里的 Buttplug/Intiface 地址填成 `ws://127.0.0.1:12345`。**顺序是先开 Hexa、再开游戏。**
-3. 想直接玩：**脚本库**载入一个 funscript 播放，或 **手动动轴**页勾上安全闸自己拉滑杆。
+1. 打开 Hexa → **设置** 页选串口 → 点「立即连接」（连不上先点「刷新设备」，看串口是不是被别的程序占着）。
+2. 想玩游戏：**伴随 → 游戏桥** 打开桥，把游戏里的 Buttplug/Intiface 地址填成 `ws://127.0.0.1:12345`。**顺序是先开 Hexa、再开游戏。**
+3. 想直接玩：**动作** 页点一个动作或脚本，双击（或点「▶ 播放」）就是真的动；也可以去 **手动动轴** 页勾上安全闸自己拉滑杆。
+
+> **侧栏八个入口**：🎮 游玩（舒适档、自动动作、氛围微动）/ 💞 伴随（Lovense、游戏桥、手柄）/ 🕹 手动动轴 / 🎯 动作（内置动作 + 脚本卡片墙）/ ✍ 脚本制作 / 🤖 AI 助手 / ⚙️ 设置 / 🧪 测试台（声音响应、画面同步）。
 
 > **备选连法**：如果 Hexa 自己的串口一直连不上，也可以装 **Intiface Central v3.2.2 或更高版本**，在它里面添加「TCode 串口设备」直接连设备，让游戏走 Intiface 那一路（不走 Hexa 的游戏桥）。这是备用方案，跟 Hexa 的游戏桥二选一，别两边同时开。
 
@@ -75,9 +83,10 @@ $env:HEXA_SELFTEST="$env:TEMP\hexa-selftest.txt"; dotnet run --project Hexa.cspr
 
 1. **设备档案写死在代码里**：轴名、引脚、设备名（`OSR6 6-Axis`）目前是硬编码的，只支持 TCode v0.3 的位置舵机设备。**最想要的一个 PR：把设备参数抽成可配置的「设备档案」**，这样别人的机器也能用。
 2. **只在一台机器 + 一台设备上验证过**：多客户端仲裁、设备热插拔等场景还没做真机回归。
-3. **没有安装包**：目前是自包含目录 + 桌面快捷方式，没有版本号/签名/自动更新。
+3. **没有安装器**：发布包是自包含目录（zip），没有 MSI、没有代码签名、也没有自动更新；版本号靠 git tag。
 4. **协议覆盖**：Buttplug 侧的 `ScalarCmd`（振动/往复的规范表达）、`RawWriteCmd`、`SensorReadCmd` 还没实现（会明确回 `Error`，不会静默丢弃）。对照表见 `docs/游戏桥-意图覆盖表.md`。
-5. **诊断界面还在产品里**（日志查看、固件设置、设备模拟器）—— 目前一律折叠收起。
+5. **界面只有中文**：目前没有 i18n 表，欢迎翻译 PR。
+6. **诊断界面还在产品里**（日志查看、固件设置、设备模拟器）—— 目前一律折叠收起。
 
 ## 想请大家帮忙的地方
 
@@ -106,7 +115,8 @@ Views/                 各页面与悬浮窗
 ViewModels/            MVVM 层
 Models/                设置与数据模型
 Diagnostics/           自检与 UX 量测
-tools/release.ps1      发布流程
+tools/release.ps1      本地发布流程（构建 → 单测 → 自检 → 打包）
+.github/workflows/     CI：打 tag 自动编译并发布 win-x64 免安装包
 docs/                  设计与协议文档（含游戏桥意图覆盖表）
 tests/Hexa.CoreTests/  单元测试
 ```
@@ -116,13 +126,18 @@ tests/Hexa.CoreTests/  单元测试
 
 ## English
 
-> **Hexa** is a Windows desktop app (WPF, .NET 10) that turns a TCode multi-axis servo device (OSR6 / SR6 class) into something you can actually play with: game integration, funscript playback and authoring, audio-reactive motion, screen-aware behaviour, manual axis control and a live 3D preview.
+> **Hexa** is a Windows desktop app (WPF, .NET 10) that turns a TCode multi-axis servo device (OSR6 / SR6 class) into something you can actually play with: game integration, funscript playback and authoring, audio-reactive motion, screen-aware behaviour, manual axis control — with a live 3D model pinned to the sidebar.
+
+> Layout: a fixed left sidebar (navigation + 3D model + details of the currently selected action) and a page area on the right.
 
 ### Features
 
-- **Live 3D preview** — the model follows the *actual* values being sent to the device.
+- **Live 3D preview (shared by the whole app)** — pinned to the sidebar, the model follows the *actual* values being sent to the device. Click an action or a script on the **Actions** page and the model loops that motion right there — preview only, nothing is sent.
+- **Actions page = one card wall** — built-in actions and imported scripts sit side by side and look identical: single click selects (six-axis detail + 3D preview), double click plays for real, ☆ favourites, ☑ multi-select to play in a chosen order or delete together. The only difference: built-in actions cannot be deleted.
+- **Ambient overlay** — one global layer that adds a very light breathing motion on the secondary axes whatever is currently driving the device (manual, script, bridge, companion). The main axis (L0) is never touched.
 - **Game bridge** — hosts a Buttplug v3 WebSocket server (default `ws://127.0.0.1:12345`) for games and plugins. Three presentation modes: single (L0+R0), dual, or **single · 6-axis direct** (games can address L0/L1/L2/R0/R1/R2 explicitly). It re-interprets game intent for position servos: rotation becomes a back-and-forth sweep, a constant position is rendered as an oscillation around that level, and vibration can be mapped to rotation or a small fast stroke.
-- **Script playback** — funscript load / play / pause / seek, A-B loop, chapter jump, playback rate, media sync (mpv / MPC-HC / VLC timecode following).
+- **Script playback** — funscript load / play / pause / seek, A-B loop, chapter jump, playback rate, media sync (mpv / MPC-HC / VLC timecode following). Single-axis and multi-axis files both work (an `axes` array in one file, or `.stroke/.surge/.sway/.twist/.roll/.pitch` companions); one script may run up to 6 hours.
+- **Drop-out forensics** — when the device disconnects, resets or hits a watchdog, Hexa writes the outgoing trace, the incoming trace, the device's own panic lines and the black box into a diagnostic bundle (a `.serial.txt` next to the zip, readable without unzipping).
 - **Script authoring** — a timeline composer plus a per-axis waveform editor with undo.
 - **Audio reactive** — volume and rhythm driven, with beat detection and event-based actions.
 - **Screen aware** — optional on-device ONNX inference maps screen content to motion intensity.
@@ -136,19 +151,25 @@ tests/Hexa.CoreTests/  单元测试
 - .NET 10 SDK (or use a published self-contained build)
 - A TCode v0.3 device (reference setup: ESP32 native USB CDC at 115200)
 
-### Build & test
+### Download or build
+
+Grab `Hexa-win-x64.zip` from [Releases](https://github.com/akupad/hexa-osr6/releases) — self-contained, unzip and run `Hexa.exe`, no .NET install needed. Data lives in `%LOCALAPPDATA%\Hexa`.
 
 ```powershell
-dotnet build Hexa.csproj -c Debug          # build
-dotnet run --project tests/Hexa.CoreTests  # unit tests (262 checks)
-./tools/release.ps1                        # build -> tests -> self-test -> package into dist_hexa/
+dotnet build Hexa.csproj -c Release        # build (0 warnings, 0 errors)
+dotnet run --project tests/Hexa.CoreTests  # unit tests
+dotnet publish Hexa.csproj -c Release -r win-x64 --self-contained true -o dist_hexa
 ```
+
+Pushing a tag (`v1.0.1` etc.) runs GitHub Actions, builds the win-x64 bundle and attaches it to a Release (see `.github/workflows/release.yml`).
 
 ### Quick start
 
 1. Open Hexa -> **Settings** -> pick the serial port -> Connect. If it fails, hit Refresh devices to see whether another program holds the port.
-2. To play a game: **Playground -> Game bridge** -> enable it, then point the game's Buttplug/Intiface address at `ws://127.0.0.1:12345`. **Start Hexa first, then the game.**
-3. To play directly: load a funscript in the **Script library**, or enable the safety switch on the **Manual axes** page and drag the sliders.
+2. To play a game: **Companion -> Game bridge** -> enable it, then point the game's Buttplug/Intiface address at `ws://127.0.0.1:12345`. **Start Hexa first, then the game.**
+3. To play directly: on the **Actions** page click an action or script and double click (or hit ▶) to play for real, or enable the safety switch on the **Manual axes** page and drag the sliders.
+
+> **Sidebar, eight entries**: 🎮 Playground (comfort presets, auto behaviour, ambient overlay) / 💞 Companion (Lovense, game bridge, gamepad) / 🕹 Manual axes / 🎯 Actions (built-in actions + script card wall) / ✍ Script authoring / 🤖 AI assistant / ⚙️ Settings / 🧪 Test lab (audio, screen).
 
 > **Backup path**: if Hexa's own serial connection keeps failing, install **Intiface Central v3.2.2 or newer** and add the device there as a native **TCode serial device** — games then connect through Intiface instead of Hexa's game bridge. Pick one or the other; do not run both at the same time.
 
@@ -168,9 +189,9 @@ The screen-follow feature runs local ONNX inference and **no model ships with th
 
 1. **The device profile is hard-coded** — axis names, pins and the advertised device name (`OSR6 6-Axis`) are baked in, and only TCode v0.3 position-servo devices are supported. **The single most wanted PR: make the device profile configurable.**
 2. **Validated on one machine and one device only** — multi-client arbitration and hot-plug scenarios still need real-hardware regression.
-3. **No installer** — self-contained folder plus a desktop shortcut; no versioning, signing or auto-update yet.
+3. **No installer** — releases are self-contained folders (zip); no MSI, no code signing, no auto-update; versioning is done with git tags.
 4. **Protocol coverage** — `ScalarCmd`, `RawWriteCmd` and `SensorReadCmd` are not implemented yet (they return an explicit `Error`, never a silent drop).
-5. **The UI is Chinese-only for now** (an English build is planned).
+5. **The UI is Chinese-only for now** (translation PRs welcome).
 
 ### Safety
 
