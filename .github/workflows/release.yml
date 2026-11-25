@@ -1,0 +1,56 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的版本号（如 v1.0.0）'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      # 免安装包：self-contained win-x64，解压双击 Hexa.exe 就能用
+      - name: publish
+        run: dotnet publish Hexa.csproj -c Release -r win-x64 --self-contained true -o out
+
+      - name: zip
+        run: Compress-Archive -Path out/* -DestinationPath Hexa-win-x64.zip -CompressionLevel Optimal
+
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: Hexa-win-x64.zip
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: Hexa ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          body: |
+            Windows 免安装包（.NET 10 运行时已打包，解压后双击 `Hexa.exe` 即可）。
+
+            **这一版能做什么**
+            - 六轴设备（TCode v0.3）串口控制，7 路执行器（6 轴 + 1 辅助）
+            - 游戏桥：Buttplug/Intiface v3 WebSocket（`ws://127.0.0.1:12345`），单桥 / 双桥 / 单桥·六轴直驱
+            - 脚本播放：funscript（单轴与六轴同文件）、A-B 循环、章节、倍率、媒体同步（mpv / MPC-HC / VLC）
+            - 脚本库与动作卡片墙：动作和脚本同处一面墙，星标收藏、多选顺序播放、悬停即在左栏 3D 模型里预演
+            - 脚本制作：编排 + 逐轴关键帧波形，撤销栈
+            - 声音响应、画面同步（可选本机 ONNX 模型）、手动动轴、AI 助手（OpenAI 兼容接口）
+            - 安全：输出锁 / 急停、唯一限速出口、界面永远显示当前是谁在驱动设备
+
+            **自己编译**
+            ```
+            dotnet publish Hexa.csproj -c Release -r win-x64 --self-contained true
+            ```
+
+            数据目录：`%LOCALAPPDATA%\Hexa`（设置、脚本、日志）。
